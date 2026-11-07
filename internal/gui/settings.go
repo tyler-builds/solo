@@ -74,7 +74,7 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 		}
 		body := ui.Div().Column().Gap(space5).Width(ui.Full).
 			Child(field("Repository folders",
-				"Solo finds the git repositories in these folders (up to three levels down) and tells Solo about them.",
+				"Solo looks for git repositories up to three folders deep.",
 				ui.Div().Column().Gap(space2).
 					Child(list).
 					Child(ui.Div().Row().Gap(space2).
@@ -86,8 +86,11 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 					ui.Select(orchModel, modelOptions...).Width(ui.Full)))).
 				Child(ui.Div().Grow(1).Basis(ui.Px(0)).Child(field("Thread model", "The default for new threads.",
 					ui.Select(workerModel, modelOptions...).Width(ui.Full))))).
-			Child(field("Costs", "Show what each thread has cost so far, as Claude estimates it.",
-				ui.Switch("Show costs", showCosts)))
+			Child(ui.Div().Row().Align(ui.Center).Gap(space4).
+				Child(ui.Div().Column().Gap(space1).Grow(1).MinWidth(ui.Px(0)).
+					Child(subhead("Costs")).
+					Child(caption(ctx, "What each thread has cost so far, as Claude estimates it."))).
+				Child(ui.Switch("Show", showCosts)))
 
 		save := ui.Button("Save").Primary().Key("settings-save").OnClick(func() {
 			f, om, wm, sc := folders.Peek(), orchModel.Peek(), workerModel.Peek(), showCosts.Peek()

@@ -171,7 +171,7 @@ func statusColor(ctx *ui.Context, status string) ui.Color {
 func statusLabel(v core.ThreadView) string {
 	switch v.Status {
 	case core.StatusQueued:
-		return "Queued"
+		return "Starting"
 	case core.StatusStarting:
 		return "Starting"
 	case core.StatusRunning:
@@ -288,6 +288,25 @@ func statusMark(ctx *ui.Context, status string) ui.Element {
 		return box.Child(ui.Icon(icons.CircleStop).Size(13).Color(c))
 	}
 	return box.Child(dot(c, 8))
+}
+
+// statusIcon is a status as a single icon, for places that take an icon (menus, the palette).
+func statusIcon(status string) *icons.Icon {
+	switch status {
+	case core.StatusWaiting:
+		return icons.MessageCircleQuestionMark
+	case core.StatusFailed:
+		return icons.CircleAlert
+	case core.StatusIdle:
+		return icons.CircleCheck
+	case core.StatusRunning, core.StatusStarting, core.StatusQueued:
+		return icons.CircleDot
+	case core.StatusMerged:
+		return icons.GitMerge
+	case core.StatusInterrupted:
+		return icons.CircleStop
+	}
+	return icons.Circle
 }
 
 // elapsed formats a running duration: "45s", "2m 14s", "1h 05m".

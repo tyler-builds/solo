@@ -212,7 +212,35 @@ func (a *App) panelWidth(ctx *ui.Context) float32 {
 	if l := a.panelSize.Get(); l.Unit == ui.Px(0).Unit {
 		return l.Value
 	}
-	return (w - railWidth - space2) * a.panelGoal / 100
+	// The split's length is the window less the rail; the pane's padding takes space2 of it.
+	return (w-railW(ctx)-space2)*a.panelGoal/100 - space2
+}
+
+// splitMinWidth is the narrowest panel that shows a diff side by side.
+const splitMinWidth = 640
+
+// widenFor reports whether the thread panel can be at least px wide, and widens it if it can.
+// Asking without room changes nothing.
+func (a *App) widenFor(ctx *ui.Context, px float32) bool {
+	if a.panelWidth(ctx) >= px {
+		return true
+	}
+	w, _ := ctx.WindowSize()
+	length := w - railW(ctx) - space2
+	pct := (px + space2) / length * 100
+	if pct > 75 || length-px < 340 {
+		return false
+	}
+	// Only report here; the caller widens on click (see segmented), so a render doesn't resize.
+	return true
+}
+
+// widenNow widens the panel to px.
+func (a *App) widenNow(ctx *ui.Context, px float32) {
+	w, _ := ctx.WindowSize()
+	pct := (px + space2) / (w - railW(ctx) - space2) * 100
+	a.panelGoal = pct
+	a.panelSize.Set(ui.Percent(pct))
 }
 
 func (a *App) composerFor(ctx *ui.Context, th core.ThreadView) ui.Element {
@@ -243,7 +271,7 @@ func (a *App) changesView(ctx *ui.Context, res ui.QueryResult[changeData]) ui.El
 	files := parseDiff(res.Data.diff)
 	return ui.Component(func(ctx *ui.Context) ui.Element {
 		// Side by side needs room; a narrow panel shows the unified diff.
-		return diffView(ctx, res.Data.files, files, a.panelWidth(ctx) >= 900)
+		return diffView(ctx, res.Data.files, files, a.panelWidth(ctx) >= splitMinWidth, func() bool { return a.widenFor(ctx, splitMinWidth) }, func() { a.widenNow(ctx, splitMinWidth) })
 	})
 }
 
@@ -438,7 +466,7 @@ const diffRow = 22
 
 // diffView shows the file list, then each file's diff: a header that folds it, and its lines with
 // old and new line numbers, colored by change and by syntax.
-func diffView(ctx *ui.Context, stats []git.FileChange, files []*diffFile, roomy bool) ui.Element {
+func diffView(ctx *ui.Context, stats []git.FileChange, files []*diffFile, roomy bool, canWiden func() bool, widen func()) ui.Element {
 	t := ctx.Theme()
 	folded := ui.Local(ctx, "folded", map[string]bool{})
 	h := ui.Local(ctx, "list", ui.NewListHandle()).Peek()
@@ -480,8 +508,7 @@ func diffView(ctx *ui.Context, stats []git.FileChange, files []*diffFile, roomy 
 			Child(ui.Text(fileStatus(f.Status)).Mono().FontSize(12).Semibold().TextColor(fileStatusColor(ctx, f.Status)).Width(ui.Px(12))).
 			Child(ui.Text(filepath.Base(path)).FontSize(13).Medium().NoWrap()).
 			Child(ui.Text(filepath.Dir(path)).FontSize(12).TextColor(t.TextSubtle).TruncateHead().Grow(1).MinWidth(ui.Px(0))).
-			Child(ui.Text(fmt.Sprintf("+%d", f.Added)).Mono().FontSize(12).TextColor(t.Success)).
-			Child(ui.Text(fmt.Sprintf("−%d", f.Removed)).Mono().FontSize(12).TextColor(t.Danger)))
+			Child(counts(ctx, f.Added, f.Removed, 12)))
 	}
 
 	gutter := func(n int) ui.Element {
@@ -527,8 +554,7 @@ func diffView(ctx *ui.Context, stats []git.FileChange, files []*diffFile, roomy 
 			}).
 			Child(ui.Icon(map[bool]*icons.Icon{true: icons.ChevronRight, false: icons.ChevronDown}[fold[path]]).Size(13).Color(t.TextMuted)).
 			Child(ui.Text(path).Mono().FontSize(12).Semibold().TruncateHead().Grow(1).MinWidth(ui.Px(0))).
-			Child(ui.Text(fmt.Sprintf("+%d", f.add)).Mono().FontSize(11).TextColor(t.Success)).
-			Child(ui.Text(fmt.Sprintf("−%d", f.del)).Mono().FontSize(11).TextColor(t.Danger)).
+			Child(counts(ctx, f.add, f.del, 11)).
 			Child(ui.Div().Size(ui.Px(20), ui.Px(20)).Center().Radius(radiusS).Cursor(ui.CursorPointer).
 				Hover(ui.Style{Background: t.SurfaceHover}).
 				Role(access.RoleButton).Label("Copy path").Tooltip("Copy path").TabIndex(0).
@@ -650,7 +676,7 @@ func diffView(ctx *ui.Context, stats []git.FileChange, files []*diffFile, roomy 
 		Child(ui.Text(fmt.Sprintf("+%d", added)).FontSize(12).TextColor(t.Success)).
 		Child(ui.Text(fmt.Sprintf("−%d", removed)).FontSize(12).TextColor(t.Danger)).
 		Child(ui.Div().Grow(1)).
-		Child(segmented(ctx, split, roomy))
+		Child(segmented(ctx, split, roomy, canWiden, widen))
 	return ui.Div().Column().Grow(1).MinHeight(ui.Px(0)).
 		Child(summary).
 		Child(list).
@@ -679,22 +705,42 @@ func fileStatusColor(ctx *ui.Context, s string) ui.Color {
 var diffSplit = ui.NewSignal(false)
 
 // segmented is the Unified / Split switch of the diff.
-func segmented(ctx *ui.Context, split *ui.Signal[bool], roomy bool) ui.Element {
+func segmented(ctx *ui.Context, split *ui.Signal[bool], roomy bool, canWiden func() bool, widen func()) ui.Element {
 	t := ctx.Theme()
+	shown := split.Get() && roomy // what the diff actually shows
+	canSplit := roomy || canWiden()
 	opt := func(label string, on bool) ui.Element {
-		d := ui.Div().PaddingX(space3).Height(ui.Px(24)).Radius(radiusS - 1).Center().Cursor(ui.CursorPointer).
-			Role(access.RoleButton).Label(label).TabIndex(0).AccessSelected(split.Get() == on).
-			OnClick(func() { split.Set(on) })
-		if split.Get() == on {
+		d := ui.Div().PaddingX(space3).Height(ui.Px(24)).Radius(radiusS - 1).Center().
+			Role(access.RoleButton).Label(label).TabIndex(0).AccessSelected(shown == on)
+		if on && !canSplit {
+			return d.Opacity(0.45).Tooltip("The window is too narrow to compare side by side").
+				Child(ui.Text(label).FontSize(12).TextColor(t.TextMuted))
+		}
+		d = d.Cursor(ui.CursorPointer).OnClick(func() {
+			if on && !roomy {
+				widen() // the panel grows to fit; the diff goes side by side on the next render
+			}
+			split.Set(on)
+		})
+		if shown == on {
 			return d.Background(t.SurfaceActive).Child(ui.Text(label).FontSize(12).Medium())
 		}
 		return d.Hover(ui.Style{Background: t.SurfaceHover}).Child(ui.Text(label).FontSize(12).TextColor(t.TextMuted))
 	}
-	seg := ui.Div().Row().Align(ui.Center).Gap(2).Padding(2).Radius(radiusS+2).Border(1, t.Border).Background(t.Surface).
+	return ui.Div().Row().Align(ui.Center).Gap(2).Padding(2).Radius(radiusS+2).Border(1, t.Border).Background(t.Surface).
 		Child(opt("Unified", false)).
 		Child(opt("Split", true))
-	if !roomy {
-		return seg.Opacity(0.5).Tooltip("Widen the panel to compare side by side")
+}
+
+// counts shows a change's added and removed lines, leaving out a side that is zero.
+func counts(ctx *ui.Context, added, removed int, size float32) ui.Element {
+	t := ctx.Theme()
+	row := ui.Div().Row().Gap(6).Shrink(0)
+	if added > 0 || removed == 0 {
+		row = row.Child(ui.Text(fmt.Sprintf("+%d", added)).Mono().FontSize(size).TextColor(t.Success))
 	}
-	return seg
+	if removed > 0 {
+		row = row.Child(ui.Text(fmt.Sprintf("−%d", removed)).Mono().FontSize(size).TextColor(t.Danger))
+	}
+	return row
 }

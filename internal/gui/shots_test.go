@@ -34,7 +34,11 @@ func TestShots(t *testing.T) {
 		{"main", func(a *App, f *fakeBackend) {}},
 		{"thread", func(a *App, f *fakeBackend) { a.openThread("c3d4e5f6-forms", "conversation") }},
 		{"changes", func(a *App, f *fakeBackend) { diffSplit.Set(false); a.openThread("c3d4e5f6-forms", "changes") }},
-		{"split", func(a *App, f *fakeBackend) { diffSplit.Set(true); a.openThread("c3d4e5f6-forms", "changes") }},
+		{"split", func(a *App, f *fakeBackend) {
+			diffSplit.Set(true)
+			a.panelGoal = 60 // as if Split had widened the panel to fit
+			a.openThread("c3d4e5f6-forms", "changes")
+		}},
 		{"working", func(a *App, f *fakeBackend) { a.openThread("a1f3c9d2-oauth", "conversation") }},
 		{"repo-filter", func(a *App, f *fakeBackend) { a.navSel.Set("repo:/home/dev/code/api") }},
 		{"opening", func(a *App, f *fakeBackend) { a.openID.Set("c3d4e5f6-forms"); a.panelAnim.Set(0.35) }},

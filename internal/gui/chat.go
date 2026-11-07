@@ -153,6 +153,7 @@ func (a *App) transcript(ctx *ui.Context, v core.ThreadView, items []core.Item, 
 		rows = append(rows, row{key: fmt.Sprintf("i%d", it.ID), item: it})
 	}
 	flush()
+	rows = a.mergeHandoffs(rows)
 	for i := range v.Live {
 		rows = append(rows, row{key: fmt.Sprintf("live%d", i), live: &v.Live[i]})
 	}
@@ -185,6 +186,34 @@ func (a *App) transcript(ctx *ui.Context, v core.ThreadView, items []core.Item, 
 		Child(ui.Component(func(ctx *ui.Context) ui.Element { return a.offscreenPill(ctx, rows, h, true) })).
 		Child(list).
 		Child(ui.Component(func(ctx *ui.Context) ui.Element { return a.offscreenPill(ctx, rows, h, false) }))
+}
+
+// mergeHandoffs folds the actions Solo took on a thread right after that thread's update into the
+// update's row, so one handoff reads as one line.
+func (a *App) mergeHandoffs(rows []row) []row {
+	out := rows[:0:0]
+	for i := 0; i < len(rows); i++ {
+		r := rows[i]
+		if r.item != nil && r.item.Kind == core.ItemUser && i+1 < len(rows) {
+			var d core.UserData
+			r.item.Decode(&d)
+			if d.Synthetic {
+				if us := a.parseUpdates(ui.DarkTheme(), d.Text); len(us) == 1 && us[0].threadID != "" {
+					next := rows[i+1]
+					switch {
+					case next.steps != nil && next.thread == us[0].threadID:
+						r.steps, r.thread = next.steps, us[0].threadID
+						i++
+					case next.item != nil && next.item.Kind == core.ItemTool && a.itemThread(next.item) == us[0].threadID:
+						r.steps, r.thread = []*core.Item{next.item}, us[0].threadID
+						i++
+					}
+				}
+			}
+		}
+		out = append(out, r)
+	}
+	return out
 }
 
 // visible reports whether an item is shown in the transcript.
@@ -220,6 +249,13 @@ func (a *App) rowView(ctx *ui.Context, v core.ThreadView, r row) ui.Element {
 			return thinkingView(ctx, r.live.Text, true)
 		}
 		return md(r.live.Text)
+	case r.steps != nil && r.item != nil:
+		var d core.UserData
+		r.item.Decode(&d)
+		if us := a.parseUpdates(t, d.Text); len(us) == 1 {
+			return a.updateWithSteps(ctx, us[0], r.steps)
+		}
+		return a.updateView(ctx, d.Text)
 	case r.steps != nil:
 		return a.stepsView(ctx, r.steps, r.thread)
 	}
@@ -326,10 +362,9 @@ func (a *App) stepsView(ctx *ui.Context, steps []*core.Item, threadID string) ui
 		if threadID != "" {
 			label = fmt.Sprintf("%d actions", len(steps))
 		}
-		labelColor := t.TextMuted
+		var failedText ui.Element = ui.Div()
 		if failures > 0 {
-			label += fmt.Sprintf(" · %d failed", failures)
-			labelColor = t.Danger
+			failedText = ui.Text(fmt.Sprintf("· %d failed", failures)).FontSize(13).Medium().TextColor(t.Danger).NoWrap().Shrink(0)
 			if !running {
 				state = nil
 			}
@@ -340,7 +375,8 @@ func (a *App) stepsView(ctx *ui.Context, steps []*core.Item, threadID string) ui
 			OnClick(func() { open.Update(func(o bool) bool { return !o }) }).
 			Child(ui.Icon(map[bool]*icons.Icon{true: icons.ChevronDown, false: icons.ChevronRight}[open.Get()]).Size(14).Color(t.TextMuted)).
 			Child(ui.If(threadID != "", a.threadChip(ctx, threadID))).
-			Child(ui.Text(label).FontSize(13).Medium().TextColor(labelColor).NoWrap().Shrink(0)).
+			Child(ui.Text(label).FontSize(13).Medium().TextColor(t.TextMuted).NoWrap().Shrink(0)).
+			Child(failedText).
 			Child(ui.Text(latest).FontSize(12).TextColor(t.TextSubtle).Truncate().Grow(1).MinWidth(ui.Px(0)))
 		if state != nil {
 			head = head.Child(state)
@@ -360,53 +396,110 @@ func (a *App) stepsView(ctx *ui.Context, steps []*core.Item, threadID string) ui
 
 var updateLine = regexp.MustCompile(`^Thread ([0-9a-zA-Z-]{4,}) "(.*)" \(([^)]*)\) (.*)$`)
 
-// updateView shows a thread update the app sent the orchestrator: one clickable line per thread.
-func (a *App) updateView(ctx *ui.Context, text string) ui.Element {
-	t := ctx.Theme()
-	col := ui.Div().Column().Gap(2)
+// update is one line of a thread update the app sent Solo.
+type update struct {
+	threadID, name, repo, what string
+	icon                       *icons.Icon
+	color                      ui.Color
+}
+
+// parseUpdates reads the thread updates in a synthetic message, one per line.
+func (a *App) parseUpdates(t *ui.Theme, text string) []update {
+	var out []update
 	for _, l := range strings.Split(text, "\n") {
-		l = strings.TrimPrefix(l, "- ")
-		m := updateLine.FindStringSubmatch(l)
+		m := updateLine.FindStringSubmatch(strings.TrimPrefix(l, "- "))
 		if m == nil {
 			continue
 		}
-		id, name, repo, rest := m[1], m[2], m[3], m[4]
-		icon, c, what := icons.Activity, t.TextMuted, rest
+		u := update{threadID: a.findThreadID(m[1]), name: m[2], repo: m[3], what: m[4], icon: icons.Activity, color: t.TextMuted}
+		rest := m[4]
 		switch {
 		case strings.HasPrefix(rest, "finished its turn."):
-			icon, c = icons.CircleCheck, t.Success
-			what = "finished"
+			u.icon, u.color, u.what = icons.CircleCheck, t.Success, "finished"
 			if s := strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(rest, "finished its turn."), " Summary:")); s != "" {
-				what += " · " + firstSentence(stripMarkdown(s))
+				u.what += " · " + firstSentence(stripMarkdown(s))
 			}
 		case strings.HasPrefix(rest, "failed:"):
-			icon, c = icons.CircleAlert, t.Danger
-			what = "failed · " + strings.TrimSpace(strings.TrimPrefix(rest, "failed:"))
+			u.icon, u.color = icons.CircleAlert, t.Danger
+			u.what = "failed · " + strings.TrimSpace(strings.TrimPrefix(rest, "failed:"))
 		case strings.HasPrefix(rest, "is asking a question"):
-			icon, c, what = icons.MessageCircleQuestionMark, t.Warning, "has a question"
+			u.icon, u.color, u.what = icons.MessageCircleQuestionMark, t.Warning, "has a question"
 		case strings.HasPrefix(rest, "was interrupted"):
-			icon, c, what = icons.CircleStop, t.TextSubtle, "was stopped"
+			u.icon, u.color, u.what = icons.CircleStop, t.TextSubtle, "was stopped"
 		case strings.HasPrefix(rest, "was merged into "):
-			icon, c = icons.GitMerge, ui.Hex(pal(t).info)
-			what = "merged into " + strings.TrimSuffix(strings.TrimPrefix(rest, "was merged into "), " by the user.")
+			u.icon, u.color = icons.GitMerge, ui.Hex(pal(t).info)
+			u.what = "merged into " + strings.TrimSuffix(strings.TrimPrefix(rest, "was merged into "), " by the user.")
 		case strings.HasPrefix(rest, "was discarded"):
-			icon, c, what = icons.Trash, t.TextSubtle, "was discarded"
+			u.icon, u.color, u.what = icons.Trash, t.TextSubtle, "was discarded"
 		}
-		threadID := a.findThreadID(id)
-		line := ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space2).Height(ui.Px(26)).Radius(radiusS).
-			Child(ui.Icon(icon).Size(14).Color(c)).
-			Child(ui.Text(repo).FontSize(12).TextColor(t.TextSubtle).NoWrap().Shrink(0)).
-			Child(ui.Text(name).FontSize(13).Medium().NoWrap().Shrink(0).MaxWidth(ui.Percent(45)).Truncate()).
-			Child(ui.Text(what).FontSize(12).TextColor(t.TextMuted).Truncate().Grow(1).MinWidth(ui.Px(0)))
-		if threadID != "" {
-			line = line.Cursor(ui.CursorPointer).Hover(ui.Style{Background: t.SurfaceHover}).
-				Role(access.RoleButton).Label(name + " " + what).TabIndex(0).
-				OnClick(func() { a.openThread(threadID, "conversation") }).
-				Child(ui.Icon(icons.ChevronRight).Size(13).Color(t.TextSubtle))
-		}
-		col = col.Child(line)
+		out = append(out, u)
+	}
+	return out
+}
+
+// updateLine renders one thread update; trailing goes before the chevron (an actions toggle).
+func (a *App) updateRow(ctx *ui.Context, u update, trailing ui.Element) *ui.DivElement {
+	t := ctx.Theme()
+	line := ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space2).Height(ui.Px(26)).Radius(radiusS).
+		Child(ui.Icon(u.icon).Size(14).Color(u.color)).
+		Child(ui.Text(u.repo).FontSize(12).TextColor(t.TextSubtle).NoWrap().Shrink(0)).
+		Child(ui.Text(u.name).FontSize(13).Medium().NoWrap().Shrink(0).MaxWidth(ui.Percent(45)).Truncate()).
+		Child(ui.Text(u.what).FontSize(12).TextColor(t.TextMuted).Truncate().Grow(1).MinWidth(ui.Px(0)))
+	if trailing != nil {
+		line = line.Child(trailing)
+	}
+	if u.threadID != "" {
+		id := u.threadID
+		line = line.Cursor(ui.CursorPointer).Hover(ui.Style{Background: t.SurfaceHover}).
+			Role(access.RoleButton).Label(u.name + " " + u.what).TabIndex(0).
+			OnClick(func() { a.openThread(id, "conversation") }).
+			Child(ui.Icon(icons.ChevronRight).Size(13).Color(t.TextSubtle))
+	}
+	return line
+}
+
+// updateView shows a thread update the app sent Solo: one clickable line per thread.
+func (a *App) updateView(ctx *ui.Context, text string) ui.Element {
+	col := ui.Div().Column().Gap(2)
+	for _, u := range a.parseUpdates(ctx.Theme(), text) {
+		col = col.Child(a.updateRow(ctx, u, nil))
 	}
 	return col
+}
+
+// updateWithSteps is a thread's update together with what Solo did about it right after: one line,
+// with an "N actions" toggle that unfolds the actions under it.
+func (a *App) updateWithSteps(ctx *ui.Context, u update, steps []*core.Item) ui.Element {
+	return ui.Component(func(ctx *ui.Context) ui.Element {
+		t := ctx.Theme()
+		open := ui.Local(ctx, "open", false)
+		label := fmt.Sprintf("%d actions", len(steps))
+		if len(steps) == 1 {
+			_, verb, _ := a.describeTool(itemTool(steps[0]))
+			label = verb
+		}
+		toggle := ui.Div().Row().Align(ui.Center).Gap(space1).PaddingX(space2).Height(ui.Px(22)).Radius(radiusS).Shrink(0).
+			Cursor(ui.CursorPointer).Hover(ui.Style{Background: t.SurfaceActive}).
+			Role(access.RoleButton).Label("Show what Solo did").TabIndex(0).
+			OnClick(func() { open.Update(func(o bool) bool { return !o }) }).
+			Child(ui.Text(label).FontSize(12).TextColor(t.TextSubtle).NoWrap()).
+			Child(ui.Icon(map[bool]*icons.Icon{true: icons.ChevronDown, false: icons.ChevronRight}[open.Get()]).Size(12).Color(t.TextSubtle))
+		col := ui.Div().Column().Gap(2).Child(a.updateRow(ctx, u, toggle))
+		if open.Get() {
+			inner := ui.Div().Column().Gap(2).PaddingLeft(space3).MarginLeft(space3).BorderEdges(ui.Edges{Left: 1}, t.Border)
+			for _, it := range steps {
+				inner = inner.Child(a.stepView(ctx, it, core.ThreadView{}))
+			}
+			col = col.Child(inner)
+		}
+		return col
+	})
+}
+
+func itemTool(it *core.Item) core.ToolData {
+	var d core.ToolData
+	it.Decode(&d)
+	return d
 }
 
 func (a *App) findThreadID(prefix string) string {
@@ -670,7 +763,16 @@ func (a *App) askForm(ctx *ui.Context, threadID, toolUseID string, qs []agent.Qu
 		}
 		var head ui.Element
 		if title != "" {
-			head = a.cardHeader(ctx, icons.MessageCircleQuestionMark, t.Warning, typ, threadID)
+			head = ui.Div().Row().Align(ui.Center).Gap(space2).
+				Child(ui.Div().Grow(1).MinWidth(ui.Px(0)).Child(a.cardHeader(ctx, icons.MessageCircleQuestionMark, t.Warning, typ, threadID))).
+				Child(ui.IconButton(icons.ChevronDown).Ghost().Small().Label("Fold the question").Tooltip("Fold").
+					OnClick(func() {
+						next := map[string]bool{toolUseID: true}
+						for k, v := range a.foldedAsks.Peek() {
+							next[k] = v
+						}
+						a.foldedAsks.Set(next)
+					}))
 		} else {
 			head = a.cardHeader(ctx, icons.MessageCircleQuestionMark, t.Warning, typ, "")
 		}
@@ -733,10 +835,45 @@ func (a *App) questionStrip(ctx *ui.Context) ui.Element {
 		if len(qs) == 0 || th.ID == core.OrchestratorID {
 			continue
 		}
-		col = col.Child(ui.Div().Key("ask-" + qs[0].ToolUseID).
-			Child(a.askForm(ctx, th.ID, qs[0].ToolUseID, qs[0].Questions, th.Title+" asks")))
+		key := qs[0].ToolUseID
+		// Folded while the user writes to Solo, or when they fold it; a click unfolds it.
+		folded := a.foldedAsks.Get()[key] || strings.TrimSpace(a.orchDraft.Get()) != ""
+		if folded {
+			col = col.Child(a.foldedAsk(ctx, th, qs[0]).Key("ask-" + key))
+			continue
+		}
+		col = col.Child(ui.Div().Key("ask-" + key).
+			Child(a.askForm(ctx, th.ID, key, qs[0].Questions, th.Title+" asks")))
 	}
 	return col
+}
+
+// foldedAsk is a pinned question folded to one line.
+func (a *App) foldedAsk(ctx *ui.Context, th core.ThreadView, pq core.PendingQuestion) *ui.DivElement {
+	t := ctx.Theme()
+	q := ""
+	if len(pq.Questions) > 0 {
+		q = pq.Questions[0].Question
+	}
+	key := pq.ToolUseID
+	return ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space3).Height(ui.Px(40)).Radius(radiusL).
+		Background(t.Surface).Border(1, t.Warning.Alpha(0.4)).Cursor(ui.CursorPointer).
+		Hover(ui.Style{BorderColor: t.Warning.Alpha(0.7)}).
+		Role(access.RoleButton).Label("Show the question from " + th.Title).TabIndex(0).
+		OnClick(func() {
+			next := map[string]bool{}
+			for k, v := range a.foldedAsks.Peek() {
+				next[k] = v
+			}
+			delete(next, key)
+			a.foldedAsks.Set(next)
+			a.orchDraft.Set(strings.TrimRight(a.orchDraft.Peek(), " "))
+		}).
+		Child(ui.Icon(icons.MessageCircleQuestionMark).Size(15).Color(t.Warning)).
+		Child(ui.Text("Question").FontSize(12).Semibold().TextColor(t.Warning).NoWrap()).
+		Child(ui.Text(filepath.Base(th.RepoPath) + " › " + th.Title).FontSize(12).TextColor(t.TextMuted).NoWrap().Shrink(0).MaxWidth(ui.Px(260)).Truncate()).
+		Child(ui.Text(q).FontSize(13).Truncate().Grow(1).MinWidth(ui.Px(0))).
+		Child(ui.Text("Answer").FontSize(12).Medium().TextColor(t.Link).NoWrap())
 }
 
 // attentionBar lists, above the composer, the threads that wait on the user for something other than
@@ -802,6 +939,9 @@ func (a *App) composer(ctx *ui.Context, v core.ThreadView, key, placeholder stri
 	return ui.Component(func(ctx *ui.Context) ui.Element {
 		t := ctx.Theme()
 		draft := ui.Local(ctx, key, "")
+		if key == "orch-draft" {
+			draft = a.orchDraft // the pinned question folds while the user writes to Solo
+		}
 		submit := func() {
 			text := strings.TrimSpace(draft.Peek())
 			if text == "" {
@@ -1000,11 +1140,11 @@ func (a *App) offscreenPill(ctx *ui.Context, rows []row, h *ui.ListHandle, top b
 	if !top {
 		target, icon, place = hidden[0], icons.ArrowDown, ui.AboveCenter
 	}
-	label := "1 needs your action"
+	label := "1 needs you"
 	if len(hidden) > 1 {
-		label = fmt.Sprintf("%d need your action", len(hidden))
+		label = fmt.Sprintf("%d need you", len(hidden))
 	}
-	pill := ui.Div().Row().Align(ui.Center).Gap(6).PaddingX(space3).Height(ui.Px(30)).Radius(15).
+	pill := ui.Div().Row().Align(ui.Center).Gap(6).PaddingX(space3).Height(ui.Px(28)).Radius(14).
 		Background(t.Surface).Border(1, t.Warning.Alpha(0.55)).Shadow(ui.ShadowMd).Cursor(ui.CursorPointer).
 		Hover(ui.Style{Background: t.SurfaceHover}).
 		Role(access.RoleButton).Label(label).TabIndex(0).Key("offscreen-pill").

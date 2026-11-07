@@ -20,8 +20,10 @@ import (
 )
 
 const (
-	railWidth = 304
-	itemLimit = 400 // transcript items loaded per thread
+	railWidth       = 304
+	railWidthNarrow = 248 // below narrowWindow, so the chat and a thread still fit side by side
+	narrowWindow    = 1200
+	itemLimit       = 400 // transcript items loaded per thread
 )
 
 // App is the window's state.
@@ -37,15 +39,17 @@ type App struct {
 	openTab *ui.Signal[string]
 	cfg     *ui.Signal[core.Settings]
 	// The thread panel's share of the center, which the user can drag, and its open/close animation.
-	panelSize *ui.Signal[ui.Length]
-	panelAnim *ui.Signal[float32] // 0 closed … 1 open
-	panelGoal float32             // the size, in percent, the panel opens to
-	animStop  func()
-	settings  *ui.Signal[bool]
-	confirm   *ui.Signal[*confirmation]
-	palette   *ui.Signal[bool]
-	built     map[string]bool // transcript rows that are built, by scope/key (UI thread only)
-	builtVer  *ui.Signal[int]
+	panelSize  *ui.Signal[ui.Length]
+	panelAnim  *ui.Signal[float32] // 0 closed … 1 open
+	panelGoal  float32             // the size, in percent, the panel opens to
+	animStop   func()
+	settings   *ui.Signal[bool]
+	confirm    *ui.Signal[*confirmation]
+	palette    *ui.Signal[bool]
+	built      map[string]bool // transcript rows that are built, by scope/key (UI thread only)
+	builtVer   *ui.Signal[int]
+	orchDraft  *ui.Signal[string]          // the message being written to Solo
+	foldedAsks *ui.Signal[map[string]bool] // pinned questions the user folded, by tool-use ID
 
 	items map[string]*ui.Signal[[]core.Item] // UI thread only
 
@@ -69,25 +73,27 @@ type confirmation struct {
 // New creates the UI over a backend.
 func New(b Backend) *App {
 	a := &App{
-		b:         b,
-		threads:   ui.NewSignal(b.Threads()),
-		repos:     ui.NewSignal(b.RepoPaths()),
-		rate:      ui.NewSignal(b.RateLimit()),
-		pending:   ui.NewSignal(loadPending(b, b.Threads())),
-		navSel:    ui.NewSignal("orchestrator"),
-		openID:    ui.NewSignal(""),
-		openTab:   ui.NewSignal("conversation"),
-		cfg:       ui.NewSignal(b.Settings()),
-		panelSize: ui.NewSignal(ui.Percent(50)),
-		panelAnim: ui.NewSignal[float32](0),
-		panelGoal: 50,
-		settings:  ui.NewSignal(false),
-		confirm:   ui.NewSignal[*confirmation](nil),
-		palette:   ui.NewSignal(false),
-		builtVer:  ui.NewSignal(0),
-		items:     map[string]*ui.Signal[[]core.Item]{},
-		dirty:     map[string]bool{},
-		watched:   map[string]bool{},
+		b:          b,
+		threads:    ui.NewSignal(b.Threads()),
+		repos:      ui.NewSignal(b.RepoPaths()),
+		rate:       ui.NewSignal(b.RateLimit()),
+		pending:    ui.NewSignal(loadPending(b, b.Threads())),
+		navSel:     ui.NewSignal("orchestrator"),
+		openID:     ui.NewSignal(""),
+		openTab:    ui.NewSignal("conversation"),
+		cfg:        ui.NewSignal(b.Settings()),
+		panelSize:  ui.NewSignal(ui.Percent(50)),
+		panelAnim:  ui.NewSignal[float32](0),
+		panelGoal:  50,
+		settings:   ui.NewSignal(false),
+		confirm:    ui.NewSignal[*confirmation](nil),
+		palette:    ui.NewSignal(false),
+		builtVer:   ui.NewSignal(0),
+		orchDraft:  ui.NewSignal(""),
+		foldedAsks: ui.NewSignal(map[string]bool{}),
+		items:      map[string]*ui.Signal[[]core.Item]{},
+		dirty:      map[string]bool{},
+		watched:    map[string]bool{},
 	}
 	a.unsub = b.Subscribe(a.onChange)
 	return a
@@ -315,16 +321,22 @@ func (a *App) center(ctx *ui.Context) ui.Element {
 				}
 			}).
 			Child(inset(ctx, ui.Component(a.threadPanel)))
-		pane := ui.Pane(panel).Key("thread").Label("Thread")
+		var content ui.Element = panel
+		pane := ui.Pane(nil)
 		if anim >= 1 {
-			pane = pane.SizeSignal(a.panelSize).Min(ui.Px(400)).Max(ui.Percent(75))
+			pane = ui.Pane(content).SizeSignal(a.panelSize).Min(ui.Px(320)).Max(ui.Percent(75))
 		} else {
-			// While it slides, the panel follows the animation, below its usual minimum.
-			pane = pane.Size(ui.Percent(a.panelGoal * anim)).Min(ui.Px(0)).Max(ui.Percent(75))
+			// While it slides, the pane grows but the panel keeps its final width inside it, clipped,
+			// so its text doesn't reflow; it fades in as it arrives.
+			final := a.panelWidth(ctx)
+			content = ui.Div().Size(ui.Full, ui.Full).ClipContent().
+				Child(ui.Div().Column().Width(ui.Px(final)).Height(ui.Full).Shrink(0).Opacity(anim).Child(panel))
+			pane = ui.Pane(content).Size(ui.Percent(a.panelGoal * anim)).Min(ui.Px(0)).Max(ui.Percent(75))
 		}
+		pane = pane.Key("thread").Label("Thread")
 		thin := ui.Style{Width: ui.Px(space2), Background: t.Panel}
 		main = ui.Split(
-			ui.Pane(orch).Min(ui.Px(360)).Key("orch").Label("Solo"),
+			ui.Pane(orch).Min(ui.Px(340)).Key("orch").Label("Solo"),
 			pane,
 		).Grip(map[bool]ui.SplitGrip{true: ui.SplitGripOnHover, false: ui.SplitGripHidden}[anim >= 1]).
 			Styles(ui.SplitStyle{
@@ -341,7 +353,7 @@ func (a *App) center(ctx *ui.Context) ui.Element {
 		main = ui.Div().Column().Size(ui.Full, ui.Full).PaddingRight(space2).Child(orch)
 	}
 	return ui.Div().Row().Size(ui.Full, ui.Full).
-		Child(ui.Div().Width(ui.Px(railWidth)).Height(ui.Full).Shrink(0).Child(ui.Component(a.rail))).
+		Child(ui.Div().Width(ui.Px(railW(ctx))).Height(ui.Full).Shrink(0).Child(ui.Component(a.rail))).
 		Child(ui.Div().Column().Grow(1).Basis(ui.Px(0)).MinWidth(ui.Px(0)).Height(ui.Full).Child(main))
 }
 
@@ -450,22 +462,29 @@ func (a *App) nextAttention() {
 	a.openThread(next.ID, tab)
 }
 
-// paletteItems lists the threads for the Ctrl+K palette.
+// paletteItems lists the threads for the Ctrl+K palette in the rail's order (what needs the user
+// first), with the rail's status icons, then closed threads and Settings.
 func (a *App) paletteItems(query string) []ui.PaletteItem {
 	var out []ui.PaletteItem
-	for _, th := range a.threads.Peek() {
-		if !th.IsWorker {
-			continue
-		}
+	item := func(th core.ThreadView) ui.PaletteItem {
 		id := th.ID
-		out = append(out, ui.PaletteItem{
-			Key:      id,
-			Label:    th.Title,
-			Detail:   filepath.Base(th.RepoPath) + " · " + statusLabel(th),
-			Icon:     icons.MessageSquare,
-			Keywords: []string{filepath.Base(th.RepoPath), th.Status},
+		detail := filepath.Base(th.RepoPath) + " · " + statusLabel(th)
+		if th.InTurn && !th.TurnStarted.IsZero() {
+			detail += " · " + elapsed(th.TurnStarted)
+		}
+		return ui.PaletteItem{
+			Key: id, Label: th.Title, Detail: detail, Icon: statusIcon(th.Status),
+			Keywords: []string{filepath.Base(th.RepoPath), statusLabel(th)},
 			Run:      func() { a.openThread(id, "conversation") },
-		})
+		}
+	}
+	for _, th := range a.openThreads(false) {
+		out = append(out, item(th))
+	}
+	for _, th := range a.threads.Peek() {
+		if th.IsWorker && core.Finished(th.Status) {
+			out = append(out, item(th))
+		}
 	}
 	out = append(out, ui.PaletteItem{Key: "settings", Label: "Settings", Icon: icons.Settings, Run: func() { a.settings.Set(true) }})
 	return out
@@ -505,4 +524,12 @@ func (a *App) jumpTo(n int) {
 	if list := a.openThreads(false); n < len(list) {
 		a.openThread(list[n].ID, "conversation")
 	}
+}
+
+// railW is the rail's width for the window's width.
+func railW(ctx *ui.Context) float32 {
+	if w, _ := ctx.WindowSize(); w < narrowWindow {
+		return railWidthNarrow
+	}
+	return railWidth
 }
