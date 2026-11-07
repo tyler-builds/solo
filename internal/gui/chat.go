@@ -213,7 +213,27 @@ func (a *App) mergeHandoffs(rows []row) []row {
 		}
 		out = append(out, r)
 	}
-	return out
+	// A handoff that ends in a merge proposal for the same thread is said by the card alone: the
+	// actions fold into the card and the update line goes.
+	final := out[:0:0]
+	for i := 0; i < len(out); i++ {
+		r := out[i]
+		thread, steps := r.thread, r.steps
+		if steps == nil && r.item != nil && r.item.Kind == core.ItemTool {
+			thread, steps = a.itemThread(r.item), []*core.Item{r.item}
+		}
+		if steps != nil && thread != "" && i+1 < len(out) {
+			next := out[i+1]
+			if next.item != nil && next.item.Kind == core.ItemProposal && next.item.Ref == thread {
+				next.steps = steps
+				final = append(final, next)
+				i++
+				continue
+			}
+		}
+		final = append(final, r)
+	}
+	return final
 }
 
 // visible reports whether an item is shown in the transcript.
@@ -249,6 +269,10 @@ func (a *App) rowView(ctx *ui.Context, v core.ThreadView, r row) ui.Element {
 			return thinkingView(ctx, r.live.Text, true)
 		}
 		return md(r.live.Text)
+	case r.steps != nil && r.item != nil && r.item.Kind == core.ItemProposal:
+		var d core.ProposalData
+		r.item.Decode(&d)
+		return a.proposalCard(ctx, d, r.steps)
 	case r.steps != nil && r.item != nil:
 		var d core.UserData
 		r.item.Decode(&d)
@@ -312,7 +336,7 @@ func (a *App) stepView(ctx *ui.Context, it *core.Item, v core.ThreadView) ui.Ele
 	case core.ItemProposal:
 		var d core.ProposalData
 		it.Decode(&d)
-		return a.proposalCard(ctx, d)
+		return a.proposalCard(ctx, d, nil)
 	case core.ItemTurn:
 		var d core.TurnData
 		it.Decode(&d)
@@ -687,25 +711,60 @@ func turnView(ctx *ui.Context, d core.TurnData) ui.Element {
 }
 
 // proposalCard is the orchestrator's recommendation to merge a thread, with the Merge button.
-func (a *App) proposalCard(ctx *ui.Context, d core.ProposalData) ui.Element {
-	t := ctx.Theme()
-	th, _ := a.thread(d.ThreadID)
-	brand := ui.Hex(pal(t).brand)
-	var actions ui.Element
-	switch th.Status {
-	case core.StatusMerged, core.StatusDiscarded:
-		actions = statusPill(ctx, th)
-	default:
-		actions = ui.Div().Row().Gap(space2).
-			Child(ui.Button("Merge").Icon(icons.GitMerge).Primary().Small().Disabled(!th.CanMerge).
-				OnClick(func() { a.merge(d.ThreadID) })).
-			Child(ui.Button("Review changes").Secondary().Small().OnClick(func() { a.openThread(d.ThreadID, "changes") }))
-	}
-	return ui.Div().Column().Gap(space3).Padding(space4).Radius(radiusL).Background(t.Surface).
-		Border(1, brand.Alpha(0.35)).
-		Child(a.cardHeader(ctx, icons.GitMerge, brand, "Merge proposed", d.ThreadID)).
-		Child(ui.Text(d.Summary).FontSize(13).TextColor(t.Text)).
-		Child(actions)
+func (a *App) proposalCard(ctx *ui.Context, d core.ProposalData, steps []*core.Item) ui.Element {
+	return ui.Component(func(ctx *ui.Context) ui.Element {
+		t := ctx.Theme()
+		th, _ := a.thread(d.ThreadID)
+		brand := ui.Hex(pal(t).brand)
+		open := ui.Local(ctx, "steps-open", false)
+		var actions *ui.DivElement
+		switch th.Status {
+		case core.StatusMerged, core.StatusDiscarded:
+			actions = ui.Div().Row().Align(ui.Center).Child(statusPill(ctx, th))
+		default:
+			id, title := d.ThreadID, th.Title
+			actions = ui.Div().Row().Align(ui.Center).Gap(space2).
+				Child(ui.Button("Merge").Icon(icons.GitMerge).Primary().Small().Disabled(!th.CanMerge).
+					OnClick(func() { a.merge(id) })).
+				Child(ui.Button("Review changes").Secondary().Small().OnClick(func() { a.openThread(id, "changes") })).
+				Child(ui.Button("Request changes").Ghost().Small().
+					Tooltip("Tell Solo what to change; it passes it on to the thread").
+					OnClick(func() {
+						a.orchDraft.Set("Changes for “" + title + "”: ")
+						a.orchFocus.Focus()
+					})).
+				Child(ui.DropdownMenu(ui.IconButton(icons.Ellipsis).Ghost().Small().Label("More").Tooltip("More"),
+					func() []ui.MenuItem {
+						return []ui.MenuItem{{Label: "Discard thread…", Icon: icons.Trash, OnClick: func() { a.confirmDiscard(th) }}}
+					}))
+		}
+		if len(steps) > 0 {
+			label := fmt.Sprintf("%d actions", len(steps))
+			if len(steps) == 1 {
+				label = "1 action"
+			}
+			actions = actions.Child(ui.Div().Grow(1)).
+				Child(ui.Div().Row().Align(ui.Center).Gap(space1).PaddingX(space2).Height(ui.Px(24)).Radius(radiusS).
+					Cursor(ui.CursorPointer).Hover(ui.Style{Background: t.SurfaceHover}).
+					Role(access.RoleButton).Label("Show what Solo did").TabIndex(0).
+					OnClick(func() { open.Update(func(o bool) bool { return !o }) }).
+					Child(ui.Text(label).FontSize(12).TextColor(t.TextSubtle)).
+					Child(ui.Icon(map[bool]*icons.Icon{true: icons.ChevronDown, false: icons.ChevronRight}[open.Get()]).Size(12).Color(t.TextSubtle)))
+		}
+		card := ui.Div().Column().Gap(space3).Padding(space4).Radius(radiusL).Background(t.Surface).
+			Border(1, brand.Alpha(0.35)).
+			Child(a.cardHeader(ctx, icons.GitMerge, brand, "Merge proposed", d.ThreadID)).
+			Child(ui.Text(d.Summary).FontSize(13).TextColor(t.Text)).
+			Child(actions)
+		if open.Get() {
+			inner := ui.Div().Column().Gap(2).PaddingTop(space2).BorderEdges(ui.Edges{Top: 1}, t.Border)
+			for _, it := range steps {
+				inner = inner.Child(a.stepView(ctx, it, core.ThreadView{}))
+			}
+			card = card.Child(inner)
+		}
+		return card
+	})
 }
 
 // questionCard is an AskUserQuestion in a transcript: open, or how it was answered.
@@ -779,20 +838,27 @@ func (a *App) askForm(ctx *ui.Context, threadID, toolUseID string, qs []agent.Qu
 		opts := ui.Div().Column().Gap(space1)
 		for i, o := range q.Options {
 			label := o.Label
-			opt := ui.Div().Row().Align(ui.Center).Gap(space3).PaddingX(space3).PaddingY(space2).
-				Radius(radiusM).Border(1, t.Border).Background(t.Background).Cursor(ui.CursorPointer).
-				Hover(ui.Style{Background: t.SurfaceHover, BorderColor: t.TextSubtle}).
-				Role(access.RoleButton).Label(o.Label).TabIndex(0).OnClick(func() { pick(label) }).
-				Key("opt-" + label).
-				Child(ui.Div().Size(ui.Px(14), ui.Px(14)).Radius(7).Border(1.5, t.TextSubtle).Shrink(0))
-			text := ui.Div().Column().Gap(2).Grow(1).MinWidth(ui.Px(0)).Child(ui.Text(o.Label).FontSize(13).Medium())
-			if o.Description != "" {
-				text = text.Child(ui.Text(o.Description).FontSize(12).TextColor(t.TextMuted))
-			}
-			opt = opt.Child(text)
-			if i < 9 {
-				opt = opt.Child(ui.Kbd(fmt.Sprint(i + 1)))
-			}
+			opt := ui.Component(func(ctx *ui.Context) ui.Element {
+				hover := ui.Local(ctx, "hover", false)
+				o2 := ui.Div().Row().Align(ui.Center).Gap(space3).PaddingX(space3).PaddingY(space2).
+					Radius(radiusM).Border(1, t.Border).Background(t.Background).Cursor(ui.CursorPointer).
+					Hover(ui.Style{Background: t.SurfaceHover, BorderColor: t.TextSubtle}).
+					OnMouseEnter(func() { hover.Set(true) }).OnMouseLeave(func() { hover.Set(false) }).
+					Role(access.RoleButton).Label("Answer: " + label).TabIndex(0).OnClick(func() { pick(label) }).
+					Key("opt-" + label)
+				text := ui.Div().Column().Gap(2).Grow(1).MinWidth(ui.Px(0)).Child(ui.Text(o.Label).FontSize(13).Medium())
+				if o.Description != "" {
+					text = text.Child(ui.Text(o.Description).FontSize(12).TextColor(t.TextMuted))
+				}
+				o2 = o2.Child(text)
+				// Picking an option answers at once; the arrow says so on hover, the key otherwise.
+				if hover.Get() {
+					o2 = o2.Child(ui.Icon(icons.ArrowRight).Size(14).Color(t.Link))
+				} else if i < 9 {
+					o2 = o2.Child(ui.Kbd(fmt.Sprint(i + 1)))
+				}
+				return o2
+			})
 			opts = opts.Child(opt)
 		}
 		sendOther := func() {
@@ -939,8 +1005,10 @@ func (a *App) composer(ctx *ui.Context, v core.ThreadView, key, placeholder stri
 	return ui.Component(func(ctx *ui.Context) ui.Element {
 		t := ctx.Theme()
 		draft := ui.Local(ctx, key, "")
+		var focus *ui.FocusHandle
 		if key == "orch-draft" {
 			draft = a.orchDraft // the pinned question folds while the user writes to Solo
+			focus = a.orchFocus
 		}
 		submit := func() {
 			text := strings.TrimSpace(draft.Peek())
@@ -968,7 +1036,7 @@ func (a *App) composer(ctx *ui.Context, v core.ThreadView, key, placeholder stri
 		}
 		actions = actions.Child(sendBtn)
 		area := ui.TextArea(draft).Placeholder(placeholder).Label(placeholder).MinRows(1).Borderless().
-			MaxHeight(ui.Px(220)).Width(ui.Full).Key(key + "-area").
+			MaxHeight(ui.Px(220)).Width(ui.Full).Key(key + "-area").FocusHandle(focus).
 			OnKeyDown(func(e *ui.KeyEvent) {
 				if e.Key == input.KeyEnter && e.Mods&input.ModShift == 0 {
 					e.StopPropagation()

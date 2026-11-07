@@ -80,7 +80,7 @@ func TestCardOpensThreadAndMergeButton(t *testing.T) {
 func TestQuestionOptionAnswers(t *testing.T) {
 	f := demoBackend()
 	_, u := newUI(t, f)
-	if !u.HasRole(access.RoleButton, "Redis") {
+	if !u.HasRole(access.RoleButton, "Answer: Redis") {
 		t.Fatal("the worker's question is not shown")
 	}
 }

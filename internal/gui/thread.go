@@ -83,9 +83,6 @@ func (a *App) threadPanel(ctx *ui.Context) ui.Element {
 		Child(ui.Text(fmt.Sprintf("+%d", added)).FontSize(12).Medium().TextColor(t.Success)).
 		Child(ui.Text(fmt.Sprintf("−%d", removed)).FontSize(12).Medium().TextColor(t.Danger))
 	actions := ui.Div().Row().Align(ui.Center).Gap(space1).Shrink(0)
-	if added+removed > 0 && !narrow {
-		actions = actions.Child(stat.PaddingRight(space2))
-	}
 	if th.CanMerge {
 		tip := "Merge " + th.Branch + " into " + th.BaseBranch
 		if narrow {
@@ -107,17 +104,7 @@ func (a *App) threadPanel(ctx *ui.Context) ui.Element {
 					}})
 				}
 				if th.CanDiscard {
-					items = append(items, ui.MenuItem{Label: "Discard thread…", Icon: icons.Trash, OnClick: func() {
-						a.confirm.Set(&confirmation{
-							title:  "Discard this thread?",
-							body:   fmt.Sprintf("This stops %q and deletes its worktree and branch %s, with any work not merged.", th.Title, th.Branch),
-							action: "Discard",
-							run: func() {
-								a.closeThread()
-								a.run("Discard", func(ctx context.Context) error { return a.b.Discard(ctx, id) })
-							},
-						})
-					}})
+					items = append(items, ui.MenuItem{Label: "Discard thread…", Icon: icons.Trash, OnClick: func() { a.confirmDiscard(th) }})
 				}
 				return items
 			}))
@@ -137,7 +124,7 @@ func (a *App) threadPanel(ctx *ui.Context) ui.Element {
 			Child(ui.Icon(icons.GitBranch).Size(12).Color(t.TextSubtle)).
 			Child(ui.Text(branchLabel(th) + " → " + th.BaseBranch).FontSize(12).TextColor(t.TextSubtle).NoWrap()))
 	}
-	if narrow && added+removed > 0 {
+	if added+removed > 0 {
 		meta = meta.Child(stat)
 	}
 	if a.cfg.Get().ShowCosts && th.CostUSD > 0 {
@@ -241,6 +228,22 @@ func (a *App) widenNow(ctx *ui.Context, px float32) {
 	pct := (px + space2) / (w - railW(ctx) - space2) * 100
 	a.panelGoal = pct
 	a.panelSize.Set(ui.Percent(pct))
+}
+
+// confirmDiscard asks before discarding a thread.
+func (a *App) confirmDiscard(th core.ThreadView) {
+	id := th.ID
+	a.confirm.Set(&confirmation{
+		title:  "Discard this thread?",
+		body:   fmt.Sprintf("This stops %q and deletes its worktree and branch %s, with any work not merged.", th.Title, th.Branch),
+		action: "Discard",
+		run: func() {
+			if a.openID.Peek() == id {
+				a.closeThread()
+			}
+			a.run("Discard", func(ctx context.Context) error { return a.b.Discard(ctx, id) })
+		},
+	})
 }
 
 func (a *App) composerFor(ctx *ui.Context, th core.ThreadView) ui.Element {

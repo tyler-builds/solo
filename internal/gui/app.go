@@ -48,7 +48,8 @@ type App struct {
 	palette    *ui.Signal[bool]
 	built      map[string]bool // transcript rows that are built, by scope/key (UI thread only)
 	builtVer   *ui.Signal[int]
-	orchDraft  *ui.Signal[string]          // the message being written to Solo
+	orchDraft  *ui.Signal[string] // the message being written to Solo
+	orchFocus  *ui.FocusHandle
 	foldedAsks *ui.Signal[map[string]bool] // pinned questions the user folded, by tool-use ID
 
 	items map[string]*ui.Signal[[]core.Item] // UI thread only
@@ -90,6 +91,7 @@ func New(b Backend) *App {
 		palette:    ui.NewSignal(false),
 		builtVer:   ui.NewSignal(0),
 		orchDraft:  ui.NewSignal(""),
+		orchFocus:  ui.NewFocusHandle(),
 		foldedAsks: ui.NewSignal(map[string]bool{}),
 		items:      map[string]*ui.Signal[[]core.Item]{},
 		dirty:      map[string]bool{},
