@@ -358,6 +358,27 @@ func TestImages(t *testing.T) {
 	if err := e.c.Send(ctx, v.ID, "  "); err == nil {
 		t.Fatal("sent an empty message")
 	}
+
+	// After a restart the history still has the images, and their files are there.
+	e.c.Close()
+	c := e.open(t)
+	items, _ = c.Items(ctx, v.ID, 0)
+	var got []string
+	for _, it := range items {
+		if it.Kind == ItemUser {
+			var d UserData
+			it.Decode(&d)
+			got = append(got, d.Images...)
+		}
+	}
+	if len(got) != 3 {
+		t.Fatalf("images after restart: %v", got)
+	}
+	for _, p := range got {
+		if _, err := os.Stat(p); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 func writePNG(t *testing.T, path string, w, h int) {
