@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/tyler-builds/jamb/icons"
+	"github.com/tyler-builds/jamb/markdown"
 	"github.com/tyler-builds/jamb/ui"
 
 	"github.com/tyler-builds/solo/internal/core"
@@ -78,7 +79,12 @@ func pal(t *ui.Theme) palette {
 
 // Themes returns Solo's light and dark themes, built over jamb's so every widget picks them up.
 func Themes() (light, dark *ui.Theme) {
-	return buildTheme(ui.LightTheme(), lightPalette), buildTheme(ui.DarkTheme(), darkPalette)
+	light, dark = buildTheme(ui.LightTheme(), lightPalette), buildTheme(ui.DarkTheme(), darkPalette)
+	for _, t := range []*ui.Theme{light, dark} {
+		// Inline code is colored, without a box: a box per word reads as a row of chips.
+		ui.SetThemeStyle(t, markdown.Style{InlineCode: ui.Style{TextColor: t.Link, Background: t.Background}})
+	}
+	return light, dark
 }
 
 func buildTheme(t *ui.Theme, p palette) *ui.Theme {
@@ -174,7 +180,7 @@ func statusLabel(v core.ThreadView) string {
 		return "Needs answer"
 	case core.StatusIdle:
 		if v.IsWorker {
-			return "Ready for review"
+			return "Ready to merge"
 		}
 		return "Idle"
 	case core.StatusFailed:

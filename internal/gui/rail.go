@@ -21,7 +21,7 @@ var railGroups = []struct {
 }{
 	{"Needs you", []string{core.StatusWaiting}},
 	{"Failed", []string{core.StatusFailed}},
-	{"Ready for review", []string{core.StatusIdle}},
+	{"Ready to merge", []string{core.StatusIdle}},
 	{"Working", []string{core.StatusRunning, core.StatusStarting}},
 	{"Queued", []string{core.StatusQueued}},
 	{"Stopped", []string{core.StatusInterrupted}},
@@ -64,7 +64,11 @@ func (a *App) rail(ctx *ui.Context) ui.Element {
 	head := ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space4).Height(ui.Px(44)).Shrink(0).
 		Child(ui.Text(headTitle).FontSize(14).Semibold().Truncate().Grow(1).MinWidth(ui.Px(0)))
 	if need > 0 {
-		head = head.Child(ui.Text(fmt.Sprintf("%d need you", need)).FontSize(12).Medium().TextColor(t.Warning))
+		label := fmt.Sprintf("%d need you", need)
+		if need == 1 {
+			label = "1 needs you"
+		}
+		head = head.Child(ui.Text(label).FontSize(12).Medium().TextColor(t.Warning))
 	}
 	head = head.Child(subtle(ctx, fmt.Sprintf("%d open", len(open))))
 
@@ -155,14 +159,23 @@ func (a *App) threadRow(ctx *ui.Context, th core.ThreadView) ui.Element {
 			Child(statusMark(ctx, th.Status)).
 			Child(ui.Text(th.Title).FontSize(13).Medium().Truncate().Grow(1).MinWidth(ui.Px(0))).
 			Child(ui.Text(when).FontSize(11).TextColor(whenColor).NoWrap())).
-		Child(ui.Div().Row().Align(ui.Center).Gap(6).PaddingLeft(space5 + 2).MinWidth(ui.Px(0)).
-			Child(ui.Text(repo).FontSize(12).TextColor(t.TextSubtle).NoWrap()).
-			Child(ui.Text("·").FontSize(12).TextColor(t.TextSubtle)).
-			Child(ui.Text(line).FontSize(12).TextColor(lineColor).Truncate().Grow(1).MinWidth(ui.Px(0))))
+		Child(a.rowDetail(ctx, repo, line, lineColor))
 	if selected {
 		row = row.Background(t.SurfaceActive)
 	}
 	return row
+}
+
+// rowDetail is a rail row's second line: the repository (unless the list shows only one) and the
+// activity.
+func (a *App) rowDetail(ctx *ui.Context, repo, line string, c ui.Color) ui.Element {
+	t := ctx.Theme()
+	l := ui.Div().Row().Align(ui.Center).Gap(6).PaddingLeft(space5 + 2).MinWidth(ui.Px(0))
+	if a.repoFilter() == "" {
+		l = l.Child(ui.Text(repo).FontSize(12).TextColor(t.TextSubtle).NoWrap()).
+			Child(ui.Text("·").FontSize(12).TextColor(t.TextSubtle))
+	}
+	return l.Child(ui.Text(line).FontSize(12).TextColor(c).Truncate().Grow(1).MinWidth(ui.Px(0)))
 }
 
 func branchLabel(th core.ThreadView) string {

@@ -279,7 +279,7 @@ func (a *App) stepsView(ctx *ui.Context, steps []*core.Item) ui.Element {
 	return ui.Component(func(ctx *ui.Context) ui.Element {
 		t := ctx.Theme()
 		open := ui.Local(ctx, "open", false)
-		running, failed := false, false
+		running, failures := false, 0
 		latest := ""
 		tools := 0
 		for _, it := range steps {
@@ -290,7 +290,9 @@ func (a *App) stepsView(ctx *ui.Context, steps []*core.Item) ui.Element {
 			var d core.ToolData
 			it.Decode(&d)
 			running = running || !d.Done
-			failed = failed || d.IsError
+			if d.IsError {
+				failures++
+			}
 			_, verb, detail := a.describeTool(d)
 			latest = strings.TrimSpace(verb + " " + detail)
 		}
@@ -299,17 +301,24 @@ func (a *App) stepsView(ctx *ui.Context, steps []*core.Item) ui.Element {
 			state = ui.ProgressRing().Size(ui.RingSmall).Label("Running")
 		}
 		label := fmt.Sprintf("%d steps", len(steps))
+		labelColor := t.TextMuted
+		if failures > 0 {
+			label += fmt.Sprintf(" · %d failed", failures)
+			labelColor = t.Danger
+			if !running {
+				state = nil
+			}
+		}
 		head := ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space2).Height(ui.Px(28)).Radius(radiusS).
 			Cursor(ui.CursorPointer).Hover(ui.Style{Background: t.SurfaceHover}).
 			Role(access.RoleButton).Label(label).TabIndex(0).
 			OnClick(func() { open.Update(func(o bool) bool { return !o }) }).
 			Child(ui.Icon(map[bool]*icons.Icon{true: icons.ChevronDown, false: icons.ChevronRight}[open.Get()]).Size(14).Color(t.TextMuted)).
-			Child(ui.Text(label).FontSize(13).Medium().TextColor(t.TextMuted).NoWrap().Shrink(0)).
+			Child(ui.Text(label).FontSize(13).Medium().TextColor(labelColor).NoWrap().Shrink(0)).
 			Child(ui.Text(latest).FontSize(12).TextColor(t.TextSubtle).Truncate().Grow(1).MinWidth(ui.Px(0)))
-		if failed {
-			head = head.Child(ui.Icon(icons.CircleAlert).Size(13).Color(t.Danger))
+		if state != nil {
+			head = head.Child(state)
 		}
-		head = head.Child(state)
 		col := ui.Div().Column().Gap(2).Child(head)
 		if open.Get() {
 			inner := ui.Div().Column().Gap(2).PaddingLeft(space3).MarginLeft(space3).
@@ -575,7 +584,7 @@ func (a *App) proposalCard(ctx *ui.Context, d core.ProposalData) ui.Element {
 		Border(1, brand.Alpha(0.35)).
 		Child(ui.Div().Row().Align(ui.Center).Gap(space2).
 			Child(ui.Icon(icons.GitMerge).Size(16).Color(brand)).
-			Child(ui.Text("Ready to merge").FontSize(12).Semibold().TextColor(brand).NoWrap()).
+			Child(ui.Text("Merge proposed").FontSize(12).Semibold().TextColor(brand).NoWrap()).
 			Child(ui.Div().Grow(1)).
 			Child(subtle(ctx, meta).TruncateHead().MinWidth(ui.Px(0)))).
 		Child(subhead(d.Title).FontSize(14)).
@@ -667,7 +676,7 @@ func (a *App) askForm(ctx *ui.Context, threadID, toolUseID string, qs []agent.Qu
 			}
 		}
 		otherRow := ui.Div().Row().Align(ui.Center).Gap(space2).
-			Child(ui.TextInput(other).Placeholder("Or answer in your own words").Label("Your answer").Small().Width(ui.Full).
+			Child(ui.TextInput(other).Placeholder("Your answer").Label("Your answer").Small().Width(ui.Full).
 				OnSubmit(func(string) { sendOther() })).
 			Child(ui.Button("Send").Secondary().Small().Disabled(strings.TrimSpace(other.Get()) == "").OnClick(sendOther)).
 			Child(ui.Button("Skip").Ghost().Small().
@@ -711,6 +720,14 @@ func (a *App) questionStrip(ctx *ui.Context) ui.Element {
 // a question (those show in full above it): ready to merge, and failed.
 func (a *App) attentionBar(ctx *ui.Context) ui.Element {
 	t := ctx.Theme()
+	// A merge proposal among the last few messages is already in view; don't repeat it.
+	shown := map[string]bool{}
+	items := a.itemsOf(core.OrchestratorID).Get()
+	for i := len(items) - 1; i >= 0 && i >= len(items)-4; i-- {
+		if items[i].Kind == core.ItemProposal {
+			shown[items[i].Ref] = true
+		}
+	}
 	var ready, failed []core.ThreadView
 	for _, th := range a.threads.Get() {
 		if !th.IsWorker {
@@ -718,7 +735,7 @@ func (a *App) attentionBar(ctx *ui.Context) ui.Element {
 		}
 		switch th.Status {
 		case core.StatusIdle:
-			if th.CanMerge {
+			if th.CanMerge && !shown[th.ID] {
 				ready = append(ready, th)
 			}
 		case core.StatusFailed:
@@ -729,15 +746,16 @@ func (a *App) attentionBar(ctx *ui.Context) ui.Element {
 		return ui.Div()
 	}
 	pill := func(icon *icons.Icon, c ui.Color, text string, th core.ThreadView, tab string) ui.Element {
-		return ui.Div().Row().Align(ui.Center).Gap(6).PaddingX(space3).Height(ui.Px(28)).Radius(14).
+		return ui.Div().Row().Align(ui.Center).Gap(6).PaddingX(space3).Height(ui.Px(28)).Radius(14).Shrink(1).
+			MinWidth(ui.Px(0)).MaxWidth(ui.Px(360)).
 			Border(1, c.Alpha(0.35)).Background(c.Alpha(0.08)).Cursor(ui.CursorPointer).
 			Hover(ui.Style{Background: c.Alpha(0.16)}).
-			Role(access.RoleButton).Label(text).TabIndex(0).
+			Role(access.RoleButton).Label(text).TabIndex(0).Tooltip(text).
 			OnClick(func() { a.openThread(th.ID, tab) }).
 			Child(ui.Icon(icon).Size(13).Color(c)).
-			Child(ui.Text(text).FontSize(12).Medium())
+			Child(ui.Text(text).FontSize(12).Medium().Truncate().MinWidth(ui.Px(0)))
 	}
-	row := ui.Div().Row().Align(ui.Center).Gap(space2).Wrap()
+	row := ui.Div().Row().Align(ui.Center).Gap(space2).MinWidth(ui.Px(0))
 	if len(ready) > 0 {
 		text := ready[0].Title + " is ready to merge"
 		if len(ready) > 1 {
@@ -752,7 +770,8 @@ func (a *App) attentionBar(ctx *ui.Context) ui.Element {
 		}
 		row = row.Child(pill(icons.CircleAlert, t.Danger, text, failed[0], "conversation"))
 	}
-	return row.Child(ui.Div().Grow(1)).Child(ui.Kbd("Ctrl+J"))
+	return row.Child(ui.Div().Grow(1)).
+		Child(ui.Div().Shrink(0).Tooltip("Open the next thread that needs you").Child(ui.Kbd("Ctrl+J")))
 }
 
 // composer is a message box: Enter sends, Shift+Enter starts a new line.

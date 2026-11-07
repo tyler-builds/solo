@@ -77,15 +77,24 @@ func (a *App) threadPanel(ctx *ui.Context) ui.Element {
 		ctx.After(time.Second, func() { tick.Update(func(n int) int { return n + 1 }) })
 	}
 
+	// A narrow panel moves the change size into the meta line and keeps only Merge's icon.
+	narrow := a.panelWidth(ctx) < 560
+	stat := ui.Div().Row().Gap(6).
+		Child(ui.Text(fmt.Sprintf("+%d", added)).FontSize(12).Medium().TextColor(t.Success)).
+		Child(ui.Text(fmt.Sprintf("−%d", removed)).FontSize(12).Medium().TextColor(t.Danger))
 	actions := ui.Div().Row().Align(ui.Center).Gap(space1).Shrink(0)
-	if added+removed > 0 {
-		actions = actions.Child(ui.Div().Row().Gap(6).PaddingRight(space2).
-			Child(ui.Text(fmt.Sprintf("+%d", added)).FontSize(12).Medium().TextColor(t.Success)).
-			Child(ui.Text(fmt.Sprintf("−%d", removed)).FontSize(12).Medium().TextColor(t.Danger)))
+	if added+removed > 0 && !narrow {
+		actions = actions.Child(stat.PaddingRight(space2))
 	}
 	if th.CanMerge {
-		actions = actions.Child(ui.Button("Merge").Icon(icons.GitMerge).Primary().Small().
-			Tooltip("Merge " + th.Branch + " into " + th.BaseBranch).OnClick(func() { a.merge(id) }))
+		tip := "Merge " + th.Branch + " into " + th.BaseBranch
+		if narrow {
+			actions = actions.Child(ui.IconButton(icons.GitMerge).Primary().Small().Label("Merge").Tooltip(tip).
+				OnClick(func() { a.merge(id) }))
+		} else {
+			actions = actions.Child(ui.Button("Merge").Icon(icons.GitMerge).Primary().Small().Tooltip(tip).
+				OnClick(func() { a.merge(id) }))
+		}
 	}
 	if th.CanDiscard || th.CanInterrupt {
 		actions = actions.Child(ui.DropdownMenu(
@@ -127,6 +136,9 @@ func (a *App) threadPanel(ctx *ui.Context) ui.Element {
 		meta = meta.Child(ui.Div().Row().Align(ui.Center).Gap(space1).
 			Child(ui.Icon(icons.GitBranch).Size(12).Color(t.TextSubtle)).
 			Child(ui.Text(branchLabel(th) + " → " + th.BaseBranch).FontSize(12).TextColor(t.TextSubtle).NoWrap()))
+	}
+	if narrow && added+removed > 0 {
+		meta = meta.Child(stat)
 	}
 	if a.cfg.Get().ShowCosts && th.CostUSD > 0 {
 		meta = meta.Child(subtle(ctx, fmt.Sprintf("$%.2f", th.CostUSD)))
@@ -192,6 +204,15 @@ func (a *App) workingLine(ctx *ui.Context, th core.ThreadView) ui.Element {
 			Play("shimmer", []ui.Keyframe{{At: 0.5, Motion: ui.Fade().Opacity(0.55)}},
 				ui.Animation{Duration: 1600 * time.Millisecond, Repeat: true}).
 			Child(ui.Text(step).FontSize(12).TextColor(t.TextMuted).Truncate()))
+}
+
+// panelWidth estimates the thread panel's width from the window and the split's size.
+func (a *App) panelWidth(ctx *ui.Context) float32 {
+	w, _ := ctx.WindowSize()
+	if l := a.panelSize.Get(); l.Unit == ui.Px(0).Unit {
+		return l.Value
+	}
+	return (w-sidebarWidth)*a.panelGoal/100 - 44
 }
 
 func (a *App) composerFor(ctx *ui.Context, th core.ThreadView) ui.Element {
@@ -555,13 +576,15 @@ func diffView(ctx *ui.Context, stats []git.FileChange, files []*diffFile) ui.Ele
 					pairs = append(pairs, pair{f, i, i})
 					i++
 				default:
+					// A change block runs until the next unchanged line; its removed lines go left and
+					// its added lines right, in order, however they interleave.
 					var dels, adds []int
-					for i < len(f.lines) && f.lines[i].kind == '-' {
-						dels = append(dels, i)
-						i++
-					}
-					for i < len(f.lines) && f.lines[i].kind == '+' {
-						adds = append(adds, i)
+					for i < len(f.lines) && (f.lines[i].kind == '-' || f.lines[i].kind == '+') {
+						if f.lines[i].kind == '-' {
+							dels = append(dels, i)
+						} else {
+							adds = append(adds, i)
+						}
 						i++
 					}
 					for k := 0; k < max(len(dels), len(adds)); k++ {
