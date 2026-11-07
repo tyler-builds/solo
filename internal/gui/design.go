@@ -1,0 +1,255 @@
+package gui
+
+// Solo's design system, after uas (~/code/uas/internal/gui/design.go): neutral near-black or white
+// surfaces with hairline borders, and teal kept for the brand, primary actions and small status marks.
+// Pages use these tokens and components rather than raw sizes and colors.
+
+import (
+	"bytes"
+	"embed"
+	_ "embed"
+
+	"github.com/tyler-builds/jamb/ui"
+
+	"github.com/tyler-builds/solo/internal/core"
+)
+
+// Spacing scale, in logical pixels.
+const (
+	space1 = 4
+	space2 = 8
+	space3 = 12
+	space4 = 16
+	space5 = 20
+	space6 = 24
+	space8 = 32
+)
+
+// Corner radii.
+const (
+	radiusS  = 6  // buttons, inputs, chips
+	radiusM  = 8  // rows, tool lines
+	radiusL  = 10 // cards
+	radiusXL = 12 // the content panel
+)
+
+type palette struct {
+	dark bool
+
+	background, panel, surface, surfaceHover, surfaceActive string
+	border, borderStrong                                    string
+	text, textMuted, textSubtle                             string
+	accent, accentHover, accentActive, accentText, link     string
+	brand                                                   string
+	success, warning, danger, info                          string
+	scrollbar, scrim                                        string
+}
+
+var darkPalette = palette{
+	dark:       true,
+	background: "#0e0e10", panel: "#08080a", surface: "#19191d", surfaceHover: "#202025", surfaceActive: "#2a2a30",
+	border: "#222227", borderStrong: "#313137",
+	text: "#f2f2f4", textMuted: "#a9a9b3", textSubtle: "#75757f",
+	accent: "#14897e", accentHover: "#18978b", accentActive: "#117469", accentText: "#ffffff", link: "#7cc8bf",
+	brand:   "#2dd4bf",
+	success: "#3ecf8e", warning: "#f5b544", danger: "#f87171", info: "#7aa7ff",
+	scrollbar: "#2e2e34", scrim: "#000000b3",
+}
+
+var lightPalette = palette{
+	background: "#ffffff", panel: "#f5f5f6", surface: "#ffffff", surfaceHover: "#f6f6f8", surfaceActive: "#ececef",
+	border: "#e8e8ec", borderStrong: "#d8d8de",
+	text: "#0c0c0e", textMuted: "#5d5d66", textSubtle: "#9a9aa3",
+	accent: "#0f766e", accentHover: "#115e59", accentActive: "#134e4a", accentText: "#ffffff", link: "#0f766e",
+	brand:   "#0d9488",
+	success: "#15803d", warning: "#b45309", danger: "#dc2626", info: "#2459c7",
+	scrollbar: "#d0d0d6", scrim: "#0c0c0e59",
+}
+
+func pal(t *ui.Theme) palette {
+	if t.Dark {
+		return darkPalette
+	}
+	return lightPalette
+}
+
+// Themes returns Solo's light and dark themes, built over jamb's so every widget picks them up.
+func Themes() (light, dark *ui.Theme) {
+	return buildTheme(ui.LightTheme(), lightPalette), buildTheme(ui.DarkTheme(), darkPalette)
+}
+
+func buildTheme(t *ui.Theme, p palette) *ui.Theme {
+	h := ui.Hex
+	t.Name = "solo"
+	t.Background, t.Panel, t.Surface = h(p.background), h(p.panel), h(p.surface)
+	t.SurfaceHover, t.SurfaceActive = h(p.surfaceHover), h(p.surfaceActive)
+	t.Border, t.BorderStrong = h(p.border), h(p.borderStrong)
+	t.Text, t.TextMuted, t.TextSubtle, t.Disabled = h(p.text), h(p.textMuted), h(p.textSubtle), h(p.textSubtle)
+	t.Accent, t.AccentHover, t.AccentActive = h(p.accent), h(p.accentHover), h(p.accentActive)
+	t.AccentText, t.Link, t.FocusRing = h(p.accentText), h(p.link), h(p.link)
+	t.AccentSoft = h(p.text).Alpha(0.08)
+	t.Success, t.Warning, t.Danger = h(p.success), h(p.warning), h(p.danger)
+	t.Scrollbar, t.Scrim = h(p.scrollbar), h(p.scrim)
+	t.Radius, t.FontSize = radiusS, 13
+
+	t.Sidebar = ui.SidebarStyle{
+		Pane: ui.Style{Background: h(p.panel), BorderColor: h(p.panel), Padding: ui.All(space2)},
+		Item: ui.Style{Radius: radiusS, FontSize: 13, MinHeight: ui.Px(30), TextColor: h(p.textMuted),
+			Padding: ui.XY(space2+2, 0), Gap: space2 + 2},
+		ItemHover:    ui.Style{Background: h(p.surfaceHover), TextColor: h(p.text)},
+		ItemSelected: ui.Style{Background: h(p.surfaceActive), TextColor: h(p.text), FontWeight: ui.FontMedium},
+		Heading: ui.Style{TextColor: h(p.textSubtle), FontSize: 11, FontWeight: ui.FontMedium,
+			Padding: ui.Edges{Top: space4, Right: 10, Bottom: space1, Left: 10}},
+	}
+	t.Button = ui.ButtonStyle{Root: ui.Style{FontWeight: ui.FontMedium}}
+	t.Buttons.Primary = ui.ButtonStyle{Root: ui.Style{FontWeight: ui.FontMedium}}
+	t.Badge = ui.BadgeStyle{Badge: ui.Style{Background: h(p.surfaceActive)},
+		Label: ui.Style{TextColor: h(p.textMuted), FontWeight: ui.FontMedium}}
+	t.Buttons.Secondary = ui.ButtonStyle{
+		Root:      ui.Style{Background: h(p.surface), BorderColor: h(p.borderStrong)},
+		RootHover: ui.Style{Background: h(p.surfaceHover), BorderColor: h(p.borderStrong)},
+	}
+	t.Field = ui.FieldStyle{
+		Frame:            ui.Style{Background: h(p.surface), BorderColor: h(p.border)},
+		FrameHover:       ui.Style{BorderColor: h(p.borderStrong)},
+		FrameFocusWithin: ui.Style{BorderColor: h(p.textSubtle)},
+		Selection:        ui.Style{Background: h(p.link).Alpha(0.35)},
+	}
+	t.Card = ui.CardStyle{
+		Card: ui.Style{Radius: radiusL, Padding: ui.All(space4), Gap: space3, Background: h(p.surface),
+			BorderWidth: 1, BorderColor: h(p.border)},
+		CardHover: ui.Style{Background: h(p.surfaceHover), BorderColor: h(p.borderStrong), Cursor: ui.CursorPointer},
+	}
+	return t
+}
+
+// Type scale.
+func title(s string) *ui.TextElement   { return ui.Text(s).FontSize(22).Semibold() }
+func heading(s string) *ui.TextElement { return ui.Text(s).FontSize(15).Semibold() }
+func subhead(s string) *ui.TextElement { return ui.Text(s).FontSize(13).Medium() }
+
+func muted(ctx *ui.Context, s string) *ui.TextElement {
+	return ui.Text(s).FontSize(13).TextColor(ctx.Theme().TextMuted)
+}
+
+func caption(ctx *ui.Context, s string) *ui.TextElement {
+	return ui.Text(s).FontSize(12).TextColor(ctx.Theme().TextMuted)
+}
+
+func subtle(ctx *ui.Context, s string) *ui.TextElement {
+	return ui.Text(s).FontSize(12).TextColor(ctx.Theme().TextSubtle)
+}
+
+// statusColor is the color of a thread status's mark.
+func statusColor(ctx *ui.Context, status string) ui.Color {
+	t := ctx.Theme()
+	switch status {
+	case core.StatusRunning, core.StatusStarting:
+		return ui.Hex(pal(t).brand)
+	case core.StatusWaiting:
+		return t.Warning
+	case core.StatusIdle:
+		return t.Success
+	case core.StatusFailed:
+		return t.Danger
+	case core.StatusMerged:
+		return ui.Hex(pal(t).info)
+	}
+	return t.TextSubtle
+}
+
+// statusLabel is a status as shown to the user.
+func statusLabel(v core.ThreadView) string {
+	switch v.Status {
+	case core.StatusQueued:
+		return "Queued"
+	case core.StatusStarting:
+		return "Starting"
+	case core.StatusRunning:
+		return "Working"
+	case core.StatusWaiting:
+		return "Needs answer"
+	case core.StatusIdle:
+		if v.IsWorker {
+			return "Ready for review"
+		}
+		return "Idle"
+	case core.StatusFailed:
+		return "Failed"
+	case core.StatusInterrupted:
+		return "Stopped"
+	case core.StatusMerged:
+		return "Merged"
+	case core.StatusDiscarded:
+		return "Discarded"
+	}
+	return v.Status
+}
+
+// dot is a small round status mark.
+func dot(c ui.Color, size float32) *ui.DivElement {
+	return ui.Div().Size(ui.Px(size), ui.Px(size)).Radius(size / 2).Background(c).Shrink(0)
+}
+
+// statusPill is a status in a tinted pill with a dot.
+func statusPill(ctx *ui.Context, v core.ThreadView) ui.Element {
+	c := statusColor(ctx, v.Status)
+	return ui.Div().Row().Align(ui.Center).Gap(6).PaddingX(10).Height(ui.Px(22)).Radius(11).Shrink(0).
+		Background(c.Alpha(0.14)).
+		Child(dot(c, 6)).
+		Child(ui.Text(statusLabel(v)).FontSize(12).Semibold().TextColor(c))
+}
+
+// chip is a quiet rounded tag.
+func chip(ctx *ui.Context, label string) *ui.DivElement {
+	t := ctx.Theme()
+	return ui.Div().Row().Align(ui.Center).PaddingX(space2).Height(ui.Px(22)).Radius(radiusS).
+		Border(1, t.Border).Background(t.Surface).Shrink(0).
+		Child(ui.Text(label).FontSize(12).TextColor(t.TextMuted).NoWrap())
+}
+
+// The Solo logo: an orchestrator node and three workers on a teal tile. brand/solo.svg is also the
+// desktop icon, which keeps a margin around the tile; in the app the tile fills the box.
+//
+//go:embed brand/solo.svg
+var logoSVG []byte
+
+var logo = ui.MustSVG(bytes.Replace(logoSVG, []byte(`viewBox="0 0 128 128"`), []byte(`viewBox="8 8 112 112"`), 1))
+
+func brandMark(size float32) ui.Element {
+	return ui.SVG(logo).Size(ui.Px(size), ui.Px(size)).Alt("Solo")
+}
+
+// The UI font is Inter (SIL Open Font License; see fonts/OFL.txt), bundled so the app looks the same on
+// every desktop.
+//
+//go:embed fonts/*.ttf
+var fontFiles embed.FS
+
+// Font is a bundled font face.
+type Font struct {
+	Weight ui.FontWeight
+	Data   []byte
+}
+
+// Fonts returns the faces of the UI font, for the app to register as its UI family.
+func Fonts() []Font {
+	faces := []struct {
+		file   string
+		weight ui.FontWeight
+	}{
+		{"Inter-Regular.ttf", ui.FontRegular},
+		{"Inter-Medium.ttf", ui.FontMedium},
+		{"Inter-SemiBold.ttf", ui.FontSemibold},
+		{"Inter-Bold.ttf", ui.FontBold},
+	}
+	out := make([]Font, 0, len(faces))
+	for _, f := range faces {
+		data, err := fontFiles.ReadFile("fonts/" + f.file)
+		if err != nil {
+			panic(err)
+		}
+		out = append(out, Font{f.weight, data})
+	}
+	return out
+}
