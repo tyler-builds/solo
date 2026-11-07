@@ -751,13 +751,14 @@ func (a *App) proposalCard(ctx *ui.Context, d core.ProposalData, steps []*core.I
 			if len(steps) == 1 {
 				label = "1 action"
 			}
+			tip := label + " Solo took on this thread"
 			if a.chatWidth(ctx) < 640 {
 				label = fmt.Sprint(len(steps)) // narrow: the count alone, with its tooltip
 			}
 			actions = actions.Child(ui.Div().Grow(1)).
 				Child(ui.Div().Row().Align(ui.Center).Gap(space1).PaddingX(space2).Height(ui.Px(24)).Radius(radiusS).
 					Cursor(ui.CursorPointer).Hover(ui.Style{Background: t.SurfaceHover}).
-					Role(access.RoleButton).Label("Show what Solo did").TabIndex(0).Shrink(0).Tooltip("What Solo did").
+					Role(access.RoleButton).Label("Show " + tip).TabIndex(0).Shrink(0).Tooltip(tip).
 					OnClick(func() { open.Update(func(o bool) bool { return !o }) }).
 					Child(ui.Text(label).FontSize(12).TextColor(t.TextSubtle).NoWrap()).
 					Child(ui.Icon(map[bool]*icons.Icon{true: icons.ChevronDown, false: icons.ChevronRight}[open.Get()]).Size(12).Color(t.TextSubtle)))
