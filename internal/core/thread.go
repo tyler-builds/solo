@@ -355,32 +355,46 @@ func (c *Core) send(ctx context.Context, threadID, text string, synthetic bool, 
 	}
 	needOpen := !t.opened
 	row := t.row
+	// Record the message and the running state before Claude can answer, so a fast reply never lands
+	// ahead of the message or leaves the thread marked running after its turn ended.
+	uuid := agent.NewUUID()
+	data, _ := json.Marshal(UserData{Text: text, Synthetic: synthetic, From: from})
+	if err := c.db.AddItem(&store.Item{ThreadID: threadID, Kind: ItemUser, TurnUUID: uuid, Data: data, CreatedAt: now()}); err != nil {
+		c.mu.Unlock()
+		return err
+	}
+	prev := t.row.Status
+	var ch Change
+	if prev != StatusRunning && prev != StatusWaiting {
+		ch = c.setStatusLocked(t, StatusRunning, "")
+	}
 	c.mu.Unlock()
-	params := c.openParams(row)
+	c.notify(Change{Kind: ChangeItems, ThreadID: threadID}, ch)
 
+	fail := func(err error) error {
+		c.mu.Lock()
+		var back Change
+		if t.row.Status == StatusRunning && !t.inTurn {
+			back = c.setStatusLocked(t, prev, t.row.Error)
+		}
+		c.mu.Unlock()
+		c.notify(back)
+		c.addNotice(threadID, "error", "The message was not delivered: "+err.Error())
+		return err
+	}
+	params := c.openParams(row)
 	if needOpen {
 		if err := c.agent.Open(ctx, params); err != nil {
-			return err
+			return fail(err)
 		}
 		c.mu.Lock()
 		t.opened = true
 		c.mu.Unlock()
 	}
-	uuid, err := c.agent.Send(ctx, params.SessionID, text, synthetic)
-	if err != nil {
-		return err
+	if err := c.agent.SendUUID(ctx, params.SessionID, uuid, text, synthetic); err != nil {
+		return fail(err)
 	}
-	data, _ := json.Marshal(UserData{Text: text, Synthetic: synthetic, From: from})
-	c.mu.Lock()
-	it := &store.Item{ThreadID: threadID, Kind: ItemUser, TurnUUID: uuid, Data: data, CreatedAt: now()}
-	err = c.db.AddItem(it)
-	var ch Change
-	if t.row.Status != StatusRunning && t.row.Status != StatusWaiting {
-		ch = c.setStatusLocked(t, StatusRunning, "")
-	}
-	c.mu.Unlock()
-	c.notify(Change{Kind: ChangeItems, ThreadID: threadID}, ch)
-	return err
+	return nil
 }
 
 // Interrupt stops a thread's running turn.

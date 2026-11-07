@@ -195,6 +195,11 @@ func (m *Manager) ensureOpen(ctx context.Context, id string) error {
 // running turn.
 func (m *Manager) Send(ctx context.Context, sessionID, text string, synthetic bool) (string, error) {
 	uuid := NewUUID()
+	return uuid, m.SendUUID(ctx, sessionID, uuid, text, synthetic)
+}
+
+// SendUUID is Send with a uuid the caller chose, so it can record the message before Claude answers.
+func (m *Manager) SendUUID(ctx context.Context, sessionID, uuid, text string, synthetic bool) error {
 	// A session whose process exited (or whose sidecar died) reopens here, with resume. Retry once if the
 	// sidecar dies between the open and the send.
 	var err error
@@ -208,7 +213,7 @@ func (m *Manager) Send(ctx context.Context, sessionID, text string, synthetic bo
 		}
 		err = sc.call(ctx, "session.send", SendParams{SessionID: sessionID, UUID: uuid, Text: text, Synthetic: synthetic}, nil)
 		if err == nil {
-			return uuid, nil
+			return nil
 		}
 		var rpcErr *RPCError
 		if errors.As(err, &rpcErr) && rpcErr.Code == -32001 { // the sidecar lost the session: reopen it
@@ -220,10 +225,10 @@ func (m *Manager) Send(ctx context.Context, sessionID, text string, synthetic bo
 			continue
 		}
 		if !errors.Is(err, ErrClosed) {
-			return "", err
+			return err
 		}
 	}
-	return "", err
+	return err
 }
 
 // Interrupt stops the session's running turn. The turn ends with status "interrupted".
