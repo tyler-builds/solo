@@ -73,6 +73,7 @@ func run() error {
 		DarkTheme:  dark,
 		Root:       g.Root,
 		Bindings:   gui.Bindings(),
+		Chrome:     app.ChromeCustom, // Solo draws its own title bar
 	})
 	return nil
 }

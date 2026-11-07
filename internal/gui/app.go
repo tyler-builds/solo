@@ -10,7 +10,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/tyler-builds/jamb/access"
 	"github.com/tyler-builds/jamb/icons"
+	"github.com/tyler-builds/jamb/input"
 	"github.com/tyler-builds/jamb/ui"
 
 	"github.com/tyler-builds/solo/internal/agent"
@@ -228,16 +230,42 @@ func (a *App) Root(ctx *ui.Context) ui.Element {
 	}
 	a.mu.Unlock()
 	t := ctx.Theme()
-	return ui.Div().Row().Size(ui.Full, ui.Full).Background(t.Panel).TextColor(t.Text).
+	root := ui.Div().Column().Size(ui.Full, ui.Full).Background(t.Panel).TextColor(t.Text).
 		OnAction(nextAction, a.nextAttention).
-		OnAction(paletteAction, func() { a.palette.Set(true) }).
-		Child(a.sidebar(ctx)).
-		Child(ui.Div().Column().Grow(1).Basis(ui.Px(0)).MinWidth(ui.Px(0)).Height(ui.Full).ClipContent().
-			Child(ui.Component(a.center))).
+		OnAction(paletteAction, func() { a.palette.Set(true) })
+	for i, act := range jumpActions {
+		n := i
+		root = root.OnAction(act, func() { a.jumpTo(n) })
+	}
+	return root.
+		Child(a.titleBar(ctx)).
+		Child(ui.Div().Row().Grow(1).MinHeight(ui.Px(0)).
+			Child(a.sidebar(ctx)).
+			Child(ui.Div().Column().Grow(1).Basis(ui.Px(0)).MinWidth(ui.Px(0)).Height(ui.Full).ClipContent().
+				Child(ui.Component(a.center)))).
 		Child(ui.Component(a.settingsDialog)).
 		Child(ui.Component(a.confirmDialog)).
 		Child(ui.CommandPalette(a.palette).ItemsOnly().Placeholder("Go to a thread").Items(a.paletteItems)).
 		Child(ui.Toaster().Key("toaster"))
+}
+
+// titleBar is the window's own title bar: the Solo mark, a "go to a thread" box in the middle, and the
+// window's buttons.
+func (a *App) titleBar(ctx *ui.Context) ui.Element {
+	t := ctx.Theme()
+	find := ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space3).Height(ui.Px(26)).Width(ui.Px(320)).
+		Radius(radiusS).Border(1, t.Border).Background(t.Background).Cursor(ui.CursorPointer).
+		Hover(ui.Style{BorderColor: t.BorderStrong}).
+		Role(access.RoleButton).Label("Go to a thread").TabIndex(0).
+		OnClick(func() { a.palette.Set(true) }).
+		Child(ui.Icon(icons.Search).Size(13).Color(t.TextSubtle)).
+		Child(ui.Text("Go to a thread").FontSize(12).TextColor(t.TextSubtle).Grow(1)).
+		Child(ui.Kbd("Ctrl+K"))
+	return ui.TitleBar().Height(ui.Px(40)).
+		Child(ui.Div().Row().Align(ui.Center).Gap(space2).PaddingLeft(space4).
+			Child(brandMark(18)).
+			Child(ui.Text("Solo").FontSize(13).Semibold())).
+		Center(find)
 }
 
 // inset is a content panel: rounded, a step off the window background, with a hairline border.
@@ -253,22 +281,29 @@ func inset(ctx *ui.Context, content ui.Element) *ui.DivElement {
 // slides the panel back into the rail.
 func (a *App) center(ctx *ui.Context) ui.Element {
 	t := ctx.Theme()
-	orch := ui.Div().Column().Size(ui.Full, ui.Full).PaddingY(space2).
+	orch := ui.Div().Column().Size(ui.Full, ui.Full).PaddingBottom(space2).
 		Child(inset(ctx, ui.Component(a.orchestratorView)))
 	anim := a.panelAnim.Get()
 	open := a.openID.Get() != ""
 
 	var right ui.Element
 	if open {
-		right = ui.Div().Column().Size(ui.Full, ui.Full).PaddingY(space2).PaddingRight(space2).
-			Child(inset(ctx, ui.Component(a.threadPanel)))
+		right = ui.Div().Row().Size(ui.Full, ui.Full).PaddingBottom(space2).
+			OnKeyDown(func(e *ui.KeyEvent) {
+				if e.Key == input.KeyEscape {
+					e.StopPropagation()
+					a.closeThread()
+				}
+			}).
+			Child(inset(ctx, ui.Component(a.threadPanel))).
+			Child(ui.Component(a.dotStrip))
 	} else {
 		right = ui.Component(a.rail)
 	}
 	pane := ui.Pane(right).Key("right").Label("Threads")
 	switch {
 	case anim >= 1:
-		pane = pane.SizeSignal(a.panelSize).Min(ui.Px(360)).Max(ui.Percent(75))
+		pane = pane.SizeSignal(a.panelSize).Min(ui.Px(400)).Max(ui.Percent(75))
 	case anim <= 0:
 		pane = pane.Size(ui.Px(railWidth)).Min(ui.Px(railWidth)).Max(ui.Px(railWidth))
 	default:
@@ -372,9 +407,6 @@ func (a *App) sidebar(ctx *ui.Context) ui.Element {
 		items = append(items, ui.SidebarItem{Key: "repo:" + r, Label: filepath.Base(r), Icon: icons.FolderGit2, Badge: open[r]})
 	}
 	sb := ui.Sidebar(a.navSel, items...).Label("Repositories").Width(ui.Px(sidebarWidth)).NoIndicator().
-		Header(ui.Div().Row().Align(ui.Center).Gap(space2 + 2).PaddingX(space2).PaddingTop(space2).PaddingBottom(space3).
-			Child(brandMark(24)).
-			Child(ui.Text("Solo").FontSize(15).Semibold())).
 		Footer(a.sidebarFooter(ctx))
 	if len(repos) == 0 {
 		sb = sb.Footer(ui.Div().Column().Gap(space3).
@@ -431,7 +463,11 @@ var (
 
 // Bindings are the app's keyboard shortcuts.
 func Bindings() []ui.Binding {
-	return []ui.Binding{ui.Bind("ctrl+j", nextAction), ui.Bind("ctrl+k", paletteAction)}
+	b := []ui.Binding{ui.Bind("ctrl+j", nextAction), ui.Bind("ctrl+k", paletteAction)}
+	for i, act := range jumpActions {
+		b = append(b, ui.Bind(fmt.Sprintf("ctrl+%d", i+1), act))
+	}
+	return b
 }
 
 // nextAttention opens the next thread that needs the user: questions first, then failures, then work
@@ -480,4 +516,68 @@ func (a *App) paletteItems(query string) []ui.PaletteItem {
 	}
 	out = append(out, ui.PaletteItem{Key: "settings", Label: "Settings", Icon: icons.Settings, Run: func() { a.settings.Set(true) }})
 	return out
+}
+
+var jumpActions = func() []*ui.Action {
+	var out []*ui.Action
+	for i := 1; i <= 9; i++ {
+		out = append(out, ui.NewAction(fmt.Sprintf("solo.jump%d", i), fmt.Sprintf("Open thread %d", i)).Hide())
+	}
+	return out
+}()
+
+// openThreads lists the open worker threads in the rail's order: by group, newest first in each.
+func (a *App) openThreads(track bool) []core.ThreadView {
+	threads := a.threads.Peek()
+	if track {
+		threads = a.threads.Get()
+	}
+	filter := a.repoFilter()
+	var out []core.ThreadView
+	for _, g := range railGroups {
+		var group []core.ThreadView
+		for _, th := range threads {
+			if th.IsWorker && slices.Contains(g.statuses, th.Status) && (filter == "" || th.RepoPath == filter) {
+				group = append(group, th)
+			}
+		}
+		slices.SortStableFunc(group, func(x, y core.ThreadView) int { return y.UpdatedAt.Compare(x.UpdatedAt) })
+		out = append(out, group...)
+	}
+	return out
+}
+
+// jumpTo opens the nth open thread (Ctrl+1 … Ctrl+9).
+func (a *App) jumpTo(n int) {
+	if list := a.openThreads(false); n < len(list) {
+		a.openThread(list[n].ID, "conversation")
+	}
+}
+
+// dotStrip keeps the threads in reach while one is open: a mark per thread to switch to it, and a
+// button back to the list.
+func (a *App) dotStrip(ctx *ui.Context) ui.Element {
+	t := ctx.Theme()
+	col := ui.Div().Column().Align(ui.Center).Gap(space1).Width(ui.Px(44)).Shrink(0).PaddingTop(space1).
+		Child(ui.IconButton(icons.PanelRightClose).Ghost().Small().Label("Back to the thread list").
+			Tooltip("Back to the thread list (Esc)").OnClick(a.closeThread)).
+		Child(ui.Div().Width(ui.Px(20)).Height(ui.Px(1)).Background(t.Border).MarginY(space1))
+	open := a.openID.Get()
+	for i, th := range a.openThreads(true) {
+		id := th.ID
+		tip := th.Title + " · " + statusLabel(th)
+		if i < 9 {
+			tip += fmt.Sprintf(" (Ctrl+%d)", i+1)
+		}
+		b := ui.Div().Size(ui.Px(32), ui.Px(32)).Center().Radius(radiusM).Cursor(ui.CursorPointer).
+			Hover(ui.Style{Background: t.SurfaceHover}).
+			Role(access.RoleButton).Label(th.Title).TabIndex(0).Tooltip(tip).Key("dot-" + id).
+			OnClick(func() { a.openThread(id, "conversation") }).
+			Child(statusMark(ctx, th.Status))
+		if id == open {
+			b = b.Background(t.SurfaceActive)
+		}
+		col = col.Child(b)
+	}
+	return col
 }

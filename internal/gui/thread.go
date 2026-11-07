@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/tyler-builds/jamb/access"
 	"github.com/tyler-builds/jamb/codeedit/highlight"
@@ -134,7 +135,8 @@ func (a *App) threadPanel(ctx *ui.Context) ui.Element {
 		Child(ui.Div().Column().Gap(space1).Grow(1).MinWidth(ui.Px(0)).
 			Child(ui.Div().Row().Align(ui.Center).Gap(space2).MinWidth(ui.Px(0)).
 				Child(statusMark(ctx, th.Status)).
-				Child(ui.Text(th.Title).FontSize(14).Semibold().Truncate().MinWidth(ui.Px(0)))).
+				Child(ui.Div().MinWidth(ui.Px(0)).Tooltip(th.Title).
+					Child(ui.Text(th.Title).FontSize(14).Semibold().Truncate()))).
 			Child(ui.Div().PaddingLeft(space5 + 2).Child(meta))).
 		Child(actions)
 	changesLabel := "Changes"
@@ -155,13 +157,41 @@ func (a *App) threadPanel(ctx *ui.Context) ui.Element {
 		items := a.itemsOf(id).Get()
 		content = ui.Div().Column().Grow(1).MinHeight(ui.Px(0)).
 			Child(a.transcript(ctx, th, items, "thread-"+id)).
-			Child(ui.Div().Column().PaddingX(space4).PaddingBottom(space4).Shrink(0).
+			Child(ui.Div().Column().Gap(space2).PaddingX(space4).PaddingBottom(space4).Shrink(0).
+				Child(a.workingLine(ctx, th)).
 				Child(a.composerFor(ctx, th)))
 	}
 	return ui.Div().Column().Size(ui.Full, ui.Full).Key("thread-panel-" + id).
 		Child(header).
 		Child(tabs).
 		Child(ui.Div().Column().Grow(1).MinHeight(ui.Px(0)).Child(content))
+}
+
+// workingLine is pinned above a working thread's composer: how long it has worked, and its step.
+func (a *App) workingLine(ctx *ui.Context, th core.ThreadView) ui.Element {
+	if !th.InTurn {
+		return ui.Div()
+	}
+	t := ctx.Theme()
+	brand := ui.Hex(pal(t).brand)
+	text := "Working"
+	if !th.TurnStarted.IsZero() {
+		text += " · " + elapsed(th.TurnStarted)
+	}
+	step := "Thinking"
+	if th.Step != nil {
+		step = a.stepLabel(*th.Step)
+	} else if th.Retry != "" {
+		step = th.Retry
+	}
+	return ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space3).Height(ui.Px(30)).Radius(radiusM).
+		Background(brand.Alpha(0.07)).
+		Child(statusMark(ctx, core.StatusRunning)).
+		Child(ui.Text(text).FontSize(12).Semibold().TextColor(brand).NoWrap()).
+		Child(ui.Div().Grow(1).MinWidth(ui.Px(0)).
+			Play("shimmer", []ui.Keyframe{{At: 0.5, Motion: ui.Fade().Opacity(0.55)}},
+				ui.Animation{Duration: 1600 * time.Millisecond, Repeat: true}).
+			Child(ui.Text(step).FontSize(12).TextColor(t.TextMuted).Truncate()))
 }
 
 func (a *App) composerFor(ctx *ui.Context, th core.ThreadView) ui.Element {
@@ -205,6 +235,8 @@ type diffLine struct {
 	kind     byte // ' ', '+', '-', '@'
 	old, new int  // line numbers; 0 when not on that side
 	text     string
+	// wordStart and wordEnd mark the part of a changed line that differs from its counterpart.
+	wordStart, wordEnd int
 }
 
 type span struct {
@@ -265,9 +297,62 @@ func parseDiff(diff string) []*diffFile {
 		}
 	}
 	for _, f := range files {
+		f.pairWords()
 		f.colorize()
 	}
 	return files
+}
+
+// pairWords marks, in each removed line and the added line that replaces it, the part that changed:
+// the text between their common prefix and suffix.
+func (f *diffFile) pairWords() {
+	for i := 0; i < len(f.lines); {
+		if f.lines[i].kind != '-' {
+			i++
+			continue
+		}
+		dels := i
+		for i < len(f.lines) && f.lines[i].kind == '-' {
+			i++
+		}
+		adds := i
+		for i < len(f.lines) && f.lines[i].kind == '+' {
+			i++
+		}
+		for k := 0; dels+k < adds && adds+k < i; k++ {
+			d, a := &f.lines[dels+k], &f.lines[adds+k]
+			p := commonPrefix(d.text, a.text)
+			q := commonSuffix(d.text[p:], a.text[p:])
+			// Only mark a real edit inside the line, not a line rewritten from scratch.
+			if p+q == 0 {
+				continue
+			}
+			d.wordStart, d.wordEnd = p, len(d.text)-q
+			a.wordStart, a.wordEnd = p, len(a.text)-q
+		}
+	}
+}
+
+func commonPrefix(a, b string) int {
+	n := 0
+	for n < len(a) && n < len(b) && a[n] == b[n] {
+		n++
+	}
+	for n > 0 && n < len(a) && !utf8.RuneStart(a[n]) {
+		n--
+	}
+	return n
+}
+
+func commonSuffix(a, b string) int {
+	n := 0
+	for n < len(a) && n < len(b) && a[len(a)-1-n] == b[len(b)-1-n] {
+		n++
+	}
+	for n > 0 && n < len(a) && !utf8.RuneStart(a[len(a)-n]) {
+		n--
+	}
+	return n
 }
 
 func hunkStart(s string) int {
@@ -334,6 +419,7 @@ func diffView(ctx *ui.Context, stats []git.FileChange, files []*diffFile) ui.Ele
 	folded := ui.Local(ctx, "folded", map[string]bool{})
 	h := ui.Local(ctx, "list", ui.NewListHandle()).Peek()
 	fold := folded.Get()
+	split := diffSplit
 
 	type rowRef struct {
 		file *diffFile
@@ -383,58 +469,154 @@ func diffView(ctx *ui.Context, stats []git.FileChange, files []*diffFile) ui.Ele
 			Child(ui.Text(s).Mono().FontSize(11).TextColor(t.TextSubtle))
 	}
 	addBg, delBg := t.Success.Alpha(0.10), t.Danger.Alpha(0.10)
-	body := ui.UniformList(len(rows), func(i int) ui.Element {
-		r := rows[i]
-		f := r.file
-		if r.line < 0 {
-			path := f.path
-			return ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space3).Height(ui.Px(diffRow)).
-				Background(t.SurfaceActive).Cursor(ui.CursorPointer).
-				Role(access.RoleButton).Label(path).TabIndex(0).
-				OnClick(func() {
-					next := map[string]bool{}
-					for k, v := range folded.Peek() {
-						next[k] = v
-					}
-					next[path] = !next[path]
-					folded.Set(next)
-				}).
-				Child(ui.Icon(map[bool]*icons.Icon{true: icons.ChevronRight, false: icons.ChevronDown}[fold[path]]).Size(13).Color(t.TextMuted)).
-				Child(ui.Text(path).Mono().FontSize(12).Semibold().TruncateHead().Grow(1).MinWidth(ui.Px(0))).
-				Child(ui.Text(fmt.Sprintf("+%d", f.add)).Mono().FontSize(11).TextColor(t.Success)).
-				Child(ui.Text(fmt.Sprintf("−%d", f.del)).Mono().FontSize(11).TextColor(t.Danger))
-		}
-		l := f.lines[r.line]
-		row := ui.Div().Row().Align(ui.Center).Height(ui.Px(diffRow))
-		if l.kind == '@' {
-			return row.Background(t.Surface).PaddingLeft(96).
-				Child(ui.Text(l.text).Mono().FontSize(11).TextColor(t.TextSubtle).NoWrap())
-		}
-		sign, signColor := " ", t.TextSubtle
-		switch l.kind {
-		case '+':
-			row, sign, signColor = row.Background(addBg), "+", t.Success
-		case '-':
-			row, sign, signColor = row.Background(delBg), "−", t.Danger
-		}
+	addWord, delWord := t.Success.Alpha(0.30), t.Danger.Alpha(0.30)
+	// lineText is a line's code, colored by syntax, with its changed part marked.
+	lineText := func(f *diffFile, i int) *ui.TextElement {
+		l := f.lines[i]
 		txt := ui.Text(l.text).Mono().FontSize(12).NoWrap().TextColor(t.Text)
-		for _, s := range f.colors[r.line] {
-			if _, st, ok := highlight.Closest(t.Syntax, s.capture); ok && s.end <= len(l.text) {
-				txt = txt.Highlight(s.start, s.end, ui.Highlight{Color: st.Color})
+		for _, sp := range f.colors[i] {
+			if _, st, ok := highlight.Closest(t.Syntax, sp.capture); ok && sp.end <= len(l.text) {
+				txt = txt.Highlight(sp.start, sp.end, ui.Highlight{Color: st.Color})
 			}
 		}
-		return row.
-			Child(gutter(l.old)).
-			Child(gutter(l.new)).
-			Child(ui.Div().Width(ui.Px(16)).Shrink(0).Child(ui.Text(sign).Mono().FontSize(12).TextColor(signColor))).
-			Child(txt)
-	}).Handle(h).Style(ui.Style{Grow: 1}).Label("Diff")
+		if l.wordEnd > l.wordStart {
+			bg := addWord
+			if l.kind == '-' {
+				bg = delWord
+			}
+			txt = txt.Highlight(l.wordStart, l.wordEnd, ui.Highlight{Background: bg})
+		}
+		return txt
+	}
+	fileHeader := func(f *diffFile) ui.Element {
+		path := f.path
+		return ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space3).Height(ui.Px(diffRow)).
+			Background(t.SurfaceActive).Cursor(ui.CursorPointer).
+			Role(access.RoleButton).Label(path).TabIndex(0).
+			OnClick(func() {
+				next := map[string]bool{}
+				for k, v := range folded.Peek() {
+					next[k] = v
+				}
+				next[path] = !next[path]
+				folded.Set(next)
+			}).
+			Child(ui.Icon(map[bool]*icons.Icon{true: icons.ChevronRight, false: icons.ChevronDown}[fold[path]]).Size(13).Color(t.TextMuted)).
+			Child(ui.Text(path).Mono().FontSize(12).Semibold().TruncateHead().Grow(1).MinWidth(ui.Px(0))).
+			Child(ui.Text(fmt.Sprintf("+%d", f.add)).Mono().FontSize(11).TextColor(t.Success)).
+			Child(ui.Text(fmt.Sprintf("−%d", f.del)).Mono().FontSize(11).TextColor(t.Danger))
+	}
+	hunk := func(text string, indent float32) ui.Element {
+		return ui.Div().Row().Align(ui.Center).Height(ui.Px(diffRow)).Background(t.Surface).PaddingLeft(indent).
+			Child(ui.Text(text).Mono().FontSize(11).TextColor(t.TextSubtle).NoWrap())
+	}
+
+	var body ui.Element
+	if !split.Get() {
+		body = ui.UniformList(len(rows), func(i int) ui.Element {
+			r := rows[i]
+			f := r.file
+			if r.line < 0 {
+				return fileHeader(f)
+			}
+			l := f.lines[r.line]
+			if l.kind == '@' {
+				return hunk(l.text, 96)
+			}
+			row := ui.Div().Row().Align(ui.Center).Height(ui.Px(diffRow))
+			sign, signColor := " ", t.TextSubtle
+			switch l.kind {
+			case '+':
+				row, sign, signColor = row.Background(addBg), "+", t.Success
+			case '-':
+				row, sign, signColor = row.Background(delBg), "−", t.Danger
+			}
+			return row.
+				Child(gutter(l.old)).
+				Child(gutter(l.new)).
+				Child(ui.Div().Width(ui.Px(16)).Shrink(0).Child(ui.Text(sign).Mono().FontSize(12).TextColor(signColor))).
+				Child(lineText(f, r.line))
+		}).Handle(h).Style(ui.Style{Grow: 1}).Label("Diff")
+	} else {
+		// Side by side: removed lines on the left, added on the right, paired in order.
+		type pair struct {
+			file        *diffFile
+			left, right int // line indexes; -1 for none; both -2 for the file header
+		}
+		var pairs []pair
+		for _, f := range files {
+			pairs = append(pairs, pair{f, -2, -2})
+			if fold[f.path] {
+				continue
+			}
+			for i := 0; i < len(f.lines); {
+				switch f.lines[i].kind {
+				case '@', ' ':
+					pairs = append(pairs, pair{f, i, i})
+					i++
+				default:
+					var dels, adds []int
+					for i < len(f.lines) && f.lines[i].kind == '-' {
+						dels = append(dels, i)
+						i++
+					}
+					for i < len(f.lines) && f.lines[i].kind == '+' {
+						adds = append(adds, i)
+						i++
+					}
+					for k := 0; k < max(len(dels), len(adds)); k++ {
+						p := pair{f, -1, -1}
+						if k < len(dels) {
+							p.left = dels[k]
+						}
+						if k < len(adds) {
+							p.right = adds[k]
+						}
+						pairs = append(pairs, p)
+					}
+				}
+			}
+		}
+		side := func(f *diffFile, i int, left bool) ui.Element {
+			box := ui.Div().Row().Align(ui.Center).Grow(1).Basis(ui.Px(0)).MinWidth(ui.Px(0)).Height(ui.Full).ClipContent()
+			if i < 0 {
+				return box.Background(t.Surface.Alpha(0.5))
+			}
+			l := f.lines[i]
+			n := l.new
+			if left {
+				n = l.old
+			}
+			switch {
+			case l.kind == '-':
+				box = box.Background(delBg)
+			case l.kind == '+':
+				box = box.Background(addBg)
+			}
+			return box.Child(gutter(n)).Child(lineText(f, i))
+		}
+		body = ui.UniformList(len(pairs), func(i int) ui.Element {
+			p := pairs[i]
+			if p.left == -2 {
+				return fileHeader(p.file)
+			}
+			if p.left >= 0 && p.file.lines[p.left].kind == '@' {
+				return hunk(p.file.lines[p.left].text, 48)
+			}
+			return ui.Div().Row().Height(ui.Px(diffRow)).
+				Child(side(p.file, p.left, true)).
+				Child(ui.Div().Width(ui.Px(1)).Height(ui.Full).Background(t.Border)).
+				Child(side(p.file, p.right, false))
+		}).Handle(h).Style(ui.Style{Grow: 1}).Label("Diff, side by side")
+	}
 
 	summary := ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space4).Height(ui.Px(36)).Shrink(0).
 		BorderEdges(ui.Edges{Bottom: 1}, t.Border).
 		Child(subhead(fmt.Sprintf("%d files changed", len(stats)))).
 		Child(ui.Text(fmt.Sprintf("+%d", added)).FontSize(12).TextColor(t.Success)).
-		Child(ui.Text(fmt.Sprintf("−%d", removed)).FontSize(12).TextColor(t.Danger))
+		Child(ui.Text(fmt.Sprintf("−%d", removed)).FontSize(12).TextColor(t.Danger)).
+		Child(ui.Div().Grow(1)).
+		Child(segmented(ctx, split))
 	return ui.Div().Column().Grow(1).MinHeight(ui.Px(0)).
 		Child(summary).
 		Child(list).
@@ -457,4 +639,24 @@ func fileStatusColor(ctx *ui.Context, s string) ui.Color {
 		return t.Danger
 	}
 	return t.Warning
+}
+
+// diffSplit is whether diffs show side by side; it is kept across threads.
+var diffSplit = ui.NewSignal(false)
+
+// segmented is the Unified / Split switch of the diff.
+func segmented(ctx *ui.Context, split *ui.Signal[bool]) ui.Element {
+	t := ctx.Theme()
+	opt := func(label string, on bool) ui.Element {
+		d := ui.Div().PaddingX(space3).Height(ui.Px(24)).Radius(radiusS - 1).Center().Cursor(ui.CursorPointer).
+			Role(access.RoleButton).Label(label).TabIndex(0).AccessSelected(split.Get() == on).
+			OnClick(func() { split.Set(on) })
+		if split.Get() == on {
+			return d.Background(t.SurfaceActive).Child(ui.Text(label).FontSize(12).Medium())
+		}
+		return d.Hover(ui.Style{Background: t.SurfaceHover}).Child(ui.Text(label).FontSize(12).TextColor(t.TextMuted))
+	}
+	return ui.Div().Row().Align(ui.Center).Gap(2).Padding(2).Radius(radiusS+2).Border(1, t.Border).Background(t.Surface).
+		Child(opt("Unified", false)).
+		Child(opt("Split", true))
 }

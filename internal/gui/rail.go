@@ -55,9 +55,18 @@ func (a *App) rail(ctx *ui.Context) ui.Element {
 	if filter != "" {
 		headTitle = filepath.Base(filter)
 	}
-	head := ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space4).Height(ui.Px(52)).Shrink(0).
-		Child(ui.Text(headTitle).FontSize(14).Semibold().Truncate().Grow(1).MinWidth(ui.Px(0))).
-		Child(subtle(ctx, fmt.Sprintf("%d open", len(open))))
+	need := 0
+	for _, th := range open {
+		if needsUser(th) {
+			need++
+		}
+	}
+	head := ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space4).Height(ui.Px(44)).Shrink(0).
+		Child(ui.Text(headTitle).FontSize(14).Semibold().Truncate().Grow(1).MinWidth(ui.Px(0)))
+	if need > 0 {
+		head = head.Child(ui.Text(fmt.Sprintf("%d need you", need)).FontSize(12).Medium().TextColor(t.Warning))
+	}
+	head = head.Child(subtle(ctx, fmt.Sprintf("%d open", len(open))))
 
 	list := ui.Div().Column().Gap(space1).PaddingX(space2).PaddingBottom(space3)
 	if len(open) == 0 {
@@ -105,6 +114,11 @@ func (a *App) rail(ctx *ui.Context) ui.Element {
 		Child(ui.Div().Column().Grow(1).MinHeight(ui.Px(0)).ScrollY().Child(list))
 }
 
+// needsUser reports whether a thread waits on the user: a question, a failure, or work to review.
+func needsUser(th core.ThreadView) bool {
+	return th.Status == core.StatusWaiting || th.Status == core.StatusFailed || (th.Status == core.StatusIdle && th.CanMerge)
+}
+
 func groupHeader(ctx *ui.Context, title string, n int, status string) ui.Element {
 	t := ctx.Theme()
 	c := t.TextSubtle
@@ -124,13 +138,8 @@ func (a *App) threadRow(ctx *ui.Context, th core.ThreadView) ui.Element {
 	if th.InTurn && !th.TurnStarted.IsZero() {
 		when, whenColor = elapsed(th.TurnStarted), ui.Hex(pal(t).brand)
 	}
+	// The mark and the group carry the state; the line stays neutral.
 	line, lineColor := a.activityLine(th), t.TextMuted
-	switch th.Status {
-	case core.StatusWaiting:
-		lineColor = t.Warning
-	case core.StatusFailed:
-		lineColor = t.Danger
-	}
 	repo := filepath.Base(th.RepoPath)
 	row := ui.Div().Column().Gap(3).PaddingX(space2 + 2).PaddingY(space2).Radius(radiusM).
 		Cursor(ui.CursorPointer).Hover(ui.Style{Background: t.SurfaceHover}).

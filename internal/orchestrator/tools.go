@@ -173,7 +173,7 @@ func (o *Orchestrator) handleTool(ctx context.Context, threadID, name string, ra
 	case "message_thread":
 		var v core.ThreadView
 		if v, err = worker(); err == nil {
-			if err = o.c.Send(ctx, v.ID, a.Text); err == nil {
+			if err = o.c.SendFromOrchestrator(ctx, v.ID, a.Text); err == nil {
 				out = fmt.Sprintf("Sent to %s.", short(v.ID))
 			}
 		}

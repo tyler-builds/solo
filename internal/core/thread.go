@@ -278,7 +278,8 @@ func (c *Core) startWorker(id string) {
 		}
 		c.addNotice(id, "info", fmt.Sprintf("Working on branch %s from %s.", wt.Branch, wt.BaseBranch))
 	}
-	if err := c.send(ctx, id, row.Prompt, false); err != nil {
+	// Workers are started by the orchestrator, which wrote the prompt.
+	if err := c.send(ctx, id, row.Prompt, false, FromOrchestrator); err != nil {
 		fail(err)
 	}
 }
@@ -324,15 +325,20 @@ other branches of the same repository at the same time; stay on your branch and 
 
 // Send sends the user's message to a thread, starting its session if needed.
 func (c *Core) Send(ctx context.Context, threadID, text string) error {
-	return c.send(ctx, threadID, text, false)
+	return c.send(ctx, threadID, text, false, FromUser)
+}
+
+// SendFromOrchestrator sends the orchestrator's message to a worker.
+func (c *Core) SendFromOrchestrator(ctx context.Context, threadID, text string) error {
+	return c.send(ctx, threadID, text, false, FromOrchestrator)
 }
 
 // SendSynthetic sends text the app composed (for example a thread update to the orchestrator).
 func (c *Core) SendSynthetic(ctx context.Context, threadID, text string) error {
-	return c.send(ctx, threadID, text, true)
+	return c.send(ctx, threadID, text, true, FromSolo)
 }
 
-func (c *Core) send(ctx context.Context, threadID, text string, synthetic bool) error {
+func (c *Core) send(ctx context.Context, threadID, text string, synthetic bool, from string) error {
 	c.mu.Lock()
 	t := c.threads[threadID]
 	if t == nil {
@@ -364,7 +370,7 @@ func (c *Core) send(ctx context.Context, threadID, text string, synthetic bool) 
 	if err != nil {
 		return err
 	}
-	data, _ := json.Marshal(UserData{Text: text, Synthetic: synthetic})
+	data, _ := json.Marshal(UserData{Text: text, Synthetic: synthetic, From: from})
 	c.mu.Lock()
 	it := &store.Item{ThreadID: threadID, Kind: ItemUser, TurnUUID: uuid, Data: data, CreatedAt: now()}
 	err = c.db.AddItem(it)

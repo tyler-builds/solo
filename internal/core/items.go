@@ -37,7 +37,16 @@ type UserData struct {
 	Text string `json:"text"`
 	// Synthetic marks text the app sent, such as a thread update to the orchestrator.
 	Synthetic bool `json:"synthetic,omitempty"`
+	// From is who wrote it: FromUser (empty), FromOrchestrator, or FromSolo.
+	From string `json:"from,omitempty"`
 }
+
+// Message authors.
+const (
+	FromUser         = ""
+	FromOrchestrator = "orchestrator"
+	FromSolo         = "solo"
+)
 
 type TextData struct {
 	Text string `json:"text"`

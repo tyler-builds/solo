@@ -179,7 +179,7 @@ func demoBackend() *fakeBackend {
 
 	w := forms.ID
 	f.add(w, core.ItemNotice, core.NoticeData{Level: "info", Text: "Working on branch solo/c3d4e5f6 from main."})
-	f.add(w, core.ItemUser, core.UserData{Text: "Finish moving the settings page (src/settings) to the new Form components in src/components/form. Remove LegacyField when nothing uses it. Run the web tests."})
+	f.add(w, core.ItemUser, core.UserData{From: core.FromOrchestrator, Text: "Finish moving the settings page (src/settings) to the new Form components in src/components/form. Remove LegacyField when nothing uses it. Run the web tests."})
 	f.add(w, core.ItemTool, tool("w1", "Glob", map[string]any{"pattern": "src/settings/**/*.tsx"}, "5 files"))
 	f.add(w, core.ItemTool, tool("w2", "Read", map[string]any{"file_path": "/wt/src/settings/SettingsPage.tsx"}, "…"))
 	f.add(w, core.ItemThinking, core.TextData{Text: "Three sections still use LegacyField. The new Form has no Toggle yet, so I'll add one that matches Checkbox."})
@@ -191,7 +191,7 @@ func demoBackend() *fakeBackend {
 	f.add(w, core.ItemAssistant, core.TextData{Text: forms.Summary})
 	o2 := oauth.ID
 	f.add(o2, core.ItemNotice, core.NoticeData{Level: "info", Text: "Working on branch solo/a1f3c9d2 from main."})
-	f.add(o2, core.ItemUser, core.UserData{Text: "In web, the OAuth access token isn't refreshed when it expires mid-request (src/auth/refresh.ts). Retry once on a 401 after refreshing, add a test, and run the auth tests."})
+	f.add(o2, core.ItemUser, core.UserData{From: core.FromOrchestrator, Text: "In web, the OAuth access token isn't refreshed when it expires mid-request (src/auth/refresh.ts). Retry once on a 401 after refreshing, add a test, and run the auth tests."})
 	f.add(o2, core.ItemTool, tool("o1", "Read", map[string]any{"file_path": "/wt/src/auth/refresh.ts"}, "…"))
 	f.add(o2, core.ItemTool, tool("o2", "Grep", map[string]any{"pattern": "refreshToken\\("}, "3 matches"))
 	f.add(o2, core.ItemTool, tool("o3", "Read", map[string]any{"file_path": "/wt/src/auth/session.ts"}, "…"))

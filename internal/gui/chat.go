@@ -62,7 +62,21 @@ func (a *App) orchestratorBar(ctx *ui.Context, v core.ThreadView) ui.Element {
 		state = state.Child(ui.ProgressRing().Size(ui.RingSmall).Label("Working")).
 			Child(ui.Text(label).FontSize(12).TextColor(ui.Hex(pal(t).brand)).Truncate().MinWidth(ui.Px(0)))
 	} else {
-		state = state.Child(dot(t.TextSubtle, 6)).Child(caption(ctx, "Idle"))
+		working := 0
+		for _, th := range a.threads.Get() {
+			if th.IsWorker && th.InTurn {
+				working++
+			}
+		}
+		label := "Idle"
+		switch working {
+		case 0:
+		case 1:
+			label = "1 worker running"
+		default:
+			label = fmt.Sprintf("%d workers running", working)
+		}
+		state = state.Child(dot(t.TextSubtle, 6)).Child(caption(ctx, label))
 	}
 	return ui.Div().Row().Align(ui.Center).Gap(space3).PaddingX(space4).Height(ui.Px(52)).Shrink(0).
 		BorderEdges(ui.Edges{Bottom: 1}, t.Border).
@@ -197,6 +211,15 @@ func (a *App) rowView(ctx *ui.Context, v core.ThreadView, r row) ui.Element {
 		it.Decode(&d)
 		if d.Synthetic {
 			return a.updateView(ctx, d.Text)
+		}
+		if d.From == core.FromOrchestrator {
+			return ui.Div().Column().Gap(space1).Align(ui.Start).
+				Child(ui.Div().Row().Align(ui.Center).Gap(6).PaddingLeft(2).
+					Child(ui.Icon(icons.Bot).Size(13).Color(ui.Hex(pal(t).brand))).
+					Child(ui.Text("Orchestrator").FontSize(12).Medium().TextColor(t.TextMuted))).
+				Child(ui.Div().PaddingX(space3+2).PaddingY(space2+2).Radius(radiusL).MaxWidth(ui.Percent(92)).
+					Background(t.Surface).Border(1, t.Border).
+					Child(ui.Text(d.Text).Selectable()))
 		}
 		return ui.Div().Row().Justify(ui.End).
 			Child(ui.Div().PaddingX(space3 + 2).PaddingY(space2 + 2).Radius(radiusL).MaxWidth(ui.Percent(85)).
