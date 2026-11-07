@@ -188,30 +188,22 @@ func (a *App) threadPanel(ctx *ui.Context) ui.Element {
 	actions = actions.Child(ui.IconButton(icons.X).Ghost().Small().Label("Close thread").Tooltip("Close").
 		OnClick(a.closeThread))
 
-	meta := ui.Div().Row().Align(ui.Center).Gap(space2).Wrap().MinWidth(ui.Px(0))
-	statusText := statusLabel(th)
-	if th.InTurn && !th.TurnStarted.IsZero() {
-		statusText = "Working · " + elapsed(th.TurnStarted)
-	}
-	meta = meta.Child(ui.Text(statusText).FontSize(12).Semibold().TextColor(statusColor(ctx, shownStatus(th))).NoWrap()).
-		Child(ui.Text(filepath.Base(th.RepoPath)).FontSize(12).Medium().TextColor(t.TextMuted).NoWrap())
-	// The branch and the change size stay together, so a narrow panel wraps them as one.
-	branch := ui.Div().Row().Align(ui.Center).Gap(space1)
+	// The mark carries the status, so the line under the title is just where it is and how big.
+	repo := ui.Div().Child(ui.Text(filepath.Base(th.RepoPath)).FontSize(12).Medium().TextColor(t.TextMuted).NoWrap())
 	if th.Branch != "" {
-		branch = branch.Child(ui.Icon(icons.GitBranch).Size(12).Color(t.TextSubtle)).
-			Child(ui.Text(branchLabel(th) + " → " + th.BaseBranch).FontSize(12).TextColor(t.TextSubtle).NoWrap())
+		repo = repo.Tooltip(branchLabel(th) + " → " + th.BaseBranch)
 	}
+	meta := ui.Div().Row().Align(ui.Center).Gap(space2).Wrap().MinWidth(ui.Px(0)).Child(repo)
 	if added+removed > 0 {
-		branch = branch.Child(stat.PaddingLeft(space1))
+		meta = meta.Child(stat)
 	}
-	meta = meta.Child(branch)
 	if a.cfg.Get().ShowCosts && th.CostUSD > 0 {
 		meta = meta.Child(subtle(ctx, fmt.Sprintf("$%.2f", th.CostUSD)))
 	}
 	header := ui.Div().Row().Align(ui.Start).Gap(space2).PaddingLeft(space4).PaddingRight(space2).PaddingY(space3).Shrink(0).
 		Child(ui.Div().Column().Gap(space1).Grow(1).MinWidth(ui.Px(0)).
 			Child(ui.Div().Row().Align(ui.Center).Gap(space2).MinWidth(ui.Px(0)).
-				Child(statusMark(ctx, shownStatus(th))).
+				Child(ui.Div().Shrink(0).Tooltip(statusLabel(th)).Child(statusMark(ctx, shownStatus(th)))).
 				Child(ui.Div().MinWidth(ui.Px(0)).Tooltip(th.Title).
 					Child(ui.Text(th.Title).FontSize(14).Semibold().Truncate()))).
 			Child(ui.Div().PaddingLeft(space5 + 2).Child(meta))).
