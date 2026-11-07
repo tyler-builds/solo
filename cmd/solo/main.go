@@ -67,7 +67,7 @@ func run() error {
 		Title:      "Solo",
 		Width:      1440,
 		Height:     900,
-		MinWidth:   1000,
+		MinWidth:   1200, // the sidebar, two panels side by side, and the rail
 		MinHeight:  600,
 		LightTheme: light,
 		DarkTheme:  dark,

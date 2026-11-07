@@ -58,7 +58,6 @@ func (f *fakeBackend) SendToOrchestrator(_ context.Context, text string) error {
 	f.mu.Unlock()
 	return nil
 }
-func (f *fakeBackend) NewConversation(context.Context) error { return nil }
 func (f *fakeBackend) Send(_ context.Context, _, text string) error {
 	f.mu.Lock()
 	f.sent = append(f.sent, text)

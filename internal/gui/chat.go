@@ -45,32 +45,17 @@ func (a *App) orchestratorView(ctx *ui.Context) ui.Element {
 
 func (a *App) orchestratorBar(ctx *ui.Context, v core.ThreadView) ui.Element {
 	t := ctx.Theme()
-	state := "Idle"
+	state := "Ready"
 	if v.InTurn {
 		state = "Working…"
 	}
-	model := v.ActualModel
-	if model == "" {
-		model = a.b.Settings().OrchestratorModel
-	}
-	left := ui.Div().Row().Align(ui.Center).Gap(space3).Grow(1).MinWidth(ui.Px(0)).
+	return ui.Div().Row().Align(ui.Center).Gap(space3).PaddingX(space4).Height(ui.Px(52)).Shrink(0).
+		BorderEdges(ui.Edges{Bottom: 1}, t.Border).
 		Child(ui.Icon(icons.Bot).Size(18).Color(ui.Hex(pal(t).brand))).
 		Child(ui.Text("Orchestrator").FontSize(14).Semibold()).
 		Child(ui.Div().Row().Align(ui.Center).Gap(6).
 			Child(dot(map[bool]ui.Color{true: ui.Hex(pal(t).brand), false: t.TextSubtle}[v.InTurn], 6)).
 			Child(caption(ctx, state)))
-	right := ui.Div().Row().Align(ui.Center).Gap(space2).Shrink(0)
-	if v.ContextTokens > 0 {
-		right = right.Child(chip(ctx, fmt.Sprintf("%dk context", v.ContextTokens/1000)).
-			Tooltip("Tokens in the orchestrator's context window. Start a new conversation when it gets large; threads are unaffected."))
-	}
-	right = right.Child(chip(ctx, model)).
-		Child(ui.Button("New conversation").Icon(icons.RotateCcw).Ghost().Small().Disabled(v.InTurn).
-			Tooltip("Start the orchestrator on a fresh context. Threads keep running.").
-			OnClick(func() { a.run("New conversation", a.b.NewConversation) }))
-	return ui.Div().Row().Align(ui.Center).Gap(space3).PaddingX(space4).Height(ui.Px(52)).Shrink(0).
-		BorderEdges(ui.Edges{Bottom: 1}, t.Border).
-		Child(left).Child(right)
 }
 
 func (a *App) welcome(ctx *ui.Context) ui.Element {

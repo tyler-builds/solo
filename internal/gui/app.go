@@ -27,15 +27,21 @@ const (
 type App struct {
 	b Backend
 
-	threads  *ui.Signal[[]core.ThreadView]
-	repos    *ui.Signal[[]string]
-	rate     *ui.Signal[agent.Event]
-	pending  *ui.Signal[map[string][]core.PendingQuestion] // worker questions, by thread
-	navSel   *ui.Signal[string]                            // sidebar: "orchestrator" or "repo:<path>"
-	openID   *ui.Signal[string]                            // the thread in the drawer
-	openTab  *ui.Signal[string]
-	settings *ui.Signal[bool]
-	confirm  *ui.Signal[*confirmation]
+	threads *ui.Signal[[]core.ThreadView]
+	repos   *ui.Signal[[]string]
+	rate    *ui.Signal[agent.Event]
+	pending *ui.Signal[map[string][]core.PendingQuestion] // worker questions, by thread
+	navSel  *ui.Signal[string]                            // sidebar: "orchestrator" or "repo:<path>"
+	openID  *ui.Signal[string]                            // the thread in the side panel
+	openTab *ui.Signal[string]
+	cfg     *ui.Signal[core.Settings]
+	// The thread panel's share of the center, which the user can drag, and its open/close animation.
+	panelSize *ui.Signal[ui.Length]
+	panelAnim *ui.Signal[float32] // 0 closed … 1 open
+	panelGoal float32             // the size, in percent, the panel opens to
+	animStop  func()
+	settings  *ui.Signal[bool]
+	confirm   *ui.Signal[*confirmation]
 
 	items map[string]*ui.Signal[[]core.Item] // UI thread only
 
@@ -59,19 +65,23 @@ type confirmation struct {
 // New creates the UI over a backend.
 func New(b Backend) *App {
 	a := &App{
-		b:        b,
-		threads:  ui.NewSignal(b.Threads()),
-		repos:    ui.NewSignal(b.RepoPaths()),
-		rate:     ui.NewSignal(b.RateLimit()),
-		pending:  ui.NewSignal(loadPending(b, b.Threads())),
-		navSel:   ui.NewSignal("orchestrator"),
-		openID:   ui.NewSignal(""),
-		openTab:  ui.NewSignal("conversation"),
-		settings: ui.NewSignal(false),
-		confirm:  ui.NewSignal[*confirmation](nil),
-		items:    map[string]*ui.Signal[[]core.Item]{},
-		dirty:    map[string]bool{},
-		watched:  map[string]bool{},
+		b:         b,
+		threads:   ui.NewSignal(b.Threads()),
+		repos:     ui.NewSignal(b.RepoPaths()),
+		rate:      ui.NewSignal(b.RateLimit()),
+		pending:   ui.NewSignal(loadPending(b, b.Threads())),
+		navSel:    ui.NewSignal("orchestrator"),
+		openID:    ui.NewSignal(""),
+		openTab:   ui.NewSignal("conversation"),
+		cfg:       ui.NewSignal(b.Settings()),
+		panelSize: ui.NewSignal(ui.Percent(50)),
+		panelAnim: ui.NewSignal[float32](0),
+		panelGoal: 50,
+		settings:  ui.NewSignal(false),
+		confirm:   ui.NewSignal[*confirmation](nil),
+		items:     map[string]*ui.Signal[[]core.Item]{},
+		dirty:     map[string]bool{},
+		watched:   map[string]bool{},
 	}
 	a.unsub = b.Subscribe(a.onChange)
 	return a
@@ -128,7 +138,9 @@ func (a *App) refresh() {
 	var repos []string
 	var rate agent.Event
 	var pending map[string][]core.PendingQuestion
+	var cfg core.Settings
 	if all || len(dirty) > 0 {
+		cfg = a.b.Settings()
 		threads = a.b.Threads()
 		repos = a.b.RepoPaths()
 		rate = a.b.RateLimit()
@@ -148,6 +160,7 @@ func (a *App) refresh() {
 			}
 			a.rate.Set(rate)
 			a.pending.Set(pending)
+			a.cfg.Set(cfg)
 		}
 		for id, items := range loaded {
 			if s := a.items[id]; s != nil {
@@ -215,15 +228,108 @@ func (a *App) Root(ctx *ui.Context) ui.Element {
 	t := ctx.Theme()
 	return ui.Div().Row().Size(ui.Full, ui.Full).Background(t.Panel).TextColor(t.Text).
 		Child(a.sidebar(ctx)).
-		Child(ui.Div().Column().Grow(1).Basis(ui.Px(0)).MinWidth(ui.Px(0)).
-			MarginTop(space2).MarginBottom(space2).
-			Radius(radiusXL).Border(1, t.Border).Background(t.Background).ClipContent().
-			Child(ui.Component(a.orchestratorView))).
+		Child(ui.Div().Column().Grow(1).Basis(ui.Px(0)).MinWidth(ui.Px(0)).Height(ui.Full).ClipContent().
+			Child(ui.Component(a.center))).
 		Child(ui.Component(a.rail)).
-		Child(ui.Component(a.threadDrawer)).
 		Child(ui.Component(a.settingsDialog)).
 		Child(ui.Component(a.confirmDialog)).
 		Child(ui.Toaster().Key("toaster"))
+}
+
+// inset is a content panel: rounded, a step off the window background, with a hairline border.
+func inset(ctx *ui.Context, content ui.Element) *ui.DivElement {
+	t := ctx.Theme()
+	return ui.Div().Column().Grow(1).Height(ui.Full).MinWidth(ui.Px(0)).
+		Radius(radiusXL).Border(1, t.Border).Background(t.Background).ClipContent().
+		Child(content)
+}
+
+// center holds the orchestrator, and beside it the open thread, in a split the user can drag.
+func (a *App) center(ctx *ui.Context) ui.Element {
+	t := ctx.Theme()
+	orch := ui.Div().Column().Size(ui.Full, ui.Full).PaddingY(space2).
+		Child(inset(ctx, ui.Component(a.orchestratorView)))
+	anim := a.panelAnim.Get()
+	if anim <= 0 {
+		return orch
+	}
+	size := a.panelSize.Get()
+	min := ui.Px(320)
+	if anim < 1 {
+		// While it opens or closes the panel follows the animation, below its usual minimum.
+		size, min = ui.Percent(a.panelGoal*anim), ui.Px(0)
+	}
+	panel := ui.Div().Column().Size(ui.Full, ui.Full).PaddingY(space2).
+		Child(inset(ctx, ui.Component(a.threadPanel)))
+	thin := ui.Style{Width: ui.Px(space2), Background: t.Panel}
+	return ui.Split(
+		ui.Pane(orch).Min(ui.Px(320)).Key("orch").Label("Orchestrator"),
+		ui.Pane(panel).SizeSignal(a.panelSize).Size(size).Min(min).Max(ui.Percent(75)).Key("thread").Label("Thread"),
+	).Styles(ui.SplitStyle{
+		Divider:       thin,
+		DividerHover:  ui.Style{Background: t.Panel},
+		DividerActive: ui.Style{Background: t.Panel},
+		Grip:          ui.Style{Background: t.BorderStrong},
+	}).OnChange(func() {
+		if l := a.panelSize.Peek(); l.Unit == ui.Percent(0).Unit {
+			a.panelGoal = l.Value
+		}
+	})
+}
+
+// openThread shows a thread beside the orchestrator, on a tab ("conversation" or "changes").
+func (a *App) openThread(id, tab string) {
+	a.openTab.Set(tab)
+	a.openID.Set(id)
+	a.animatePanel(1, nil)
+}
+
+// closeThread hides the thread panel.
+func (a *App) closeThread() {
+	a.animatePanel(0, func() { a.openID.Set("") })
+}
+
+// animatePanel eases the panel open (to 1) or closed (to 0), then runs done. UI thread only.
+func (a *App) animatePanel(to float32, done func()) {
+	if a.animStop != nil {
+		a.animStop()
+		a.animStop = nil
+	}
+	from := a.panelAnim.Peek()
+	if from == to || a.post == nil {
+		a.panelAnim.Set(to)
+		if to == 1 {
+			a.panelSize.Set(ui.Percent(a.panelGoal))
+		}
+		if done != nil {
+			done()
+		}
+		return
+	}
+	const steps = 10
+	stopped := false
+	a.animStop = func() { stopped = true }
+	var step func(i int)
+	step = func(i int) {
+		if stopped {
+			return
+		}
+		p := float32(i) / steps
+		e := 1 - (1-p)*(1-p)*(1-p) // ease out
+		a.panelAnim.Set(from + (to-from)*e)
+		if i < steps {
+			time.AfterFunc(16*time.Millisecond, func() { a.post(func() { step(i + 1) }) })
+			return
+		}
+		a.animStop = nil
+		if to == 1 {
+			a.panelSize.Set(ui.Percent(a.panelGoal))
+		}
+		if done != nil {
+			done()
+		}
+	}
+	step(1)
 }
 
 // sidebar lists the repositories; choosing one filters the thread rail.
@@ -276,16 +382,19 @@ func (a *App) sidebarFooter(ctx *ui.Context) ui.Element {
 			status, c = "Usage limit reached", t.Danger
 		}
 	}
-	var cost float64
-	for _, th := range a.threads.Get() {
-		cost += th.CostUSD
+	info := ui.Div().Column().Gap(2).PaddingX(space2 + 2).PaddingY(space1).
+		Child(ui.Div().Row().Align(ui.Center).Gap(6).
+			Child(dot(c, 6)).
+			Child(ui.Text(status).FontSize(12).Medium()))
+	if a.cfg.Get().ShowCosts {
+		var cost float64
+		for _, th := range a.threads.Get() {
+			cost += th.CostUSD
+		}
+		info = info.Child(caption(ctx, fmt.Sprintf("$%.2f spent across threads", cost)))
 	}
 	return ui.Div().Column().Gap(space2).
-		Child(ui.Div().Column().Gap(2).PaddingX(space2 + 2).PaddingY(space1).
-			Child(ui.Div().Row().Align(ui.Center).Gap(6).
-				Child(dot(c, 6)).
-				Child(ui.Text(status).FontSize(12).Medium())).
-			Child(caption(ctx, fmt.Sprintf("$%.2f spent across threads", cost)))).
+		Child(info).
 		Child(ui.Button("Settings").Icon(icons.Settings).Ghost().Small().OnClick(func() { a.settings.Set(true) }).
 			Key("open-settings"))
 }

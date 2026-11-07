@@ -63,7 +63,7 @@ func TestCardOpensThreadAndMergeButton(t *testing.T) {
 	if a.openID.Peek() != "c3d4e5f6-forms" {
 		t.Fatalf("drawer shows %q", a.openID.Peek())
 	}
-	u.ByRole(access.RoleButton, "Merge into main").Click()
+	u.ByRole(access.RoleButton, "Merge").Click()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		f.mu.Lock()

@@ -31,6 +31,7 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 		orchModel := ui.Local(ctx, "orch-model", initial.OrchestratorModel)
 		workerModel := ui.Local(ctx, "worker-model", initial.WorkerModel)
 		maxConc := ui.Local(ctx, "max", initial.MaxConcurrent)
+		showCosts := ui.Local(ctx, "show-costs", initial.ShowCosts)
 
 		add := func() {
 			f := strings.TrimSpace(newFolder.Peek())
@@ -75,14 +76,16 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 				Child(ui.Div().Grow(1).Basis(ui.Px(0)).Child(field("Worker model", "The default for new threads.",
 					ui.Select(workerModel, modelOptions...).Width(ui.Full))))).
 			Child(field("Workers at once", "More threads wait in a queue until one finishes.",
-				ui.NumberInput(maxConc, 1, 16, 1).Width(ui.Px(120))))
+				ui.NumberInput(maxConc, 1, 16, 1).Width(ui.Px(120)))).
+			Child(field("Costs", "Show what each thread has cost so far, as Claude estimates it.",
+				ui.Switch("Show costs", showCosts)))
 
 		save := ui.Button("Save").Primary().Key("settings-save").OnClick(func() {
-			f, om, wm, mc := folders.Peek(), orchModel.Peek(), workerModel.Peek(), maxConc.Peek()
+			f, om, wm, mc, sc := folders.Peek(), orchModel.Peek(), workerModel.Peek(), maxConc.Peek(), showCosts.Peek()
 			a.settings.Set(false)
 			a.run("Saving settings", func(context.Context) error {
 				return a.b.UpdateSettings(func(s *core.Settings) {
-					s.Folders, s.OrchestratorModel, s.WorkerModel, s.MaxConcurrent = f, om, wm, mc
+					s.Folders, s.OrchestratorModel, s.WorkerModel, s.MaxConcurrent, s.ShowCosts = f, om, wm, mc, sc
 				})
 			})
 		})

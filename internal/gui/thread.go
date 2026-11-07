@@ -13,12 +13,6 @@ import (
 	"github.com/tyler-builds/solo/internal/git"
 )
 
-// openThread shows a thread in the drawer, on a tab ("conversation" or "changes").
-func (a *App) openThread(id, tab string) {
-	a.openTab.Set(tab)
-	a.openID.Set(id)
-}
-
 func (a *App) merge(id string) {
 	a.run("Merge", func(ctx context.Context) error {
 		commit, err := a.b.Merge(ctx, id)
@@ -34,43 +28,62 @@ func (a *App) merge(id string) {
 	})
 }
 
-// threadDrawer shows the open thread: its conversation, its changes, and its actions.
-func (a *App) threadDrawer(ctx *ui.Context) ui.Element {
+// threadPanel shows the open thread beside the orchestrator: its conversation or its changes, and its
+// actions.
+func (a *App) threadPanel(ctx *ui.Context) ui.Element {
 	id := a.openID.Get()
-	if id == "" {
-		return nil
-	}
 	th, ok := a.thread(id)
 	if !ok {
-		return nil
+		return ui.Div()
 	}
 	t := ctx.Theme()
 	tab := a.openTab.Get()
 
-	meta := ui.Div().Row().Align(ui.Center).Gap(space2).Wrap().
-		Child(statusPill(ctx, th)).
-		Child(chip(ctx, filepath.Base(th.RepoPath)))
+	actions := ui.Div().Row().Align(ui.Center).Gap(space1).Shrink(0)
+	if th.CanDiscard {
+		actions = actions.Child(ui.IconButton(icons.Trash).Ghost().Small().Label("Discard thread").Tooltip("Discard…").OnClick(func() {
+			a.confirm.Set(&confirmation{
+				title:  "Discard this thread?",
+				body:   fmt.Sprintf("This stops %q and deletes its worktree and branch %s, with any work not merged.", th.Title, th.Branch),
+				action: "Discard",
+				run: func() {
+					a.closeThread()
+					a.run("Discard", func(ctx context.Context) error { return a.b.Discard(ctx, id) })
+				},
+			})
+		}))
+	}
+	if th.CanMerge {
+		actions = actions.Child(ui.Button("Merge").Icon(icons.GitMerge).Primary().Small().
+			Tooltip("Merge " + th.Branch + " into " + th.BaseBranch).OnClick(func() { a.merge(id) }))
+	}
+	actions = actions.Child(ui.IconButton(icons.X).Ghost().Small().Label("Close thread").Tooltip("Close").
+		OnClick(a.closeThread))
+	meta := ui.Div().Row().Align(ui.Center).Gap(space2).MinWidth(ui.Px(0)).
+		Child(ui.Text(statusLabel(th)).FontSize(12).Semibold().TextColor(statusColor(ctx, th.Status)).NoWrap()).
+		Child(ui.Text(filepath.Base(th.RepoPath)).FontSize(12).Medium().TextColor(t.TextMuted).NoWrap())
 	if th.Branch != "" {
-		meta = meta.Child(ui.Div().Row().Align(ui.Center).Gap(space1).
-			Child(ui.Icon(icons.GitBranch).Size(13).Color(t.TextSubtle)).
-			Child(caption(ctx, branchLabel(th)+" → "+th.BaseBranch)))
+		meta = meta.Child(ui.Div().Row().Align(ui.Center).Gap(space1).MinWidth(ui.Px(0)).
+			Child(ui.Icon(icons.GitBranch).Size(12).Color(t.TextSubtle)).
+			Child(ui.Text(branchLabel(th) + " → " + th.BaseBranch).FontSize(12).TextColor(t.TextSubtle).TruncateHead().MinWidth(ui.Px(0))))
 	}
-	model := th.ActualModel
-	if model == "" {
-		model = th.Model
+	if a.cfg.Get().ShowCosts && th.CostUSD > 0 {
+		meta = meta.Child(subtle(ctx, fmt.Sprintf("$%.2f", th.CostUSD)))
 	}
-	if model != "" {
-		meta = meta.Child(caption(ctx, model))
-	}
-	if th.CostUSD > 0 {
-		meta = meta.Child(caption(ctx, fmt.Sprintf("$%.2f", th.CostUSD)))
-	}
+	header := ui.Div().Row().Align(ui.Center).Gap(space2).PaddingLeft(space4).PaddingRight(space2).Height(ui.Px(60)).Shrink(0).
+		Child(ui.Div().Column().Gap(2).Grow(1).MinWidth(ui.Px(0)).
+			Child(ui.Div().Row().Align(ui.Center).Gap(space2).MinWidth(ui.Px(0)).
+				Child(dot(statusColor(ctx, th.Status), 8)).
+				Child(ui.Text(th.Title).FontSize(14).Semibold().Truncate().MinWidth(ui.Px(0)))).
+			Child(ui.Div().PaddingLeft(space4).Child(meta))).
+		Child(actions)
+	tabs := ui.Div().Row().Align(ui.Center).PaddingX(space4).Shrink(0).
+		BorderEdges(ui.Edges{Bottom: 1}, t.Border).
+		Child(ui.Tabs(a.openTab,
+			ui.Tab[string]{Value: "conversation", Label: "Conversation"},
+			ui.Tab[string]{Value: "changes", Label: "Changes", Disabled: !th.HasWorktree},
+		))
 
-	changesLabel := "Changes"
-	tabs := ui.Tabs(a.openTab,
-		ui.Tab[string]{Value: "conversation", Label: "Conversation", Icon: icons.MessageSquare},
-		ui.Tab[string]{Value: "changes", Label: changesLabel, Icon: icons.FileCode, Disabled: !th.HasWorktree},
-	)
 	var content ui.Element
 	if tab == "changes" && th.HasWorktree {
 		content = ui.Component(func(ctx *ui.Context) ui.Element { return a.changesView(ctx, th) })
@@ -78,40 +91,13 @@ func (a *App) threadDrawer(ctx *ui.Context) ui.Element {
 		items := a.itemsOf(id).Get()
 		content = ui.Div().Column().Grow(1).MinHeight(ui.Px(0)).
 			Child(a.transcript(ctx, th, items, "thread-"+id)).
-			Child(ui.Div().Column().PaddingX(space4).PaddingBottom(space3).Shrink(0).
+			Child(ui.Div().Column().PaddingX(space4).PaddingBottom(space4).Shrink(0).
 				Child(a.composerFor(ctx, th)))
 	}
-
-	body := ui.Div().Column().Gap(space3).Grow(1).MinHeight(ui.Px(0)).Height(ui.Full).
-		Child(meta).
+	return ui.Div().Column().Size(ui.Full, ui.Full).Key("thread-panel-" + id).
+		Child(header).
 		Child(tabs).
-		Child(ui.Div().Column().Grow(1).MinHeight(ui.Px(0)).Radius(radiusL).Border(1, t.Border).
-			Background(t.Background).ClipContent().Child(content))
-
-	var footer []ui.Element
-	if th.CanDiscard {
-		footer = append(footer, ui.Button("Discard").Icon(icons.Trash).Ghost().OnClick(func() {
-			a.confirm.Set(&confirmation{
-				title:  "Discard this thread?",
-				body:   fmt.Sprintf("This stops %q and deletes its worktree and branch %s, with any work not merged.", th.Title, th.Branch),
-				action: "Discard",
-				run: func() {
-					a.openID.Set("")
-					a.run("Discard", func(ctx context.Context) error { return a.b.Discard(ctx, id) })
-				},
-			})
-		}))
-	}
-	if th.CanMerge {
-		footer = append(footer, ui.Button("Merge into "+th.BaseBranch).Icon(icons.GitMerge).Primary().
-			OnClick(func() { a.merge(id) }))
-	}
-	d := ui.Drawer(th.Title, body).Side(ui.DrawerRight).Width(ui.Px(720)).CloseButton(true).Key("thread-drawer").
-		OnClose(func() { a.openID.Set("") })
-	if len(footer) > 0 {
-		d = d.Footer(footer...)
-	}
-	return d
+		Child(ui.Div().Column().Grow(1).MinHeight(ui.Px(0)).Child(content))
 }
 
 func (a *App) composerFor(ctx *ui.Context, th core.ThreadView) ui.Element {

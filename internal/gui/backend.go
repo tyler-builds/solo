@@ -18,7 +18,6 @@ type Backend interface {
 	Subscribe(f func(core.Change)) func()
 
 	SendToOrchestrator(ctx context.Context, text string) error
-	NewConversation(ctx context.Context) error
 	Send(ctx context.Context, threadID, text string) error
 	Interrupt(ctx context.Context, threadID string) error
 	Answer(threadID, toolUseID string, answers map[string]string) error
@@ -42,4 +41,3 @@ type Live struct {
 }
 
 func (l Live) SendToOrchestrator(ctx context.Context, text string) error { return l.O.Send(ctx, text) }
-func (l Live) NewConversation(ctx context.Context) error                 { return l.O.NewConversation(ctx) }

@@ -115,7 +115,13 @@ func (a *App) threadCard(ctx *ui.Context, th core.ThreadView) ui.Element {
 		Border(1, t.Border).Cursor(ui.CursorPointer).
 		Hover(ui.Style{Background: t.SurfaceHover, BorderColor: t.BorderStrong}).
 		Role(access.RoleButton).Label(th.Title).TabIndex(0).Key("card-" + th.ID).
-		OnClick(func() { a.openThread(th.ID, "conversation") }).
+		OnClick(func() {
+			if a.openID.Peek() == th.ID {
+				a.closeThread()
+			} else {
+				a.openThread(th.ID, "conversation")
+			}
+		}).
 		Child(ui.Div().Row().Align(ui.Center).Gap(space2).
 			Child(dot(c, 8)).
 			Child(ui.Text(th.Title).FontSize(13).Semibold().Truncate().Grow(1).MinWidth(ui.Px(0))).
@@ -128,13 +134,14 @@ func (a *App) threadCard(ctx *ui.Context, th core.ThreadView) ui.Element {
 	if th.Status == core.StatusWaiting {
 		card = card.Border(1, t.Warning.Alpha(0.5))
 	}
-	if th.CostUSD > 0 || th.Status == core.StatusIdle {
-		foot := ui.Div().Row().Align(ui.Center).Gap(space2).PaddingLeft(space4)
-		foot = foot.Child(ui.Text(statusLabel(th)).FontSize(11).Medium().TextColor(c))
-		if th.CostUSD > 0 {
-			foot = foot.Child(subtle(ctx, fmt.Sprintf("$%.2f", th.CostUSD)).FontSize(11))
-		}
-		card = card.Child(foot)
+	foot := ui.Div().Row().Align(ui.Center).Gap(space2).PaddingLeft(space4).
+		Child(ui.Text(statusLabel(th)).FontSize(11).Medium().TextColor(c))
+	if a.cfg.Get().ShowCosts && th.CostUSD > 0 {
+		foot = foot.Child(subtle(ctx, fmt.Sprintf("$%.2f", th.CostUSD)).FontSize(11))
+	}
+	card = card.Child(foot)
+	if a.openID.Get() == th.ID {
+		card = card.Background(t.SurfaceActive).Border(1, ui.Hex(pal(t).brand).Alpha(0.6))
 	}
 	return card
 }

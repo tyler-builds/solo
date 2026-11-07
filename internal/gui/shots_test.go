@@ -35,6 +35,7 @@ func TestShots(t *testing.T) {
 		{"changes", func(a *App, f *fakeBackend) { a.openThread("c3d4e5f6-forms", "changes") }},
 		{"working", func(a *App, f *fakeBackend) { a.openThread("a1f3c9d2-oauth", "conversation") }},
 		{"repo-filter", func(a *App, f *fakeBackend) { a.navSel.Set("repo:/home/dev/code/api") }},
+		{"narrow-thread", func(a *App, f *fakeBackend) { a.openThread("c3d4e5f6-forms", "conversation") }},
 		{"settings", func(a *App, f *fakeBackend) { a.settings.Set(true) }},
 		{"empty", nil},
 	}
@@ -43,7 +44,7 @@ func TestShots(t *testing.T) {
 		t    *ui.Theme
 	}{{"dark", dark}, {"light", light}} {
 		for _, sh := range shots {
-			if theme.name == "light" && sh.name != "main" && sh.name != "thread" {
+			if theme.name == "light" && sh.name != "main" && sh.name != "changes" {
 				continue
 			}
 			f := demoBackend()
@@ -54,7 +55,11 @@ func TestShots(t *testing.T) {
 			if sh.setup != nil {
 				sh.setup(a, f)
 			}
-			u := uitest.New(t, a.Root, uitest.Size(1440, 900), uitest.Theme(theme.t))
+			w := float32(1440)
+			if sh.name == "narrow-thread" {
+				w = 1200
+			}
+			u := uitest.New(t, a.Root, uitest.Size(w, 900), uitest.Theme(theme.t))
 			for i := 0; i < 10; i++ {
 				u.Advance(100 * time.Millisecond)
 				time.Sleep(20 * time.Millisecond)

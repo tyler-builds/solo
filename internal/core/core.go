@@ -34,6 +34,8 @@ type Settings struct {
 	// MaxConcurrent caps how many workers run at once; more wait as queued.
 	MaxConcurrent int    `json:"maxConcurrent"`
 	ClaudePath    string `json:"claudePath,omitempty"`
+	// ShowCosts shows what threads have cost in the UI.
+	ShowCosts bool `json:"showCosts,omitempty"`
 }
 
 // DefaultSettings are used until the user changes them.
