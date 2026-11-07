@@ -56,7 +56,7 @@ var toolSpecs = []agent.ToolSpec{
 	{
 		Name: "spawn_thread",
 		Description: "Start a worker thread: a Claude Code agent in its own git worktree and branch of a repository, with full permissions there. " +
-			"It starts at once; any number can run in parallel. Returns its ID.",
+			"Use one thread per task; the thread runs its own subagents for parts of it. It starts at once. Returns its ID.",
 		InputSchema: schema(`{"type":"object","properties":{
 			"repo":{"type":"string","description":"Repository name or path, from list_repos."},
 			"title":{"type":"string","description":"Short title, a few words, shown to the user."},

@@ -420,20 +420,17 @@ func (a *App) sidebar(ctx *ui.Context) ui.Element {
 
 func (a *App) sidebarFooter(ctx *ui.Context) ui.Element {
 	t := ctx.Theme()
-	rate := a.rate.Get()
-	status, c := "Claude ready", t.TextSubtle
-	if rate.Kind == agent.EventRateLimit {
-		switch rate.Status {
-		case "allowed_warning":
-			status, c = "Near the usage limit", t.Warning
-		case "rejected":
+	info := ui.Div().Column().Gap(2).PaddingX(space2 + 2).PaddingY(space1)
+	// Claude's usage shows only when it matters.
+	if rate := a.rate.Get(); rate.Kind == agent.EventRateLimit && rate.Status != "allowed" {
+		status, c := "Near the usage limit", t.Warning
+		if rate.Status == "rejected" {
 			status, c = "Usage limit reached", t.Danger
 		}
-	}
-	info := ui.Div().Column().Gap(2).PaddingX(space2 + 2).PaddingY(space1).
-		Child(ui.Div().Row().Align(ui.Center).Gap(6).
+		info = info.Child(ui.Div().Row().Align(ui.Center).Gap(6).
 			Child(dot(c, 6)).
 			Child(ui.Text(status).FontSize(12).Medium()))
+	}
 	if a.cfg.Get().ShowCosts {
 		var cost float64
 		for _, th := range a.threads.Get() {

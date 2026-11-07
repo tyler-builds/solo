@@ -62,21 +62,7 @@ func (a *App) orchestratorBar(ctx *ui.Context, v core.ThreadView) ui.Element {
 		state = state.Child(ui.ProgressRing().Size(ui.RingSmall).Label("Working")).
 			Child(ui.Text(label).FontSize(12).TextColor(ui.Hex(pal(t).brand)).Truncate().MinWidth(ui.Px(0)))
 	} else {
-		working := 0
-		for _, th := range a.threads.Get() {
-			if th.IsWorker && th.InTurn {
-				working++
-			}
-		}
-		label := "Idle"
-		switch working {
-		case 0:
-		case 1:
-			label = "1 worker running"
-		default:
-			label = fmt.Sprintf("%d workers running", working)
-		}
-		state = state.Child(dot(t.TextSubtle, 6)).Child(caption(ctx, label))
+		state = state.Child(dot(t.TextSubtle, 6)).Child(caption(ctx, "Idle"))
 	}
 	return ui.Div().Row().Align(ui.Center).Gap(space3).PaddingX(space4).Height(ui.Px(52)).Shrink(0).
 		BorderEdges(ui.Edges{Bottom: 1}, t.Border).
@@ -111,11 +97,12 @@ func (a *App) welcome(ctx *ui.Context) ui.Element {
 
 // row is one entry of a transcript list.
 type row struct {
-	key   string
-	item  *core.Item
-	steps []*core.Item // a run of tool calls and thoughts, shown folded
-	live  *core.LiveBlock
-	busy  bool // the "working" line at the end of a running turn
+	key    string
+	item   *core.Item
+	steps  []*core.Item // a run of tool calls and thoughts, shown folded
+	thread string       // the thread the folded steps act on, if they all act on one
+	live   *core.LiveBlock
+	busy   bool // the "working" line at the end of a running turn
 }
 
 // isStep reports whether an item is part of the agent's working steps rather than its conversation.
@@ -129,16 +116,23 @@ const minFold = 3
 // transcript renders a thread's items, its streaming text, and a working indicator, newest at the bottom.
 func (a *App) transcript(ctx *ui.Context, v core.ThreadView, items []core.Item, scope string) ui.Element {
 	rows := make([]row, 0, len(items)+4)
+	// Steps fold in runs. In the orchestrator, a run is also cut where the thread it acts on changes, so
+	// each folded group belongs to one thread (or to none).
 	var run []*core.Item
+	runThread := ""
 	flush := func() {
-		if len(run) >= minFold {
-			rows = append(rows, row{key: fmt.Sprintf("g%d", run[0].ID), steps: run})
+		min := minFold
+		if runThread != "" {
+			min = 2
+		}
+		if len(run) >= min {
+			rows = append(rows, row{key: fmt.Sprintf("g%d", run[0].ID), steps: run, thread: runThread})
 		} else {
 			for _, it := range run {
 				rows = append(rows, row{key: fmt.Sprintf("i%d", it.ID), item: it})
 			}
 		}
-		run = nil
+		run, runThread = nil, ""
 	}
 	for i := range items {
 		it := &items[i]
@@ -146,6 +140,12 @@ func (a *App) transcript(ctx *ui.Context, v core.ThreadView, items []core.Item, 
 			continue
 		}
 		if isStep(it) {
+			if th := a.itemThread(it); th != runThread && (th != "" || it.Kind == core.ItemTool) {
+				if len(run) > 0 {
+					flush()
+				}
+				runThread = th
+			}
 			run = append(run, it)
 			continue
 		}
@@ -202,7 +202,7 @@ func (a *App) rowView(ctx *ui.Context, v core.ThreadView, r row) ui.Element {
 		}
 		return md(r.live.Text)
 	case r.steps != nil:
-		return a.stepsView(ctx, r.steps)
+		return a.stepsView(ctx, r.steps, r.thread)
 	}
 	it := r.item
 	switch it.Kind {
@@ -275,7 +275,7 @@ func (a *App) stepView(ctx *ui.Context, it *core.Item, v core.ThreadView) ui.Ele
 }
 
 // stepsView folds a run of tool calls and thoughts into one line: how many steps, and the latest.
-func (a *App) stepsView(ctx *ui.Context, steps []*core.Item) ui.Element {
+func (a *App) stepsView(ctx *ui.Context, steps []*core.Item, threadID string) ui.Element {
 	return ui.Component(func(ctx *ui.Context) ui.Element {
 		t := ctx.Theme()
 		open := ui.Local(ctx, "open", false)
@@ -294,6 +294,9 @@ func (a *App) stepsView(ctx *ui.Context, steps []*core.Item) ui.Element {
 				failures++
 			}
 			_, verb, detail := a.describeTool(d)
+			if threadID != "" {
+				detail = "" // the thread is named by its chip
+			}
 			latest = strings.TrimSpace(verb + " " + detail)
 		}
 		var state ui.Element = ui.Icon(icons.Check).Size(13).Color(t.TextSubtle)
@@ -301,6 +304,9 @@ func (a *App) stepsView(ctx *ui.Context, steps []*core.Item) ui.Element {
 			state = ui.ProgressRing().Size(ui.RingSmall).Label("Running")
 		}
 		label := fmt.Sprintf("%d steps", len(steps))
+		if threadID != "" {
+			label = fmt.Sprintf("%d actions", len(steps))
+		}
 		labelColor := t.TextMuted
 		if failures > 0 {
 			label += fmt.Sprintf(" · %d failed", failures)
@@ -314,6 +320,7 @@ func (a *App) stepsView(ctx *ui.Context, steps []*core.Item) ui.Element {
 			Role(access.RoleButton).Label(label).TabIndex(0).
 			OnClick(func() { open.Update(func(o bool) bool { return !o }) }).
 			Child(ui.Icon(map[bool]*icons.Icon{true: icons.ChevronDown, false: icons.ChevronRight}[open.Get()]).Size(14).Color(t.TextMuted)).
+			Child(ui.If(threadID != "", a.threadChip(ctx, threadID))).
 			Child(ui.Text(label).FontSize(13).Medium().TextColor(labelColor).NoWrap().Shrink(0)).
 			Child(ui.Text(latest).FontSize(12).TextColor(t.TextSubtle).Truncate().Grow(1).MinWidth(ui.Px(0)))
 		if state != nil {
@@ -421,6 +428,7 @@ func thinkingView(ctx *ui.Context, text string, live bool) ui.Element {
 // toolView is one tool call: a compact line that opens to show its result.
 func (a *App) toolView(ctx *ui.Context, d core.ToolData) ui.Element {
 	icon, label, detail := a.describeTool(d)
+	threadID := a.toolThread(d)
 	return ui.Component(func(ctx *ui.Context) ui.Element {
 		t := ctx.Theme()
 		open := ui.Local(ctx, "open", false)
@@ -438,9 +446,13 @@ func (a *App) toolView(ctx *ui.Context, d core.ToolData) ui.Element {
 			Role(access.RoleButton).Label(label + " " + detail).TabIndex(0).
 			OnClick(func() { open.Update(func(o bool) bool { return !o }) }).
 			Child(ui.Icon(icon).Size(14).Color(t.TextMuted)).
-			Child(ui.Text(label).FontSize(13).Medium().TextColor(t.TextMuted).NoWrap().Shrink(0)).
-			Child(ui.Text(detail).FontSize(12).TextColor(t.TextSubtle).Truncate().Grow(1).MinWidth(ui.Px(0))).
-			Child(state)
+			Child(ui.Text(label).FontSize(13).Medium().TextColor(t.TextMuted).NoWrap().Shrink(0))
+		if threadID != "" {
+			head = head.Child(a.threadChip(ctx, threadID)).Child(ui.Div().Grow(1))
+		} else {
+			head = head.Child(ui.Text(detail).FontSize(12).TextColor(t.TextSubtle).Truncate().Grow(1).MinWidth(ui.Px(0)))
+		}
+		head = head.Child(state)
 		col := ui.Div().Column().Gap(space1).Child(head)
 		if open.Get() {
 			body := ui.Div().Column().Gap(space2).MarginLeft(space6).Padding(space3).Radius(radiusM).
@@ -835,4 +847,52 @@ func firstLine(s string) string {
 		return s[:i]
 	}
 	return s
+}
+
+// toolThread is the thread an orchestrator tool call acts on, or "".
+func (a *App) toolThread(d core.ToolData) string {
+	name := strings.TrimPrefix(d.Name, "mcp__solo__")
+	if name == d.Name {
+		return ""
+	}
+	if name == "spawn_thread" {
+		// "Started thread a1b2c3d4 …": the new thread's short ID.
+		if f := strings.Fields(d.Result); len(f) >= 3 && f[0] == "Started" {
+			return a.findThreadID(f[2])
+		}
+		return ""
+	}
+	var in struct {
+		ID string `json:"id"`
+	}
+	if json.Unmarshal(d.Input, &in) != nil || len(in.ID) < 4 {
+		return ""
+	}
+	return a.findThreadID(in.ID)
+}
+
+// itemThread is the thread a transcript step acts on, or "".
+func (a *App) itemThread(it *core.Item) string {
+	if it.Kind != core.ItemTool {
+		return ""
+	}
+	var d core.ToolData
+	it.Decode(&d)
+	return a.toolThread(d)
+}
+
+// threadChip names a thread inline: its status mark and title. A click opens it.
+func (a *App) threadChip(ctx *ui.Context, id string) ui.Element {
+	t := ctx.Theme()
+	th, ok := a.thread(id)
+	if !ok {
+		return ui.Div()
+	}
+	return ui.Div().Row().Align(ui.Center).Gap(space1+2).PaddingLeft(space1).PaddingRight(space2).Height(ui.Px(22)).
+		Radius(11).Background(t.Surface).Border(1, t.Border).Cursor(ui.CursorPointer).Shrink(1).MinWidth(ui.Px(0)).
+		MaxWidth(ui.Px(300)).Hover(ui.Style{BorderColor: t.BorderStrong, Background: t.SurfaceHover}).
+		Role(access.RoleButton).Label("Open " + th.Title).TabIndex(0).Tooltip(th.Title + " · " + statusLabel(th)).
+		OnClick(func() { a.openThread(id, "conversation") }).
+		Child(statusMark(ctx, th.Status)).
+		Child(ui.Text(th.Title).FontSize(12).Medium().Truncate().MinWidth(ui.Px(0)))
 }
