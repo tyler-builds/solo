@@ -230,7 +230,6 @@ func (a *App) Root(ctx *ui.Context) ui.Element {
 		Child(a.sidebar(ctx)).
 		Child(ui.Div().Column().Grow(1).Basis(ui.Px(0)).MinWidth(ui.Px(0)).Height(ui.Full).ClipContent().
 			Child(ui.Component(a.center))).
-		Child(ui.Component(a.rail)).
 		Child(ui.Component(a.settingsDialog)).
 		Child(ui.Component(a.confirmDialog)).
 		Child(ui.Toaster().Key("toaster"))
@@ -244,33 +243,47 @@ func inset(ctx *ui.Context, content ui.Element) *ui.DivElement {
 		Child(content)
 }
 
-// center holds the orchestrator, and beside it the open thread, in a split the user can drag.
+// center holds the orchestrator and, on its right, the thread rail. Opening a thread grows the rail
+// into the thread's panel (half the space by default, and the user can drag the divider); closing it
+// slides the panel back into the rail.
 func (a *App) center(ctx *ui.Context) ui.Element {
 	t := ctx.Theme()
 	orch := ui.Div().Column().Size(ui.Full, ui.Full).PaddingY(space2).
 		Child(inset(ctx, ui.Component(a.orchestratorView)))
 	anim := a.panelAnim.Get()
-	if anim <= 0 {
-		return orch
+	open := a.openID.Get() != ""
+
+	var right ui.Element
+	if open {
+		right = ui.Div().Column().Size(ui.Full, ui.Full).PaddingY(space2).PaddingRight(space2).
+			Child(inset(ctx, ui.Component(a.threadPanel)))
+	} else {
+		right = ui.Component(a.rail)
 	}
-	size := a.panelSize.Get()
-	min := ui.Px(320)
-	if anim < 1 {
-		// While it opens or closes the panel follows the animation, below its usual minimum.
-		size, min = ui.Percent(a.panelGoal*anim), ui.Px(0)
+	pane := ui.Pane(right).Key("right").Label("Threads")
+	switch {
+	case anim >= 1:
+		pane = pane.SizeSignal(a.panelSize).Min(ui.Px(360)).Max(ui.Percent(75))
+	case anim <= 0:
+		pane = pane.Size(ui.Px(railWidth)).Min(ui.Px(railWidth)).Max(ui.Px(railWidth))
+	default:
+		// Between the rail's width and the panel's, in pixels of the space the split has.
+		w, _ := ctx.WindowSize()
+		target := (w - sidebarWidth) * a.panelGoal / 100
+		px := railWidth + (target-railWidth)*anim
+		pane = pane.Size(ui.Px(px)).Min(ui.Px(px)).Max(ui.Px(px))
 	}
-	panel := ui.Div().Column().Size(ui.Full, ui.Full).PaddingY(space2).
-		Child(inset(ctx, ui.Component(a.threadPanel)))
 	thin := ui.Style{Width: ui.Px(space2), Background: t.Panel}
 	return ui.Split(
 		ui.Pane(orch).Min(ui.Px(320)).Key("orch").Label("Orchestrator"),
-		ui.Pane(panel).SizeSignal(a.panelSize).Size(size).Min(min).Max(ui.Percent(75)).Key("thread").Label("Thread"),
-	).Styles(ui.SplitStyle{
-		Divider:       thin,
-		DividerHover:  ui.Style{Background: t.Panel},
-		DividerActive: ui.Style{Background: t.Panel},
-		Grip:          ui.Style{Background: t.BorderStrong},
-	}).OnChange(func() {
+		pane,
+	).Grip(map[bool]ui.SplitGrip{true: ui.SplitGripOnHover, false: ui.SplitGripHidden}[anim >= 1]).
+		Styles(ui.SplitStyle{
+			Divider:       thin,
+			DividerHover:  ui.Style{Background: t.Panel},
+			DividerActive: ui.Style{Background: t.Panel},
+			Grip:          ui.Style{Background: t.BorderStrong},
+		}).OnChange(func() {
 		if l := a.panelSize.Peek(); l.Unit == ui.Percent(0).Unit {
 			a.panelGoal = l.Value
 		}

@@ -94,7 +94,7 @@ func (a *App) rail(ctx *ui.Context) ui.Element {
 			return col
 		}))
 	}
-	return ui.Div().Column().Width(ui.Px(railWidth)).Shrink(0).Height(ui.Full).Background(t.Panel).
+	return ui.Div().Column().Size(ui.Full, ui.Full).Background(t.Panel).
 		Child(head).
 		Child(ui.Div().Column().Grow(1).MinHeight(ui.Px(0)).ScrollY().Child(list))
 }

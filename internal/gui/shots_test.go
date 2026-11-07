@@ -35,6 +35,7 @@ func TestShots(t *testing.T) {
 		{"changes", func(a *App, f *fakeBackend) { a.openThread("c3d4e5f6-forms", "changes") }},
 		{"working", func(a *App, f *fakeBackend) { a.openThread("a1f3c9d2-oauth", "conversation") }},
 		{"repo-filter", func(a *App, f *fakeBackend) { a.navSel.Set("repo:/home/dev/code/api") }},
+		{"opening", func(a *App, f *fakeBackend) { a.openID.Set("c3d4e5f6-forms"); a.panelAnim.Set(0.35) }},
 		{"narrow-thread", func(a *App, f *fakeBackend) { a.openThread("c3d4e5f6-forms", "conversation") }},
 		{"settings", func(a *App, f *fakeBackend) { a.settings.Set(true) }},
 		{"empty", nil},
@@ -57,7 +58,7 @@ func TestShots(t *testing.T) {
 			}
 			w := float32(1440)
 			if sh.name == "narrow-thread" {
-				w = 1200
+				w = 1000
 			}
 			u := uitest.New(t, a.Root, uitest.Size(w, 900), uitest.Theme(theme.t))
 			for i := 0; i < 10; i++ {
