@@ -518,8 +518,8 @@ func diffView(ctx *ui.Context, stats []git.FileChange, files []*diffFile, roomy 
 		return ui.Div().Row().Justify(ui.End).Width(ui.Px(40)).PaddingRight(space2).Shrink(0).
 			Child(ui.Text(s).Mono().FontSize(11).TextColor(t.TextSubtle))
 	}
-	addBg, delBg := t.Success.Alpha(0.10), t.Danger.Alpha(0.10)
-	addWord, delWord := t.Success.Alpha(0.30), t.Danger.Alpha(0.30)
+	addBg, delBg := t.Success.Alpha(0.16), t.Danger.Alpha(0.16)
+	addWord, delWord := t.Success.Alpha(0.36), t.Danger.Alpha(0.36)
 	// lineText is a line's code, colored by syntax, with its changed part marked.
 	lineText := func(f *diffFile, i int) *ui.TextElement {
 		l := f.lines[i]
@@ -640,7 +640,7 @@ func diffView(ctx *ui.Context, stats []git.FileChange, files []*diffFile, roomy 
 			box := ui.Div().Row().Align(ui.Center).Grow(1).Basis(ui.Px(0)).MinWidth(ui.Px(0)).Height(ui.Full).
 				PaddingRight(space2).ClipContent()
 			if i < 0 {
-				return box.Background(t.Surface.Alpha(0.5))
+				return box.Background(t.Text.Alpha(0.045))
 			}
 			l := f.lines[i]
 			n := l.new
