@@ -250,8 +250,8 @@ func (a *App) composerFor(ctx *ui.Context, th core.ThreadView) ui.Element {
 		return caption(ctx, "This thread is starting.")
 	}
 	id := th.ID
-	return a.composer(ctx, th, "draft-"+id, "Message this thread…", func(text string) error {
-		return a.b.Send(context.Background(), id, text)
+	return a.composer(ctx, th, "draft-"+id, "Message this thread…", func(text string, images []string) error {
+		return a.b.Send(context.Background(), id, text, images...)
 	})
 }
 

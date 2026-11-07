@@ -3,6 +3,8 @@ package core
 import (
 	"context"
 	"fmt"
+	"image"
+	"image/png"
 	"io"
 	"log/slog"
 	"os"
@@ -295,4 +297,91 @@ func TestResolveRepo(t *testing.T) {
 	if _, err := e.c.ResolveRepo("nope"); err == nil {
 		t.Fatal("resolved an unknown repo")
 	}
+}
+
+func TestImages(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+
+	// A big screenshot is scaled down when imported; a small one is copied as it is.
+	big := filepath.Join(e.root, "big.png")
+	writePNG(t, big, 3000, 1500)
+	a, err := e.c.ImportImage(big)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Dir(a) != filepath.Join(e.dataDir, "attachments") {
+		t.Fatalf("attachment %s", a)
+	}
+	if w, h := pngSize(t, a); w != 2000 || h != 1000 {
+		t.Fatalf("imported %dx%d, want 2000x1000", w, h)
+	}
+	if _, err := e.c.ImportImage(filepath.Join(e.root, "proj")); err == nil {
+		t.Fatal("imported a folder")
+	}
+	notImage := filepath.Join(e.root, "notes.txt")
+	os.WriteFile(notImage, []byte("hello"), 0o644)
+	if _, err := e.c.ImportImage(notImage); err == nil {
+		t.Fatal("imported a text file")
+	}
+	pasted, err := e.c.SaveImage(image.NewRGBA(image.Rect(0, 0, 10, 10)))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A thread started with images gets them with its prompt, and they're kept on the message.
+	small := filepath.Join(e.root, "small.png")
+	writePNG(t, small, 40, 20)
+	v, err := e.c.CreateWorker(ctx, WorkerSpec{Repo: "proj", Title: "Look", Prompt: "look at this", Images: []string{small}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	v = waitStatus(t, e.c, v.ID, StatusIdle)
+	if v.Summary != "echo: look at this +image/png resume=false" {
+		t.Fatalf("summary %q", v.Summary)
+	}
+	items, _ := e.c.Items(ctx, v.ID, 0)
+	var u UserData
+	items[1].Decode(&u)
+	if len(u.Images) != 1 || filepath.Dir(u.Images[0]) != filepath.Join(e.dataDir, "attachments") {
+		t.Fatalf("user item %+v", u)
+	}
+
+	// A message can be images alone.
+	if err := e.c.Send(ctx, v.ID, "", pasted, a); err != nil {
+		t.Fatal(err)
+	}
+	v = waitStatus(t, e.c, v.ID, StatusIdle)
+	if v.Summary != "echo:  +image/png +image/png resume=false" {
+		t.Fatalf("summary %q", v.Summary)
+	}
+	if err := e.c.Send(ctx, v.ID, "  "); err == nil {
+		t.Fatal("sent an empty message")
+	}
+}
+
+func writePNG(t *testing.T, path string, w, h int) {
+	t.Helper()
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if err := png.Encode(f, image.NewRGBA(image.Rect(0, 0, w, h))); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func pngSize(t *testing.T, path string) (int, int) {
+	t.Helper()
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	cfg, err := png.DecodeConfig(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cfg.Width, cfg.Height
 }

@@ -45,7 +45,7 @@ Claude **worker threads**, each working in its own git worktree.
 ## Sidecar protocol (sketch)
 
 Go → sidecar (requests): `session.open {sessionId, resume?, role, cwd, model, effort, systemAppend,
-additionalDirectories, permissionMode, tools}`, `session.send {sessionId, uuid, text, attachments}`,
+additionalDirectories, permissionMode, tools}`, `session.send {sessionId, uuid, text, images}`,
 `session.interrupt`, `session.close`, `session.setModel`, `probe` (models, account, version).
 
 Sidecar → Go (notifications): `event {sessionId, seq, kind, ...}` where kind is one of `init`,
@@ -138,6 +138,10 @@ Raw `SDKMessage`s are also appended to a per-session JSONL file for debugging an
 - **Right rail:** thread cards (title, repo, status dot, elapsed time, last activity line).
 - **Slide-over:** a thread's transcript, a diff (`codeedit`, read-only), an input to message it
   directly, and Interrupt / Merge / Discard buttons.
+- **Images:** paste, drop or attach images in any message box. They're copied into
+  `<data>/attachments` (scaled to at most 2000 px and 3.5 MB) and sent as image blocks before the text.
+  Messages to Solo also list the saved paths, so Solo can pass them on with `spawn_thread` or
+  `message_thread`'s `images`.
 - Text deltas are coalesced (~30 ms) before signals update, to keep re-renders cheap.
 
 ## Repo layout

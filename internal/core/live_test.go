@@ -8,6 +8,9 @@ package core
 
 import (
 	"context"
+	"image"
+	"image/color"
+	"image/draw"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -70,5 +73,54 @@ func TestLiveWorkerCommitsAndMerges(t *testing.T) {
 	b, _ := os.ReadFile(filepath.Join(repo, "calc.py"))
 	if !strings.Contains(string(b), "a + b") {
 		t.Fatalf("merged calc.py:\n%s", b)
+	}
+}
+
+func TestLiveWorkerSeesImage(t *testing.T) {
+	cmd, err := agent.FindCommand()
+	if err != nil {
+		t.Skip(err)
+	}
+	root := t.TempDir()
+	repo := filepath.Join(root, "pic")
+	os.MkdirAll(repo, 0o755)
+	ctx := context.Background()
+	for _, args := range [][]string{{"init", "-q", "-b", "main"}, {"commit", "-q", "--allow-empty", "-m", "init"}} {
+		if _, err := git.Run(ctx, repo, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c, err := New(Config{DataDir: t.TempDir(), Agent: cmd, Log: slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	c.UpdateSettings(func(s *Settings) { s.Folders = []string{root}; s.WorkerModel = "haiku" })
+
+	img := image.NewRGBA(image.Rect(0, 0, 64, 64))
+	draw.Draw(img, img.Bounds(), &image.Uniform{color.RGBA{220, 20, 20, 255}}, image.Point{}, draw.Src)
+	p, err := c.SaveImage(img)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := c.CreateWorker(ctx, WorkerSpec{Repo: "pic", Title: "Color", Images: []string{p},
+		Prompt: "Don't use any tools. Reply with one word: the color of the attached image."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Minute)
+	for {
+		v, _ = c.Thread(v.ID)
+		if !v.InTurn && (v.Status == StatusIdle || v.Status == StatusFailed) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out: %s", v.Status)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	t.Logf("status=%s summary=%q", v.Status, v.Summary)
+	if !strings.Contains(strings.ToLower(v.Summary), "red") {
+		t.Fatalf("Claude didn't see the image: %q %s", v.Summary, v.Error)
 	}
 }

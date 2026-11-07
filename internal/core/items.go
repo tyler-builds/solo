@@ -39,6 +39,8 @@ type UserData struct {
 	Synthetic bool `json:"synthetic,omitempty"`
 	// From is who wrote it: FromUser (empty), FromOrchestrator, or FromSolo.
 	From string `json:"from,omitempty"`
+	// Images are the image files sent with it.
+	Images []string `json:"images,omitempty"`
 }
 
 // Message authors.

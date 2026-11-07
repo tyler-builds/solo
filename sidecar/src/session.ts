@@ -30,6 +30,19 @@ import { Normalizer } from "./normalize";
 import type { AgentEventBody, AskResult, OpenParams, Question, SendParams, ToolCallResult } from "./protocol";
 import { errorText, log, type Peer } from "./rpc";
 
+// userContent is a message's content: the text alone, or the images followed by the text (Claude reads
+// images best before the words about them).
+function userContent(p: SendParams): SDKUserMessage["message"]["content"] {
+  if (!p.images?.length) return p.text;
+  return [
+    ...p.images.map((im) => ({
+      type: "image" as const,
+      source: { type: "base64" as const, media_type: im.mediaType, data: im.data },
+    })),
+    ...(p.text ? [{ type: "text" as const, text: p.text }] : []),
+  ];
+}
+
 // claudeExecutable is the SDK option naming the claude binary. A compiled sidecar can't fall back to
 // the SDK's bundled CLI, so it needs a path from Go.
 export function claudeExecutable(path?: string): { pathToClaudeCodeExecutable?: string } {
@@ -144,7 +157,7 @@ export class Session {
     if (!this.live) await this.open();
     const msg: SDKUserMessage = {
       type: "user",
-      message: { role: "user", content: p.text },
+      message: { role: "user", content: userContent(p) },
       parent_tool_use_id: null,
       uuid: p.uuid as SDKUserMessage["uuid"],
       ...(p.synthetic ? { client_composed: true as const } : {}),

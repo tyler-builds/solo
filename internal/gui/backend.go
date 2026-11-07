@@ -2,6 +2,7 @@ package gui
 
 import (
 	"context"
+	"image"
 
 	"github.com/tyler-builds/solo/internal/agent"
 	"github.com/tyler-builds/solo/internal/core"
@@ -17,8 +18,10 @@ type Backend interface {
 	PendingQuestions(threadID string) []core.PendingQuestion
 	Subscribe(f func(core.Change)) func()
 
-	SendToOrchestrator(ctx context.Context, text string) error
-	Send(ctx context.Context, threadID, text string) error
+	SendToOrchestrator(ctx context.Context, text string, images ...string) error
+	Send(ctx context.Context, threadID, text string, images ...string) error
+	SaveImage(img image.Image) (string, error) // a pasted image, stored as an attachment
+	ImportImage(path string) (string, error)   // a copy of an image file, stored as an attachment
 	Interrupt(ctx context.Context, threadID string) error
 	Answer(threadID, toolUseID string, answers map[string]string) error
 	Dismiss(threadID, toolUseID string) error
@@ -41,4 +44,6 @@ type Live struct {
 	O *orchestrator.Orchestrator
 }
 
-func (l Live) SendToOrchestrator(ctx context.Context, text string) error { return l.O.Send(ctx, text) }
+func (l Live) SendToOrchestrator(ctx context.Context, text string, images ...string) error {
+	return l.O.Send(ctx, text, images...)
+}

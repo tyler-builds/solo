@@ -4,6 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"image"
+	"image/color"
+	"image/draw"
+	"image/png"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -52,13 +59,13 @@ func (f *fakeBackend) Items(_ context.Context, id string, _ int) ([]core.Item, e
 func (f *fakeBackend) PendingQuestions(id string) []core.PendingQuestion { return f.pending[id] }
 func (f *fakeBackend) Subscribe(func(core.Change)) func()                { return func() {} }
 
-func (f *fakeBackend) SendToOrchestrator(_ context.Context, text string) error {
+func (f *fakeBackend) SendToOrchestrator(_ context.Context, text string, images ...string) error {
 	f.mu.Lock()
 	f.sent = append(f.sent, text)
 	f.mu.Unlock()
 	return nil
 }
-func (f *fakeBackend) Send(_ context.Context, _, text string) error {
+func (f *fakeBackend) Send(_ context.Context, _, text string, images ...string) error {
 	f.mu.Lock()
 	f.sent = append(f.sent, text)
 	f.mu.Unlock()
@@ -85,6 +92,38 @@ func (f *fakeBackend) UpdateSettings(fn func(*core.Settings)) error {
 }
 func (f *fakeBackend) RepoPaths() []string    { return f.repos }
 func (f *fakeBackend) RateLimit() agent.Event { return agent.Event{} }
+
+func (f *fakeBackend) SaveImage(img image.Image) (string, error) {
+	p := filepath.Join(os.TempDir(), fmt.Sprintf("solo-paste-%d.png", time.Now().UnixNano()))
+	out, err := os.Create(p)
+	if err != nil {
+		return "", err
+	}
+	defer out.Close()
+	return p, png.Encode(out, img)
+}
+
+func (f *fakeBackend) ImportImage(path string) (string, error) { return path, nil }
+
+// sampleScreenshot writes a small picture of a settings form, standing in for a pasted screenshot.
+func sampleScreenshot(dir string, accent color.RGBA) string {
+	img := image.NewRGBA(image.Rect(0, 0, 640, 400))
+	fill := func(r image.Rectangle, c color.RGBA) { draw.Draw(img, r, &image.Uniform{c}, image.Point{}, draw.Src) }
+	fill(img.Bounds(), color.RGBA{246, 246, 248, 255})
+	fill(image.Rect(0, 0, 640, 44), color.RGBA{32, 33, 38, 255})
+	for i := 0; i < 4; i++ {
+		y := 80 + i*70
+		fill(image.Rect(40, y, 260, y+14), color.RGBA{120, 122, 130, 255})
+		fill(image.Rect(40, y+24, 600, y+56), color.RGBA{255, 255, 255, 255})
+	}
+	fill(image.Rect(40, 360, 160, 392), accent)
+	fill(image.Rect(300, 230, 600, 270), color.RGBA{230, 70, 70, 255}) // the broken field
+	p := filepath.Join(dir, fmt.Sprintf("shot-%d-%d-%d.png", accent.R, accent.G, accent.B))
+	out, _ := os.Create(p)
+	defer out.Close()
+	png.Encode(out, img)
+	return p
+}
 
 func (f *fakeBackend) CheckClaude(_ context.Context, override string) core.ClaudeStatus {
 	if override != "" {

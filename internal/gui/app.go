@@ -51,6 +51,9 @@ type App struct {
 	orchDraft  *ui.Signal[string] // the message being written to Solo
 	orchFocus  *ui.FocusHandle
 	foldedAsks *ui.Signal[map[string]bool] // pinned questions the user folded, by tool-use ID
+	lightbox   *ui.Signal[string]          // the image shown full size, or ""
+	orchImages *ui.Signal[[]string]        // images attached to the message being written to Solo
+	imgs       map[string]*ui.ImageSource  // decoded attachments, by path (UI thread only)
 
 	items map[string]*ui.Signal[[]core.Item] // UI thread only
 
@@ -93,6 +96,9 @@ func New(b Backend) *App {
 		orchDraft:  ui.NewSignal(""),
 		orchFocus:  ui.NewFocusHandle(),
 		foldedAsks: ui.NewSignal(map[string]bool{}),
+		lightbox:   ui.NewSignal(""),
+		orchImages: ui.NewSignal([]string(nil)),
+		imgs:       map[string]*ui.ImageSource{},
 		items:      map[string]*ui.Signal[[]core.Item]{},
 		dirty:      map[string]bool{},
 		watched:    map[string]bool{},
@@ -219,6 +225,16 @@ func (a *App) run(what string, f func(ctx context.Context) error) {
 	}()
 }
 
+// onUI runs fn on the UI thread.
+func (a *App) onUI(fn func()) {
+	a.mu.Lock()
+	post := a.post
+	a.mu.Unlock()
+	if post != nil {
+		post(fn)
+	}
+}
+
 func (a *App) notify(v ui.ToastVariant, title, msg string) {
 	a.mu.Lock()
 	post, toast := a.post, a.toast
@@ -253,6 +269,7 @@ func (a *App) Root(ctx *ui.Context) ui.Element {
 			Child(ui.Component(a.center))).
 		Child(ui.Component(a.settingsDialog)).
 		Child(ui.Component(a.confirmDialog)).
+		Child(ui.Component(a.lightboxDialog)).
 		Child(ui.CommandPalette(a.palette).ItemsOnly().Placeholder("Go to a thread").Items(a.paletteItems)).
 		Child(ui.Toaster().Key("toaster"))
 }

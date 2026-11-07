@@ -139,8 +139,9 @@ type WorkerSpec struct {
 	Repo   string // path or name of a known repository
 	Title  string
 	Prompt string
-	Model  string // empty: Settings.WorkerModel
-	Base   string // branch to start from; empty: the repository's current branch
+	Model  string   // empty: Settings.WorkerModel
+	Base   string   // branch to start from; empty: the repository's current branch
+	Images []string // image files to send with the prompt
 }
 
 // CreateWorker creates a worker thread and starts it.
@@ -152,6 +153,10 @@ func (c *Core) CreateWorker(ctx context.Context, spec WorkerSpec) (ThreadView, e
 	if strings.TrimSpace(spec.Prompt) == "" {
 		return ThreadView{}, errors.New("a worker needs a prompt")
 	}
+	images, err := c.ImportImages(spec.Images)
+	if err != nil {
+		return ThreadView{}, err
+	}
 	title := strings.TrimSpace(spec.Title)
 	if title == "" {
 		title = firstLine(spec.Prompt, 60)
@@ -160,18 +165,19 @@ func (c *Core) CreateWorker(ctx context.Context, spec WorkerSpec) (ThreadView, e
 	slug := git.Slug(title) + "-" + id[:6]
 	ts := now()
 	t := &thread{row: store.Thread{
-		ID:         id,
-		Kind:       store.KindWorker,
-		SessionID:  agent.NewUUID(),
-		Title:      title,
-		RepoPath:   repo,
-		Branch:     "solo/" + slug,
-		BaseBranch: spec.Base,
-		Model:      spec.Model,
-		Status:     StatusQueued,
-		Prompt:     spec.Prompt,
-		CreatedAt:  ts,
-		UpdatedAt:  ts,
+		ID:           id,
+		Kind:         store.KindWorker,
+		SessionID:    agent.NewUUID(),
+		Title:        title,
+		RepoPath:     repo,
+		Branch:       "solo/" + slug,
+		BaseBranch:   spec.Base,
+		Model:        spec.Model,
+		Status:       StatusQueued,
+		Prompt:       spec.Prompt,
+		PromptImages: images,
+		CreatedAt:    ts,
+		UpdatedAt:    ts,
 	}}
 	c.mu.Lock()
 	if c.closed {
@@ -264,7 +270,7 @@ func (c *Core) startWorker(id string) {
 		c.addNotice(id, "info", fmt.Sprintf("Working on branch %s from %s.", wt.Branch, wt.BaseBranch))
 	}
 	// Workers are started by the orchestrator, which wrote the prompt.
-	if err := c.send(ctx, id, row.Prompt, false, FromOrchestrator); err != nil {
+	if err := c.send(ctx, id, row.Prompt, row.PromptImages, false, FromOrchestrator); err != nil {
 		fail(err)
 	}
 }
@@ -310,22 +316,36 @@ other branches of the same repository at the same time; stay on your branch and 
 - If you need a decision only the user can make, ask with AskUserQuestion.`, r.RepoPath, r.Branch, r.BaseBranch)
 }
 
-// Send sends the user's message to a thread, starting its session if needed.
-func (c *Core) Send(ctx context.Context, threadID, text string) error {
-	return c.send(ctx, threadID, text, false, FromUser)
+// Send sends the user's message, with any images (see ImportImage), to a thread, starting its session
+// if needed.
+func (c *Core) Send(ctx context.Context, threadID, text string, images ...string) error {
+	return c.send(ctx, threadID, text, images, false, FromUser)
 }
 
 // SendFromOrchestrator sends the orchestrator's message to a worker.
-func (c *Core) SendFromOrchestrator(ctx context.Context, threadID, text string) error {
-	return c.send(ctx, threadID, text, false, FromOrchestrator)
+func (c *Core) SendFromOrchestrator(ctx context.Context, threadID, text string, images ...string) error {
+	return c.send(ctx, threadID, text, images, false, FromOrchestrator)
 }
 
 // SendSynthetic sends text the app composed (for example a thread update to the orchestrator).
 func (c *Core) SendSynthetic(ctx context.Context, threadID, text string) error {
-	return c.send(ctx, threadID, text, true, FromSolo)
+	return c.send(ctx, threadID, text, nil, true, FromSolo)
 }
 
-func (c *Core) send(ctx context.Context, threadID, text string, synthetic bool, from string) error {
+func (c *Core) send(ctx context.Context, threadID, text string, images []string, synthetic bool, from string) error {
+	if strings.TrimSpace(text) == "" && len(images) == 0 {
+		return errors.New("empty message")
+	}
+	blocks, err := c.loadImages(images)
+	if err != nil {
+		return err
+	}
+	// Solo only sees the pixels; it needs the files' paths to hand the images on to a thread.
+	sent := text
+	if threadID == OrchestratorID && len(images) > 0 {
+		sent = strings.TrimSpace(text + "\n\n[Attached images, saved at: " + strings.Join(images, ", ") +
+			". To give them to a thread, pass these paths in images when you call spawn_thread or message_thread.]")
+	}
 	c.mu.Lock()
 	t := c.threads[threadID]
 	if t == nil {
@@ -345,7 +365,7 @@ func (c *Core) send(ctx context.Context, threadID, text string, synthetic bool, 
 	// Record the message and the running state before Claude can answer, so a fast reply never lands
 	// ahead of the message or leaves the thread marked running after its turn ended.
 	uuid := agent.NewUUID()
-	data, _ := json.Marshal(UserData{Text: text, Synthetic: synthetic, From: from})
+	data, _ := json.Marshal(UserData{Text: text, Synthetic: synthetic, From: from, Images: images})
 	if err := c.db.AddItem(&store.Item{ThreadID: threadID, Kind: ItemUser, TurnUUID: uuid, Data: data, CreatedAt: now()}); err != nil {
 		c.mu.Unlock()
 		return err
@@ -378,7 +398,7 @@ func (c *Core) send(ctx context.Context, threadID, text string, synthetic bool, 
 		t.opened = true
 		c.mu.Unlock()
 	}
-	if err := c.agent.SendUUID(ctx, params.SessionID, uuid, text, synthetic); err != nil {
+	if err := c.agent.SendUUID(ctx, params.SessionID, uuid, sent, blocks, synthetic); err != nil {
 		return fail(err)
 	}
 	return nil

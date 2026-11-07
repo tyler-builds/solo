@@ -53,6 +53,8 @@ export interface SendParams {
   /** Client uuid for this user message; echoed back on the turn that answers it. */
   uuid: string;
   text: string;
+  /** Images sent with the message, base64. */
+  images?: { mediaType: "image/png" | "image/jpeg" | "image/gif" | "image/webp"; data: string }[];
   /** Text the app composed (status updates to the orchestrator), not typed by the user. */
   synthetic?: boolean;
 }

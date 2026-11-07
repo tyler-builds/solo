@@ -51,10 +51,17 @@ type OpenParams struct {
 
 // SendParams is one user message.
 type SendParams struct {
-	SessionID string `json:"sessionId"`
-	UUID      string `json:"uuid"`
-	Text      string `json:"text"`
-	Synthetic bool   `json:"synthetic,omitempty"`
+	SessionID string  `json:"sessionId"`
+	UUID      string  `json:"uuid"`
+	Text      string  `json:"text"`
+	Images    []Image `json:"images,omitempty"`
+	Synthetic bool    `json:"synthetic,omitempty"`
+}
+
+// Image is an image sent with a user message, as Claude takes it.
+type Image struct {
+	MediaType string `json:"mediaType"` // image/png, image/jpeg, image/gif or image/webp
+	Data      string `json:"data"`      // base64
 }
 
 // QuestionOption is one choice of an AskUserQuestion question.

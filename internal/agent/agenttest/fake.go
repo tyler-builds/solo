@@ -135,6 +135,9 @@ func run() {
 			UUID      string `json:"uuid"`
 			Text      string `json:"text"`
 			Model     string `json:"model"`
+			Images    []struct {
+				MediaType string `json:"mediaType"`
+			} `json:"images"`
 		}
 		json.Unmarshal(m.Params, &p)
 		switch m.Method {
@@ -155,7 +158,11 @@ func run() {
 				continue
 			}
 			reply(struct{}{})
-			go turn(s, p.SessionID, p.UUID, p.Text, event, request, write)
+			text := p.Text
+			for _, im := range p.Images { // the echo reports the images it got
+				text += " +" + im.MediaType
+			}
+			go turn(s, p.SessionID, p.UUID, text, event, request, write)
 		case "session.interrupt":
 			mu.Lock()
 			s := sessions[p.SessionID]

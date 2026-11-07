@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -39,6 +40,7 @@ CREATE TABLE IF NOT EXISTS threads (
 	summary        TEXT NOT NULL DEFAULT '',
 	error          TEXT NOT NULL DEFAULT '',
 	prompt         TEXT NOT NULL DEFAULT '',
+	prompt_images  TEXT NOT NULL DEFAULT '',
 	cost_usd       REAL NOT NULL DEFAULT 0,
 	context_tokens INTEGER NOT NULL DEFAULT 0,
 	created_at     INTEGER NOT NULL,
@@ -69,6 +71,13 @@ func Open(path string) (*Store, error) {
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("store: schema: %w", err)
+	}
+	// Columns added after the first release. SQLite has no ADD COLUMN IF NOT EXISTS.
+	for _, col := range []string{`prompt_images TEXT NOT NULL DEFAULT ''`} {
+		if _, err := db.Exec(`ALTER TABLE threads ADD COLUMN ` + col); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+			db.Close()
+			return nil, fmt.Errorf("store: migrate: %w", err)
+		}
 	}
 	return &Store{db: db}, nil
 }
@@ -122,6 +131,7 @@ type Thread struct {
 	Summary       string
 	Error         string
 	Prompt        string
+	PromptImages  []string // image files sent with the prompt
 	CostUSD       float64
 	ContextTokens int
 	CreatedAt     time.Time
@@ -129,19 +139,19 @@ type Thread struct {
 }
 
 const threadCols = `id, kind, session_id, has_transcript, title, repo_path, worktree_path, branch, base_branch,
-	base_commit, model, status, summary, error, prompt, cost_usd, context_tokens, created_at, updated_at`
+	base_commit, model, status, summary, error, prompt, prompt_images, cost_usd, context_tokens, created_at, updated_at`
 
 // SaveThread inserts or replaces the thread.
 func (s *Store) SaveThread(t *Thread) error {
-	_, err := s.db.Exec(`INSERT INTO threads(`+threadCols+`) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+	_, err := s.db.Exec(`INSERT INTO threads(`+threadCols+`) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(id) DO UPDATE SET kind=excluded.kind, session_id=excluded.session_id,
 		has_transcript=excluded.has_transcript, title=excluded.title, repo_path=excluded.repo_path,
 		worktree_path=excluded.worktree_path, branch=excluded.branch, base_branch=excluded.base_branch,
 		base_commit=excluded.base_commit, model=excluded.model, status=excluded.status, summary=excluded.summary,
-		error=excluded.error, prompt=excluded.prompt, cost_usd=excluded.cost_usd,
+		error=excluded.error, prompt=excluded.prompt, prompt_images=excluded.prompt_images, cost_usd=excluded.cost_usd,
 		context_tokens=excluded.context_tokens, updated_at=excluded.updated_at`,
 		t.ID, t.Kind, t.SessionID, t.HasTranscript, t.Title, t.RepoPath, t.WorktreePath, t.Branch, t.BaseBranch,
-		t.BaseCommit, t.Model, t.Status, t.Summary, t.Error, t.Prompt, t.CostUSD, t.ContextTokens,
+		t.BaseCommit, t.Model, t.Status, t.Summary, t.Error, t.Prompt, joinPaths(t.PromptImages), t.CostUSD, t.ContextTokens,
 		t.CreatedAt.UnixMilli(), t.UpdatedAt.UnixMilli())
 	return err
 }
@@ -157,11 +167,13 @@ func (s *Store) Threads() ([]*Thread, error) {
 	for rows.Next() {
 		var t Thread
 		var created, updated int64
+		var images string
 		if err := rows.Scan(&t.ID, &t.Kind, &t.SessionID, &t.HasTranscript, &t.Title, &t.RepoPath, &t.WorktreePath,
-			&t.Branch, &t.BaseBranch, &t.BaseCommit, &t.Model, &t.Status, &t.Summary, &t.Error, &t.Prompt,
+			&t.Branch, &t.BaseBranch, &t.BaseCommit, &t.Model, &t.Status, &t.Summary, &t.Error, &t.Prompt, &images,
 			&t.CostUSD, &t.ContextTokens, &created, &updated); err != nil {
 			return nil, err
 		}
+		t.PromptImages = splitPaths(images)
 		t.CreatedAt, t.UpdatedAt = time.UnixMilli(created), time.UnixMilli(updated)
 		out = append(out, &t)
 	}
@@ -242,4 +254,14 @@ func (s *Store) ItemByID(id int64) (*Item, error) {
 	}
 	it.Data, it.CreatedAt = json.RawMessage(data), time.UnixMilli(created)
 	return &it, nil
+}
+
+// Paths are stored one per line; a path can't hold a newline that matters here.
+func joinPaths(p []string) string { return strings.Join(p, "\n") }
+
+func splitPaths(s string) []string {
+	if s == "" {
+		return nil
+	}
+	return strings.Split(s, "\n")
 }

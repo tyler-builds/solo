@@ -58,16 +58,22 @@ func New(c *core.Core, dataDir string, log *slog.Logger) (*Orchestrator, error) 
 // ID is the orchestrator thread's ID.
 func (o *Orchestrator) ID() string { return core.OrchestratorID }
 
-// Send sends the user's message to the orchestrator.
-func (o *Orchestrator) Send(ctx context.Context, text string) error {
-	if carry := o.takeCarry(); carry != "" {
+// Send sends the user's message, with any images (attachment paths), to the orchestrator.
+func (o *Orchestrator) Send(ctx context.Context, text string, images ...string) error {
+	if carry := o.takeCarry(); carry != "" && len(images) > 0 {
+		// The recap goes first on its own; the user's message with its images queues behind it.
+		if err := o.c.SendSynthetic(ctx, core.OrchestratorID, carry); err != nil {
+			o.putCarry(carry)
+			return err
+		}
+	} else if carry != "" {
 		if err := o.c.SendSynthetic(ctx, core.OrchestratorID, carry+"\n\n---\n\n"+text); err != nil {
 			o.putCarry(carry)
 			return err
 		}
 		return nil
 	}
-	return o.c.Send(ctx, core.OrchestratorID, text)
+	return o.c.Send(ctx, core.OrchestratorID, text, images...)
 }
 
 // NewConversation starts the orchestrator on a fresh Claude session; its next message carries a recap of

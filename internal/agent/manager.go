@@ -195,11 +195,11 @@ func (m *Manager) ensureOpen(ctx context.Context, id string) error {
 // running turn.
 func (m *Manager) Send(ctx context.Context, sessionID, text string, synthetic bool) (string, error) {
 	uuid := NewUUID()
-	return uuid, m.SendUUID(ctx, sessionID, uuid, text, synthetic)
+	return uuid, m.SendUUID(ctx, sessionID, uuid, text, nil, synthetic)
 }
 
 // SendUUID is Send with a uuid the caller chose, so it can record the message before Claude answers.
-func (m *Manager) SendUUID(ctx context.Context, sessionID, uuid, text string, synthetic bool) error {
+func (m *Manager) SendUUID(ctx context.Context, sessionID, uuid, text string, images []Image, synthetic bool) error {
 	// A session whose process exited (or whose sidecar died) reopens here, with resume. Retry once if the
 	// sidecar dies between the open and the send.
 	var err error
@@ -211,7 +211,7 @@ func (m *Manager) SendUUID(ctx context.Context, sessionID, uuid, text string, sy
 		if sc, _, err = m.sidecar(ctx); err != nil {
 			continue
 		}
-		err = sc.call(ctx, "session.send", SendParams{SessionID: sessionID, UUID: uuid, Text: text, Synthetic: synthetic}, nil)
+		err = sc.call(ctx, "session.send", SendParams{SessionID: sessionID, UUID: uuid, Text: text, Images: images, Synthetic: synthetic}, nil)
 		if err == nil {
 			return nil
 		}

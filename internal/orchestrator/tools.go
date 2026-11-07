@@ -62,7 +62,8 @@ var toolSpecs = []agent.ToolSpec{
 			"title":{"type":"string","description":"Short title, a few words, shown to the user."},
 			"prompt":{"type":"string","description":"The complete, self-contained task for the worker."},
 			"model":{"type":"string","description":"Optional model alias (opus, sonnet, haiku) or ID."},
-			"base":{"type":"string","description":"Optional branch to start from; default is the repository's current branch."}},
+			"base":{"type":"string","description":"Optional branch to start from; default is the repository's current branch."},
+			"images":{"type":"array","items":{"type":"string"},"description":"Optional paths of image files to send with it, such as the attached images the user gave you."}},
 			"required":["repo","title","prompt"]}`),
 	},
 	{
@@ -70,7 +71,8 @@ var toolSpecs = []agent.ToolSpec{
 		Description: "Send a message to a worker: more instructions, a correction, or what to fix. Works while it runs (it reads the message soon) or when idle (it starts a new turn).",
 		InputSchema: schema(`{"type":"object","properties":{
 			"id":{"type":"string","description":"Thread ID or short ID."},
-			"text":{"type":"string"}},"required":["id","text"]}`),
+			"text":{"type":"string"},
+			"images":{"type":"array","items":{"type":"string"},"description":"Optional paths of image files to send with it, such as the attached images the user gave you."}},"required":["id","text"]}`),
 	},
 	{
 		Name:        "interrupt_thread",
@@ -112,6 +114,7 @@ func (o *Orchestrator) handleTool(ctx context.Context, threadID, name string, ra
 		MaxChars      int               `json:"max_chars"`
 		IncludeClosed bool              `json:"include_closed"`
 		Answers       map[string]string `json:"answers"`
+		Images        []string          `json:"images"`
 	}
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &a); err != nil {
@@ -166,14 +169,18 @@ func (o *Orchestrator) handleTool(ctx context.Context, threadID, name string, ra
 		}
 	case "spawn_thread":
 		var v core.ThreadView
-		if v, err = o.c.CreateWorker(ctx, core.WorkerSpec{Repo: a.Repo, Title: a.Title, Prompt: a.Prompt, Model: a.Model, Base: a.Base}); err == nil {
+		if v, err = o.c.CreateWorker(ctx, core.WorkerSpec{Repo: a.Repo, Title: a.Title, Prompt: a.Prompt, Model: a.Model, Base: a.Base, Images: a.Images}); err == nil {
 			out = fmt.Sprintf("Started thread %s %q in %s (status: %s). You'll get a thread update when it finishes or needs input.",
 				short(v.ID), v.Title, filepath.Base(v.RepoPath), v.Status)
 		}
 	case "message_thread":
 		var v core.ThreadView
 		if v, err = worker(); err == nil {
-			if err = o.c.SendFromOrchestrator(ctx, v.ID, a.Text); err == nil {
+			var images []string
+			if images, err = o.c.ImportImages(a.Images); err != nil {
+				break
+			}
+			if err = o.c.SendFromOrchestrator(ctx, v.ID, a.Text, images...); err == nil {
 				out = fmt.Sprintf("Sent to %s.", short(v.ID))
 			}
 		}

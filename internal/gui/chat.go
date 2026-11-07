@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/tyler-builds/jamb/dialog"
+	"image"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/tyler-builds/jamb/access"
@@ -45,8 +48,8 @@ func (a *App) orchestratorView(ctx *ui.Context) ui.Element {
 			Child(ui.Div().Column().Gap(space2).Width(ui.Full).MaxWidth(ui.Px(chatMaxWidth)).
 				Child(a.questionStrip(ctx)).
 				Child(a.attentionBar(ctx)).
-				Child(a.composer(ctx, v, "orch-draft", "Message Solo…", func(text string) error {
-					return a.b.SendToOrchestrator(context.Background(), text)
+				Child(a.composer(ctx, v, "orch-draft", "Message Solo…", func(text string, images []string) error {
+					return a.b.SendToOrchestrator(context.Background(), text, images...)
 				})))).
 		Background(t.Background)
 }
@@ -296,14 +299,19 @@ func (a *App) rowView(ctx *ui.Context, v core.ThreadView, r row) ui.Element {
 				Child(ui.Div().Row().Align(ui.Center).Gap(6).PaddingLeft(2).
 					Child(brandMark(14)).
 					Child(ui.Text("Solo").FontSize(12).Medium().TextColor(t.TextMuted))).
+				Child(a.messageImages(ctx, d.Images, ui.Start)).
 				Child(ui.Div().PaddingX(space3+2).PaddingY(space2+2).Radius(radiusL).MaxWidth(ui.Percent(92)).
 					Background(t.Surface).Border(1, t.Border).
 					Child(ui.Text(d.Text).Selectable()))
 		}
-		return ui.Div().Row().Justify(ui.End).
-			Child(ui.Div().PaddingX(space3 + 2).PaddingY(space2 + 2).Radius(radiusL).MaxWidth(ui.Percent(85)).
+		col := ui.Div().Column().Align(ui.End).Gap(space1 + 2).MaxWidth(ui.Percent(85)).
+			Child(a.messageImages(ctx, d.Images, ui.End))
+		if strings.TrimSpace(d.Text) != "" {
+			col = col.Child(ui.Div().PaddingX(space3 + 2).PaddingY(space2 + 2).Radius(radiusL).
 				Background(t.SurfaceActive).
 				Child(ui.Text(d.Text).Selectable()))
+		}
+		return ui.Div().Row().Justify(ui.End).Child(col)
 	case core.ItemAssistant:
 		var d core.TextData
 		it.Decode(&d)
@@ -1012,32 +1020,73 @@ func (a *App) attentionBar(ctx *ui.Context) ui.Element {
 		Child(ui.Div().Shrink(0).Tooltip("Open the next thread that needs you").Child(ui.Kbd("Ctrl+J")))
 }
 
-// composer is a message box: Enter sends, Shift+Enter starts a new line.
-func (a *App) composer(ctx *ui.Context, v core.ThreadView, key, placeholder string, send func(string) error) ui.Element {
+// composer is a message box: Enter sends, Shift+Enter starts a new line. Images come in by pasting,
+// dropping files on it, or the attach button, and show as thumbnails above the text.
+func (a *App) composer(ctx *ui.Context, v core.ThreadView, key, placeholder string, send func(string, []string) error) ui.Element {
 	return ui.Component(func(ctx *ui.Context) ui.Element {
 		t := ctx.Theme()
 		draft := ui.Local(ctx, key, "")
+		images := ui.Local(ctx, key+"-images", []string(nil))
 		var focus *ui.FocusHandle
 		if key == "orch-draft" {
 			draft = a.orchDraft // the pinned question folds while the user writes to Solo
 			focus = a.orchFocus
+			images = a.orchImages
 		}
 		submit := func() {
-			text := strings.TrimSpace(draft.Peek())
-			if text == "" {
+			text, imgs := strings.TrimSpace(draft.Peek()), images.Peek()
+			if text == "" && len(imgs) == 0 {
 				return
 			}
 			draft.Set("")
-			a.run("Sending", func(context.Context) error { return send(text) })
+			images.Set(nil)
+			a.run("Sending", func(context.Context) error { return send(text, imgs) })
 		}
-		empty := strings.TrimSpace(draft.Get()) == ""
+		attach := func(load func() ([]string, error)) {
+			go func() {
+				paths, err := load()
+				if err != nil {
+					a.notify(ui.ToastError, "Couldn't attach the image", err.Error())
+				}
+				if len(paths) > 0 {
+					a.onUI(func() { images.Set(append(slices.Clone(images.Peek()), paths...)) })
+				}
+			}()
+		}
+		importFiles := func(files []string) {
+			attach(func() ([]string, error) {
+				var out []string
+				for _, f := range files {
+					p, err := a.b.ImportImage(f)
+					if err != nil {
+						return out, err
+					}
+					out = append(out, p)
+				}
+				return out, nil
+			})
+		}
+		empty := strings.TrimSpace(draft.Get()) == "" && len(images.Get()) == 0
 		sendBtn := ui.IconButton(icons.ArrowUp).Small().Label("Send").Tooltip("Send (Enter) · Shift+Enter for a new line").OnClick(submit)
 		if empty {
 			sendBtn = sendBtn.Secondary().Disabled(true)
 		} else {
 			sendBtn = sendBtn.Primary()
 		}
-		actions := ui.Div().Row().Align(ui.Center).Gap(space1).Shrink(0)
+		actions := ui.Div().Row().Align(ui.Center).Gap(space1).Shrink(0).
+			Child(ui.IconButton(icons.ImagePlus).Ghost().Small().Label("Attach images").
+				Tooltip("Attach images · you can also paste or drop them").
+				OnClick(func() {
+					ctx.Window().OpenFiles(dialog.FileOptions{Title: "Attach images", Multiple: true,
+						Filters: []dialog.Filter{{Name: "Images", Patterns: []string{"*.png", "*.jpg", "*.jpeg", "*.gif", "*.webp"}}}},
+						func(r dialog.FileResult) {
+							if r.Err != nil {
+								a.notify(ui.ToastError, "Couldn't open the file picker", r.Err.Error())
+							} else if !r.Canceled {
+								importFiles(r.Paths)
+							}
+						})
+				}))
 		if v.InTurn {
 			id := v.ID
 			actions = actions.Child(ui.IconButton(icons.Square).Ghost().Small().Label("Stop").
@@ -1049,17 +1098,38 @@ func (a *App) composer(ctx *ui.Context, v core.ThreadView, key, placeholder stri
 		actions = actions.Child(sendBtn)
 		area := ui.TextArea(draft).Placeholder(placeholder).Label(placeholder).MinRows(1).Borderless().
 			MaxHeight(ui.Px(220)).Width(ui.Full).Key(key + "-area").FocusHandle(focus).
+			OnPasteImage(func(img image.Image) {
+				attach(func() ([]string, error) {
+					p, err := a.b.SaveImage(img)
+					if err != nil {
+						return nil, err
+					}
+					return []string{p}, nil
+				})
+			}).
 			OnKeyDown(func(e *ui.KeyEvent) {
 				if e.Key == input.KeyEnter && e.Mods&input.ModShift == 0 {
 					e.StopPropagation()
 					submit()
 				}
 			})
-		return ui.Div().Row().Align(ui.End).Gap(space2).PaddingLeft(space3).PaddingRight(space2).PaddingY(space2).
+		box := ui.Div().Column().PaddingLeft(space3).PaddingRight(space2).PaddingY(space2).
 			MinHeight(ui.Px(52)).Radius(radiusXL).Border(1, t.BorderStrong).Background(t.Surface).
 			FocusWithin(ui.Style{BorderColor: t.TextSubtle}).
+			OnDrop(ui.Drop(func(f ui.Files, _ *ui.DropEvent) { importFiles(f) }))
+		if imgs := images.Get(); len(imgs) > 0 {
+			strip := ui.Div().Row().Wrap().Gap(space2).PaddingTop(space1).PaddingBottom(space2)
+			for i, p := range imgs {
+				idx := i
+				strip = strip.Child(a.thumb(ctx, p, 56, func() {
+					images.Set(slices.Delete(slices.Clone(images.Peek()), idx, idx+1))
+				}))
+			}
+			box = box.Child(strip)
+		}
+		return box.Child(ui.Div().Row().Align(ui.End).Gap(space2).
 			Child(ui.Div().Column().Grow(1).MinWidth(ui.Px(0)).PaddingY(space1).Child(area)).
-			Child(actions)
+			Child(actions))
 	})
 }
 

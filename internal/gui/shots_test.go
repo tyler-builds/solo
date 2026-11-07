@@ -2,6 +2,7 @@ package gui
 
 import (
 	"fmt"
+	"image/color"
 	"image/png"
 	"os"
 	"path/filepath"
@@ -52,6 +53,16 @@ func TestShots(t *testing.T) {
 				f.add(core.OrchestratorID, core.ItemAssistant, core.TextData{Text: "Still running the auth tests. The refresh path now retries once on a 401; the remaining work is the test for an expired refresh token, which the worker is writing now. I'll tell you when it finishes."})
 			}
 			a.items = map[string]*ui.Signal[[]core.Item]{}
+		}},
+		{"images", func(a *App, f *fakeBackend) {
+			dir := t.TempDir()
+			f.add(core.OrchestratorID, core.ItemUser, core.UserData{Text: "The email field overlaps the save button on narrow windows. Can a thread fix it?",
+				Images: []string{sampleScreenshot(dir, color.RGBA{47, 214, 193, 255}), sampleScreenshot(dir, color.RGBA{90, 120, 230, 255})}})
+			a.items = map[string]*ui.Signal[[]core.Item]{}
+			a.orchImages.Set([]string{sampleScreenshot(dir, color.RGBA{200, 140, 60, 255})})
+		}},
+		{"lightbox", func(a *App, f *fakeBackend) {
+			a.lightbox.Set(sampleScreenshot(t.TempDir(), color.RGBA{47, 214, 193, 255}))
 		}},
 		{"empty", nil},
 	}

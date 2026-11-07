@@ -4,6 +4,7 @@ go 1.27.3
 
 require (
 	github.com/tyler-builds/jamb v0.6.4
+	golang.org/x/image v0.47.0
 	modernc.org/sqlite v1.61.1
 )
 
@@ -18,7 +19,6 @@ require (
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/tetratelabs/wazero v1.12.0 // indirect
 	github.com/yuin/goldmark v1.8.7 // indirect
-	golang.org/x/image v0.47.0 // indirect
 	golang.org/x/sys v0.49.0 // indirect
 	golang.org/x/text v0.43.0 // indirect
 	modernc.org/libc v1.79.0 // indirect
