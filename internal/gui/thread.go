@@ -113,14 +113,16 @@ func (a *App) threadPanel(ctx *ui.Context) ui.Element {
 	}
 	meta = meta.Child(ui.Text(statusText).FontSize(12).Semibold().TextColor(statusColor(ctx, th.Status)).NoWrap()).
 		Child(ui.Text(filepath.Base(th.RepoPath)).FontSize(12).Medium().TextColor(t.TextMuted).NoWrap())
+	// The branch and the change size stay together, so a narrow panel wraps them as one.
+	branch := ui.Div().Row().Align(ui.Center).Gap(space1)
 	if th.Branch != "" {
-		meta = meta.Child(ui.Div().Row().Align(ui.Center).Gap(space1).
-			Child(ui.Icon(icons.GitBranch).Size(12).Color(t.TextSubtle)).
-			Child(ui.Text(branchLabel(th) + " → " + th.BaseBranch).FontSize(12).TextColor(t.TextSubtle).NoWrap()))
+		branch = branch.Child(ui.Icon(icons.GitBranch).Size(12).Color(t.TextSubtle)).
+			Child(ui.Text(branchLabel(th) + " → " + th.BaseBranch).FontSize(12).TextColor(t.TextSubtle).NoWrap())
 	}
 	if added+removed > 0 {
-		meta = meta.Child(stat)
+		branch = branch.Child(stat.PaddingLeft(space1))
 	}
+	meta = meta.Child(branch)
 	if a.cfg.Get().ShowCosts && th.CostUSD > 0 {
 		meta = meta.Child(subtle(ctx, fmt.Sprintf("$%.2f", th.CostUSD)))
 	}
