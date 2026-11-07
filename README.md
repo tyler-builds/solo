@@ -21,6 +21,16 @@ go run ./cmd/solo
 Open Settings and add the folders that hold your repositories. Data lives in `~/.local/share/solo`
 (`%LOCALAPPDATA%\Solo` on Windows); `SOLO_DEBUG=1` also records raw SDK messages under `logs/` there.
 
+## Package (Linux)
+
+```
+./scripts/appimage.sh        # dist/Solo-x86_64.AppImage, with the sidecar and claude bundled
+uas add dist/Solo-x86_64.AppImage   # optional: install it with uas
+```
+
+Needs Go, Bun, `mksquashfs` and ImageMagick. The AppImage runtime is downloaded once into
+`~/.cache/solo-build`.
+
 ## Develop
 
 ```
