@@ -20,9 +20,8 @@ import (
 )
 
 const (
-	sidebarWidth = 224
-	railWidth    = 304
-	itemLimit    = 400 // transcript items loaded per thread
+	railWidth = 304
+	itemLimit = 400 // transcript items loaded per thread
 )
 
 // App is the window's state.
@@ -239,10 +238,8 @@ func (a *App) Root(ctx *ui.Context) ui.Element {
 	}
 	return root.
 		Child(a.titleBar(ctx)).
-		Child(ui.Div().Row().Grow(1).MinHeight(ui.Px(0)).
-			Child(a.sidebar(ctx)).
-			Child(ui.Div().Column().Grow(1).Basis(ui.Px(0)).MinWidth(ui.Px(0)).Height(ui.Full).ClipContent().
-				Child(ui.Component(a.center)))).
+		Child(ui.Div().Column().Grow(1).MinHeight(ui.Px(0)).PaddingLeft(space2).ClipContent().
+			Child(ui.Component(a.center))).
 		Child(ui.Component(a.settingsDialog)).
 		Child(ui.Component(a.confirmDialog)).
 		Child(ui.CommandPalette(a.palette).ItemsOnly().Placeholder("Go to a thread").Items(a.paletteItems)).
@@ -261,11 +258,33 @@ func (a *App) titleBar(ctx *ui.Context) ui.Element {
 		Child(ui.Icon(icons.Search).Size(13).Color(t.TextSubtle)).
 		Child(ui.Text("Go to a thread").FontSize(12).TextColor(t.TextSubtle).Grow(1)).
 		Child(ui.Kbd("Ctrl+K"))
+	var trailing []ui.Element
+	// Claude's usage shows only when it matters.
+	if rate := a.rate.Get(); rate.Kind == agent.EventRateLimit && rate.Status != "allowed" {
+		status, c := "Near the usage limit", t.Warning
+		if rate.Status == "rejected" {
+			status, c = "Usage limit reached", t.Danger
+		}
+		trailing = append(trailing, ui.Div().Row().Align(ui.Center).Gap(6).PaddingX(space2).Height(ui.Px(24)).Radius(12).
+			Background(c.Alpha(0.12)).
+			Child(dot(c, 6)).
+			Child(ui.Text(status).FontSize(12).Medium().TextColor(c)))
+	}
+	if a.cfg.Get().ShowCosts {
+		var cost float64
+		for _, th := range a.threads.Get() {
+			cost += th.CostUSD
+		}
+		trailing = append(trailing, ui.Div().Tooltip("Spent across threads").Child(subtle(ctx, fmt.Sprintf("$%.2f", cost))))
+	}
+	trailing = append(trailing, ui.IconButton(icons.Settings).Ghost().Small().Label("Settings").Tooltip("Settings").
+		Key("open-settings").OnClick(func() { a.settings.Set(true) }))
 	return ui.TitleBar().Height(ui.Px(40)).
 		Child(ui.Div().Row().Align(ui.Center).Gap(space2).PaddingLeft(space4).
 			Child(brandMark(18)).
 			Child(ui.Text("Solo").FontSize(13).Semibold())).
-		Center(find)
+		Center(find).
+		Trailing(trailing...)
 }
 
 // inset is a content panel: rounded, a step off the window background, with a hairline border.
@@ -309,7 +328,7 @@ func (a *App) center(ctx *ui.Context) ui.Element {
 	default:
 		// Between the rail's width and the panel's, in pixels of the space the split has.
 		w, _ := ctx.WindowSize()
-		target := (w - sidebarWidth) * a.panelGoal / 100
+		target := (w - space2) * a.panelGoal / 100
 		px := railWidth + (target-railWidth)*anim
 		pane = pane.Size(ui.Px(px)).Min(ui.Px(px)).Max(ui.Px(px))
 	}
@@ -385,66 +404,7 @@ func (a *App) animatePanel(to float32, done func()) {
 	step(1)
 }
 
-// sidebar lists the repositories; choosing one filters the thread rail.
-func (a *App) sidebar(ctx *ui.Context) ui.Element {
-	threads := a.threads.Get()
-	open := map[string]int{}
-	for _, th := range threads {
-		if th.IsWorker && !core.Finished(th.Status) {
-			open[th.RepoPath]++
-		}
-	}
-	total := 0
-	for _, n := range open {
-		total += n
-	}
-	items := []ui.SidebarItem{
-		{Key: "orchestrator", Label: "All threads", Icon: icons.Layers, Badge: total},
-		ui.SidebarHeading("Repositories"),
-	}
-	repos := a.repos.Get()
-	for _, r := range repos {
-		items = append(items, ui.SidebarItem{Key: "repo:" + r, Label: filepath.Base(r), Icon: icons.FolderGit2, Badge: open[r]})
-	}
-	sb := ui.Sidebar(a.navSel, items...).Label("Repositories").Width(ui.Px(sidebarWidth)).NoIndicator().
-		Footer(a.sidebarFooter(ctx))
-	if len(repos) == 0 {
-		sb = sb.Footer(ui.Div().Column().Gap(space3).
-			Child(ui.Div().Column().Gap(space2).PaddingX(space2 + 2).
-				Child(caption(ctx, "No repositories yet. Add the folders that hold your projects.")).
-				Child(ui.Button("Add folders").Icon(icons.Plus).Secondary().Small().OnClick(func() { a.settings.Set(true) }))).
-			Child(a.sidebarFooter(ctx)))
-	}
-	return sb
-}
-
-func (a *App) sidebarFooter(ctx *ui.Context) ui.Element {
-	t := ctx.Theme()
-	info := ui.Div().Column().Gap(2).PaddingX(space2 + 2).PaddingY(space1)
-	// Claude's usage shows only when it matters.
-	if rate := a.rate.Get(); rate.Kind == agent.EventRateLimit && rate.Status != "allowed" {
-		status, c := "Near the usage limit", t.Warning
-		if rate.Status == "rejected" {
-			status, c = "Usage limit reached", t.Danger
-		}
-		info = info.Child(ui.Div().Row().Align(ui.Center).Gap(6).
-			Child(dot(c, 6)).
-			Child(ui.Text(status).FontSize(12).Medium()))
-	}
-	if a.cfg.Get().ShowCosts {
-		var cost float64
-		for _, th := range a.threads.Get() {
-			cost += th.CostUSD
-		}
-		info = info.Child(caption(ctx, fmt.Sprintf("$%.2f spent across threads", cost)))
-	}
-	return ui.Div().Column().Gap(space2).
-		Child(info).
-		Child(ui.Button("Settings").Icon(icons.Settings).Ghost().Small().OnClick(func() { a.settings.Set(true) }).
-			Key("open-settings"))
-}
-
-// repoFilter is the repository the rail shows, or "" for all.
+// repoFilter is the repository the rail shows, or "" for all (set from the rail's repository menu).
 func (a *App) repoFilter() string {
 	sel := a.navSel.Get()
 	if len(sel) > 5 && sel[:5] == "repo:" {

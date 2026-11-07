@@ -212,7 +212,7 @@ func (a *App) panelWidth(ctx *ui.Context) float32 {
 	if l := a.panelSize.Get(); l.Unit == ui.Px(0).Unit {
 		return l.Value
 	}
-	return (w-sidebarWidth)*a.panelGoal/100 - 44
+	return (w-space2)*a.panelGoal/100 - 44
 }
 
 func (a *App) composerFor(ctx *ui.Context, th core.ThreadView) ui.Element {

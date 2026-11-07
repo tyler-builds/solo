@@ -51,10 +51,6 @@ func (a *App) rail(ctx *ui.Context) ui.Element {
 		ctx.After(time.Second, func() { tick.Update(func(n int) int { return n + 1 }) })
 	}
 
-	headTitle := "Threads"
-	if filter != "" {
-		headTitle = filepath.Base(filter)
-	}
 	need := 0
 	for _, th := range open {
 		if needsUser(th) {
@@ -62,15 +58,16 @@ func (a *App) rail(ctx *ui.Context) ui.Element {
 		}
 	}
 	head := ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space4).Height(ui.Px(44)).Shrink(0).
-		Child(ui.Text(headTitle).FontSize(14).Semibold().Truncate().Grow(1).MinWidth(ui.Px(0)))
+		Child(ui.Text("Threads").FontSize(14).Semibold().NoWrap()).
+		Child(ui.Div().Column().Justify(ui.Center).Shrink(1).MinWidth(ui.Px(0)).Child(a.repoMenu(ctx))).
+		Child(ui.Div().Grow(1))
 	if need > 0 {
 		label := fmt.Sprintf("%d need you", need)
 		if need == 1 {
 			label = "1 needs you"
 		}
-		head = head.Child(ui.Text(label).FontSize(12).Medium().TextColor(t.Warning))
+		head = head.Child(ui.Text(label).FontSize(12).Medium().TextColor(t.Warning).NoWrap())
 	}
-	head = head.Child(subtle(ctx, fmt.Sprintf("%d open", len(open))))
 
 	list := ui.Div().Column().Gap(space1).PaddingX(space2).PaddingBottom(space3)
 	if len(open) == 0 {
@@ -132,6 +129,45 @@ func (a *App) rail(ctx *ui.Context) ui.Element {
 		rail = rail.Child(working)
 	}
 	return rail
+}
+
+// repoMenu narrows the rail to one repository. It shows only when the threads span several, or a
+// filter is on.
+func (a *App) repoMenu(ctx *ui.Context) ui.Element {
+	t := ctx.Theme()
+	filter := a.repoFilter()
+	counts := map[string]int{}
+	var repos []string
+	for _, th := range a.threads.Get() {
+		if th.IsWorker && !core.Finished(th.Status) {
+			if counts[th.RepoPath] == 0 {
+				repos = append(repos, th.RepoPath)
+			}
+			counts[th.RepoPath]++
+		}
+	}
+	if len(repos) < 2 && filter == "" {
+		return ui.Div()
+	}
+	slices.SortFunc(repos, func(x, y string) int { return strings.Compare(filepath.Base(x), filepath.Base(y)) })
+	label := "All repos"
+	if filter != "" {
+		label = filepath.Base(filter)
+	}
+	trigger := ui.Div().Row().Align(ui.Center).Gap(space1).PaddingX(space2).Height(ui.Px(24)).Radius(radiusS).
+		Cursor(ui.CursorPointer).Hover(ui.Style{Background: t.SurfaceHover}).Shrink(1).MinWidth(ui.Px(0)).
+		Role(access.RoleButton).Label("Filter by repository: " + label).TabIndex(0).
+		Child(ui.Text(label).FontSize(12).Medium().TextColor(t.TextMuted).Truncate().MinWidth(ui.Px(0))).
+		Child(ui.Icon(icons.ChevronDown).Size(12).Color(t.TextSubtle))
+	return ui.DropdownMenu(trigger, func() []ui.MenuItem {
+		items := []ui.MenuItem{{Label: "All repos", Icon: icons.Layers, OnClick: func() { a.navSel.Set("orchestrator") }}}
+		for _, r := range repos {
+			path := r
+			items = append(items, ui.MenuItem{Label: fmt.Sprintf("%s  ·  %d", filepath.Base(r), counts[r]),
+				Icon: icons.FolderGit2, OnClick: func() { a.navSel.Set("repo:" + path) }})
+		}
+		return items
+	})
 }
 
 // needsUser reports whether a thread waits on the user: a question, a failure, or work to review.

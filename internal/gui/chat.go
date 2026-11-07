@@ -591,11 +591,8 @@ func (a *App) proposalCard(ctx *ui.Context, d core.ProposalData) ui.Element {
 	}
 	return ui.Div().Column().Gap(space3).Padding(space4).Radius(radiusL).Background(t.Surface).
 		Border(1, brand.Alpha(0.35)).
-		Child(ui.Div().Row().Align(ui.Center).Gap(space2).
-			Child(ui.Icon(icons.GitMerge).Size(16).Color(brand)).
-			Child(ui.Text("Merge proposed").FontSize(12).Semibold().TextColor(brand).NoWrap())).
-		Child(a.threadContext(ctx, d.ThreadID, true)).
-		Child(ui.Text(d.Summary).FontSize(13).TextColor(t.TextMuted)).
+		Child(a.cardHeader(ctx, icons.GitMerge, brand, "Merge proposed", d.ThreadID)).
+		Child(ui.Text(d.Summary).FontSize(13).TextColor(t.Text)).
 		Child(actions)
 }
 
@@ -648,11 +645,15 @@ func (a *App) askForm(ctx *ui.Context, threadID, toolUseID string, qs []agent.Qu
 			answers.Set(next)
 			other.Set("")
 		}
-		head := ui.Div().Row().Align(ui.Center).Gap(space2).
-			Child(ui.Icon(icons.MessageCircleQuestionMark).Size(15).Color(t.Warning))
-		head = head.Child(ui.Text("Question").FontSize(12).Semibold().TextColor(t.Warning))
+		typ := "Question"
 		if len(qs) > 1 {
-			head = head.Child(subtle(ctx, fmt.Sprintf("%d of %d", len(cur)+1, len(qs))))
+			typ = fmt.Sprintf("Question %d of %d", len(cur)+1, len(qs))
+		}
+		var head ui.Element
+		if title != "" {
+			head = a.cardHeader(ctx, icons.MessageCircleQuestionMark, t.Warning, typ, threadID)
+		} else {
+			head = a.cardHeader(ctx, icons.MessageCircleQuestionMark, t.Warning, typ, "")
 		}
 		opts := ui.Div().Column().Gap(space1)
 		for i, o := range q.Options {
@@ -698,7 +699,6 @@ func (a *App) askForm(ctx *ui.Context, threadID, toolUseID string, qs []agent.Qu
 				}
 			}).
 			Child(head).
-			Child(ui.If(title != "", a.threadContext(ctx, threadID, false))).
 			Child(ui.Text(q.Question).FontSize(14).Medium()).
 			Child(opts).
 			Child(otherRow)
@@ -889,24 +889,25 @@ func (a *App) threadChip(ctx *ui.Context, id string) ui.Element {
 		Child(ui.Text(th.Title).FontSize(12).Medium().Truncate().MinWidth(ui.Px(0)))
 }
 
-// threadContext says which repository and thread a card is about: the repository, the thread (a chip
-// that opens it), and, for a merge, its branch and target.
-func (a *App) threadContext(ctx *ui.Context, id string, branch bool) ui.Element {
+// cardHeader is the one line atop a card: its type, then the repository and thread it is about (the
+// title opens the thread). threadID "" leaves out the repository and thread.
+func (a *App) cardHeader(ctx *ui.Context, icon *icons.Icon, c ui.Color, typ, threadID string) ui.Element {
 	t := ctx.Theme()
-	th, ok := a.thread(id)
-	if !ok {
-		return ui.Div()
+	row := ui.Div().Row().Align(ui.Center).Gap(space2).MinWidth(ui.Px(0)).
+		Child(ui.Icon(icon).Size(15).Color(c)).
+		Child(ui.Text(typ).FontSize(12).Semibold().TextColor(c).NoWrap())
+	th, ok := a.thread(threadID)
+	if threadID == "" || !ok {
+		return row
 	}
-	row := ui.Div().Row().Align(ui.Center).Gap(space2).Wrap().
-		Child(ui.Div().Row().Align(ui.Center).Gap(space1 + 2).Shrink(0).
-			Child(ui.Icon(icons.FolderGit2).Size(14).Color(t.TextMuted)).
-			Child(ui.Text(filepath.Base(th.RepoPath)).FontSize(13).Semibold())).
-		Child(ui.Icon(icons.ChevronRight).Size(12).Color(t.TextSubtle)).
-		Child(a.threadChip(ctx, id))
-	if branch && th.Branch != "" {
-		row = row.Child(ui.Div().Row().Align(ui.Center).Gap(space1).Shrink(0).
-			Child(ui.Icon(icons.GitBranch).Size(12).Color(t.TextSubtle)).
-			Child(subtle(ctx, branchLabel(th)+" → "+th.BaseBranch)))
-	}
-	return row
+	sep := func() ui.Element { return ui.Text("·").FontSize(12).TextColor(t.TextSubtle) }
+	return row.
+		Child(sep()).
+		Child(ui.Text(filepath.Base(th.RepoPath)).FontSize(12).TextColor(t.TextMuted).NoWrap()).
+		Child(sep()).
+		Child(ui.Div().MinWidth(ui.Px(0)).Cursor(ui.CursorPointer).
+			Role(access.RoleButton).Label("Open " + th.Title).TabIndex(0).Tooltip("Open this thread").
+			Hover(ui.Style{TextColor: t.Link}).
+			OnClick(func() { a.openThread(threadID, "conversation") }).
+			Child(ui.Text(th.Title).FontSize(12).Medium().Truncate()))
 }

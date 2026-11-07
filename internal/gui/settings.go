@@ -2,6 +2,8 @@ package gui
 
 import (
 	"context"
+	"fmt"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -53,6 +55,16 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 		}
 		if len(folders.Get()) == 0 {
 			list = list.Child(caption(ctx, "No folders yet."))
+		}
+		// What the last scan found, so the user can check it.
+		if found := a.repos.Get(); len(found) > 0 {
+			names := make([]string, 0, len(found))
+			for _, r := range found {
+				names = append(names, filepath.Base(r))
+			}
+			list = list.Child(ui.Div().Row().Gap(space1 + 2).PaddingTop(space1).
+				Child(ui.Icon(icons.FolderGit2).Size(13).Color(t.TextSubtle)).
+				Child(caption(ctx, fmt.Sprintf("Found %d repositories: %s", len(found), strings.Join(names, ", "))).Grow(1)))
 		}
 		field := func(label, help string, control ui.Element) ui.Element {
 			return ui.Div().Column().Gap(space1 + 2).
