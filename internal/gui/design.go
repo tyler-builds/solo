@@ -150,9 +150,22 @@ func subtle(ctx *ui.Context, s string) *ui.TextElement {
 }
 
 // statusColor is the color of a thread status's mark.
+// statusDone is shown for a worker that finished with nothing to merge (core.ThreadView.Done).
+const statusDone = "done"
+
+// shownStatus is the status the UI shows for a thread: its own, or statusDone.
+func shownStatus(v core.ThreadView) string {
+	if v.Done {
+		return statusDone
+	}
+	return v.Status
+}
+
 func statusColor(ctx *ui.Context, status string) ui.Color {
 	t := ctx.Theme()
 	switch status {
+	case statusDone:
+		return t.TextMuted
 	case core.StatusRunning, core.StatusStarting:
 		return ui.Hex(pal(t).brand)
 	case core.StatusWaiting:
@@ -179,7 +192,10 @@ func statusLabel(v core.ThreadView) string {
 	case core.StatusWaiting:
 		return "Needs answer"
 	case core.StatusIdle:
-		if v.IsWorker {
+		switch {
+		case v.Done:
+			return "Done"
+		case v.IsWorker:
 			return "Ready to merge"
 		}
 		return "Idle"
@@ -191,6 +207,8 @@ func statusLabel(v core.ThreadView) string {
 		return "Merged"
 	case core.StatusDiscarded:
 		return "Discarded"
+	case core.StatusArchived:
+		return "Archived"
 	}
 	return v.Status
 }
@@ -202,7 +220,7 @@ func dot(c ui.Color, size float32) *ui.DivElement {
 
 // statusPill is a status in a tinted pill with a dot.
 func statusPill(ctx *ui.Context, v core.ThreadView) ui.Element {
-	c := statusColor(ctx, v.Status)
+	c := statusColor(ctx, shownStatus(v))
 	return ui.Div().Row().Align(ui.Center).Gap(6).PaddingX(10).Height(ui.Px(22)).Radius(11).Shrink(0).
 		Background(c.Alpha(0.14)).
 		Child(dot(c, 6)).
@@ -274,8 +292,10 @@ func statusMark(ctx *ui.Context, status string) ui.Element {
 		return box.Child(dot(c, 8).Play("pulse", []ui.Keyframe{
 			{At: 0.5, Motion: ui.Grow(1.35).Opacity(0.45)},
 		}, ui.Animation{Duration: 1200 * time.Millisecond, Repeat: true}))
-	case core.StatusIdle:
+	case core.StatusIdle, statusDone:
 		return box.Child(ui.Icon(icons.CircleCheck).Size(14).Color(c))
+	case core.StatusArchived:
+		return box.Child(ui.Icon(icons.Archive).Size(13).Color(c))
 	case core.StatusMerged:
 		return box.Child(ui.Icon(icons.GitMerge).Size(13).Color(c))
 	case core.StatusQueued:
@@ -297,8 +317,10 @@ func statusIcon(status string) *icons.Icon {
 		return icons.MessageCircleQuestionMark
 	case core.StatusFailed:
 		return icons.CircleAlert
-	case core.StatusIdle:
+	case core.StatusIdle, statusDone:
 		return icons.CircleCheck
+	case core.StatusArchived:
+		return icons.Archive
 	case core.StatusRunning, core.StatusStarting, core.StatusQueued:
 		return icons.CircleDot
 	case core.StatusMerged:

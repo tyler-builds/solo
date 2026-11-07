@@ -93,6 +93,17 @@ func (f *fakeBackend) UpdateSettings(fn func(*core.Settings)) error {
 func (f *fakeBackend) RepoPaths() []string    { return f.repos }
 func (f *fakeBackend) RateLimit() agent.Event { return agent.Event{} }
 
+func (f *fakeBackend) Archive(_ context.Context, id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := range f.threads {
+		if f.threads[i].ID == id {
+			f.threads[i].Status, f.threads[i].Done, f.threads[i].CanArchive = core.StatusArchived, false, false
+		}
+	}
+	return nil
+}
+
 func (f *fakeBackend) SaveImage(img image.Image) (string, error) {
 	p := filepath.Join(os.TempDir(), fmt.Sprintf("solo-paste-%d.png", time.Now().UnixNano()))
 	out, err := os.Create(p)
@@ -181,6 +192,9 @@ func demoBackend() *fakeBackend {
 	flaky.Error = "Tests failed: 2 of 148 in billing/worker_test.go; the retry timer races with the test clock."
 	readme := worker("e1e2e3e4-readme", "Update install steps in README", repos[2], core.StatusQueued, 30*time.Second, 0)
 	readme.HasWorktree, readme.WorktreePath, readme.Branch = false, "", ""
+	audit := worker("a0b1c2d3-audit", "Find where uploads are logged", repos[1], core.StatusIdle, 25*time.Minute, 0.09)
+	audit.Summary = "Uploads are logged in `internal/upload/handler.go:142` through the request logger; nothing writes file names. No changes needed."
+	audit.Done, audit.CanMerge, audit.CanArchive, audit.Changed = true, false, true, 0
 	bump := worker("f0f0f0f0-gobump", "Bump Go to 1.27", repos[3], core.StatusMerged, 3*time.Hour, 0.12)
 	bump.CanMerge, bump.CanDiscard = false, false
 	orch := core.ThreadView{Thread: store.Thread{ID: core.OrchestratorID, Kind: store.KindOrchestrator, Title: "Orchestrator",
@@ -188,7 +202,7 @@ func demoBackend() *fakeBackend {
 		ActualModel: "claude-opus-5-5"}
 
 	f := &fakeBackend{
-		threads:  []core.ThreadView{orch, oauth, limiter, forms, flaky, readme, bump},
+		threads:  []core.ThreadView{orch, oauth, limiter, forms, audit, flaky, readme, bump},
 		items:    map[string][]core.Item{},
 		repos:    repos,
 		settings: core.Settings{Folders: []string{"~/code"}, OrchestratorModel: "opus", WorkerModel: "sonnet", ScanDepth: 3},

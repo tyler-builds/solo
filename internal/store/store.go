@@ -180,6 +180,18 @@ func (s *Store) Threads() ([]*Thread, error) {
 	return out, rows.Err()
 }
 
+// PathReferenced reports whether a thread other than exceptThread mentions path in a message or in
+// the images of its prompt.
+func (s *Store) PathReferenced(path, exceptThread string) (bool, error) {
+	enc, _ := json.Marshal(path) // as it appears inside item data
+	var n int
+	err := s.db.QueryRow(`SELECT
+		(SELECT COUNT(*) FROM items WHERE thread_id != ? AND instr(data, ?) > 0) +
+		(SELECT COUNT(*) FROM threads WHERE id != ? AND instr(prompt_images, ?) > 0)`,
+		exceptThread, string(enc), exceptThread, path).Scan(&n)
+	return n > 0, err
+}
+
 // DeleteThread removes the thread and its items.
 func (s *Store) DeleteThread(id string) error {
 	_, err := s.db.Exec(`DELETE FROM threads WHERE id = ?`, id)

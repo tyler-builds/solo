@@ -22,6 +22,7 @@ var railGroups = []struct {
 	{"Needs answer", []string{core.StatusWaiting}},
 	{"Failed", []string{core.StatusFailed}},
 	{"Ready to merge", []string{core.StatusIdle}},
+	{"Done", []string{statusDone}},
 	{"Stopped", []string{core.StatusInterrupted}},
 	// Last, and pinned to the bottom of the rail: work in progress needs nothing from the user.
 	{"Working", []string{core.StatusRunning, core.StatusStarting, core.StatusQueued}},
@@ -79,7 +80,7 @@ func (a *App) rail(ctx *ui.Context) ui.Element {
 	for gi, g := range railGroups {
 		var group []core.ThreadView
 		for _, th := range open {
-			if slices.Contains(g.statuses, th.Status) {
+			if slices.Contains(g.statuses, shownStatus(th)) {
 				group = append(group, th)
 			}
 		}
@@ -211,7 +212,7 @@ func (a *App) threadRow(ctx *ui.Context, th core.ThreadView) ui.Element {
 			}
 		}).
 		Child(ui.Div().Row().Align(ui.Center).Gap(space2).
-			Child(statusMark(ctx, th.Status)).
+			Child(statusMark(ctx, shownStatus(th))).
 			Child(ui.Text(th.Title).FontSize(13).Medium().Truncate().Grow(1).MinWidth(ui.Px(0))).
 			Child(ui.Text(when).FontSize(11).TextColor(whenColor).NoWrap())).
 		Child(a.rowDetail(ctx, repo, line, lineColor))

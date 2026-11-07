@@ -492,7 +492,7 @@ func (a *App) paletteItems(query string) []ui.PaletteItem {
 			detail += " · " + elapsed(th.TurnStarted)
 		}
 		return ui.PaletteItem{
-			Key: id, Label: th.Title, Detail: detail, Icon: statusIcon(th.Status),
+			Key: id, Label: th.Title, Detail: detail, Icon: statusIcon(shownStatus(th)),
 			Keywords: []string{filepath.Base(th.RepoPath), statusLabel(th)},
 			Run:      func() { a.openThread(id, "conversation") },
 		}

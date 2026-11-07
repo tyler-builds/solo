@@ -128,8 +128,11 @@ Raw `SDKMessage`s are also appended to a per-session JSONL file for debugging an
   `allowDangerouslySkipPermissions: true`, default model configurable.
 - AskUserQuestion goes to Go → shows as a card in the rail and orchestrator chat. You or the
   orchestrator (`answer_question`) can reply.
-- Status machine: `queued → starting → running ⇄ waiting_input → idle(done) | failed | interrupted
-  → merged | discarded`. A concurrency cap (default 4) queues extra threads.
+- Status machine: `queued → starting → running ⇄ waiting → idle | failed | interrupted → merged |
+  discarded | archived`. No concurrency cap. After each turn Solo counts the files the branch changes:
+  an idle thread with changes is "Ready to merge"; one without is "Done" and can only be archived
+  (worktree and branch removed, history kept).
+- Discarding a thread deletes its message images, except ones another thread's history still shows.
 
 ## UI (jamb)
 

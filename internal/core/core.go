@@ -146,7 +146,7 @@ func New(cfg Config) (*Core, error) {
 		return nil, err
 	}
 	for _, row := range rows {
-		t := &thread{row: *row}
+		t := &thread{row: *row, changed: -1}
 		// A thread that was working when the app stopped lost its process; say so.
 		switch t.row.Status {
 		case StatusStarting, StatusRunning, StatusWaiting:
@@ -163,6 +163,11 @@ func New(cfg Config) (*Core, error) {
 		OnAsk:      c.onAsk,
 	}, cfg.Log)
 	c.repos = git.Scan(c.settings.Folders, c.settings.ScanDepth, c.worktreesDir())
+	for id, t := range c.threads {
+		if t.row.Kind == store.KindWorker && t.row.WorktreePath != "" && !Finished(t.row.Status) {
+			go c.countChanges(id)
+		}
+	}
 	return c, nil
 }
 

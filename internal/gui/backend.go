@@ -30,6 +30,7 @@ type Backend interface {
 	Diff(ctx context.Context, threadID string) (string, error)
 	Merge(ctx context.Context, threadID string) (string, error)
 	Discard(ctx context.Context, threadID string) error
+	Archive(ctx context.Context, threadID string) error
 
 	Settings() core.Settings
 	UpdateSettings(f func(*core.Settings)) error

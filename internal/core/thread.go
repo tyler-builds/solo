@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -25,6 +27,7 @@ const (
 	StatusInterrupted = "interrupted" // stopped by the user, or by Solo closing
 	StatusMerged      = "merged"      // its branch was merged and its worktree removed
 	StatusDiscarded   = "discarded"   // its worktree and branch were deleted
+	StatusArchived    = "archived"    // done without changes; its worktree and branch were removed
 )
 
 // Active reports whether a thread with the status is starting or working.
@@ -33,7 +36,9 @@ func Active(status string) bool {
 }
 
 // Finished reports whether a thread with the status is closed for good.
-func Finished(status string) bool { return status == StatusMerged || status == StatusDiscarded }
+func Finished(status string) bool {
+	return status == StatusMerged || status == StatusDiscarded || status == StatusArchived
+}
 
 // thread is a thread's state. Guarded by Core.mu.
 type thread struct {
@@ -53,6 +58,8 @@ type thread struct {
 	recovered time.Time
 	tasks     map[string]int64 // task id → item id
 	tools     map[string]int64 // tool_use id → item id
+	// changed is how many files its branch changes from where it started; -1 until counted.
+	changed int
 }
 
 type liveKey struct {
@@ -75,6 +82,11 @@ type ThreadView struct {
 	CanMerge     bool
 	CanDiscard   bool
 	CanInterrupt bool
+	CanArchive   bool
+	// Changed is how many files a worker's branch changes from where it started; -1 until counted.
+	Changed int
+	// Done is a worker whose last turn finished with nothing to merge.
+	Done bool
 }
 
 func (t *thread) view() ThreadView {
@@ -88,12 +100,16 @@ func (t *thread) view() ThreadView {
 		PendingAsk:  len(t.asks) > 0,
 		IsWorker:    t.row.Kind == store.KindWorker,
 		HasWorktree: t.row.WorktreePath != "",
+		Changed:     t.changed,
 	}
 	for _, k := range t.live {
 		v.Live = append(v.Live, *t.liveTxt[k])
 	}
 	v.CanInterrupt = t.inTurn
-	v.CanMerge = v.IsWorker && v.HasWorktree && !Finished(t.row.Status) && !Active(t.row.Status) && t.row.Status != StatusQueued
+	settled := v.IsWorker && v.HasWorktree && !Finished(t.row.Status) && !Active(t.row.Status) && t.row.Status != StatusQueued
+	v.CanMerge = settled && t.changed != 0
+	v.Done = settled && t.changed == 0 && t.row.Status == StatusIdle
+	v.CanArchive = settled && t.changed == 0
 	v.CanDiscard = v.IsWorker && !Finished(t.row.Status)
 	return v
 }
@@ -164,7 +180,7 @@ func (c *Core) CreateWorker(ctx context.Context, spec WorkerSpec) (ThreadView, e
 	id := agent.NewUUID()
 	slug := git.Slug(title) + "-" + id[:6]
 	ts := now()
-	t := &thread{row: store.Thread{
+	t := &thread{changed: -1, row: store.Thread{
 		ID:           id,
 		Kind:         store.KindWorker,
 		SessionID:    agent.NewUUID(),
@@ -534,7 +550,100 @@ func (c *Core) Discard(ctx context.Context, threadID string) error {
 	c.addNotice(threadID, "info", "Discarded.")
 	c.notify(ch)
 	c.schedule()
+	c.removeAttachments(ctx, threadID)
 	return nil
+}
+
+// Archive closes a worker that finished with nothing to merge: it removes its worktree and branch and
+// keeps its history.
+func (c *Core) Archive(ctx context.Context, threadID string) error {
+	v, ok := c.Thread(threadID)
+	if !ok {
+		return fmt.Errorf("no thread %s", threadID)
+	}
+	if !v.CanArchive {
+		if v.Changed > 0 {
+			return fmt.Errorf("thread %q has changes; merge or discard it", v.Title)
+		}
+		return fmt.Errorf("thread %q can't be archived while it is %s", v.Title, v.Status)
+	}
+	c.closeSession(ctx, threadID)
+	if err := git.RemoveWorktree(ctx, v.RepoPath, v.WorktreePath, v.Branch, true); err != nil {
+		c.log.Warn("core: archiving worktree", "err", err)
+	}
+	c.mu.Lock()
+	var ch Change
+	if t := c.threads[threadID]; t != nil {
+		t.row.WorktreePath = ""
+		ch = c.setStatusLocked(t, StatusArchived, "")
+	}
+	c.mu.Unlock()
+	c.addNotice(threadID, "info", "Archived.")
+	c.notify(ch)
+	return nil
+}
+
+// countChanges counts the files a worker's branch changes, for Done and CanMerge.
+func (c *Core) countChanges(id string) {
+	v, ok := c.Thread(id)
+	if !ok || !v.IsWorker || v.WorktreePath == "" || v.BaseCommit == "" || Finished(v.Status) {
+		return
+	}
+	if _, err := os.Stat(v.WorktreePath); err != nil {
+		return // being removed
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	files, err := git.Changes(ctx, v.WorktreePath, v.BaseCommit)
+	if err != nil {
+		c.log.Warn("core: counting changes", "thread", id, "err", err)
+		return
+	}
+	c.mu.Lock()
+	t := c.threads[id]
+	if t == nil || t.changed == len(files) {
+		c.mu.Unlock()
+		return
+	}
+	t.changed = len(files)
+	c.mu.Unlock()
+	nv, _ := c.Thread(id)
+	c.notify(Change{Kind: ChangeThread, ThreadID: id, PrevStatus: nv.Status, Status: nv.Status})
+}
+
+// removeAttachments deletes the images of a discarded thread's messages that no other thread uses
+// (Solo's messages often share them).
+func (c *Core) removeAttachments(ctx context.Context, threadID string) {
+	items, err := c.db.Items(ctx, threadID, 0)
+	if err != nil {
+		return
+	}
+	c.mu.Lock()
+	var paths []string
+	if t := c.threads[threadID]; t != nil {
+		paths = append(paths, t.row.PromptImages...)
+	}
+	c.mu.Unlock()
+	for _, it := range items {
+		if it.Kind == ItemUser {
+			var d UserData
+			if json.Unmarshal(it.Data, &d) == nil {
+				paths = append(paths, d.Images...)
+			}
+		}
+	}
+	dir := c.attachmentsDir()
+	for _, p := range paths {
+		if filepath.Dir(p) != dir {
+			continue // not ours to delete
+		}
+		if used, err := c.db.PathReferenced(p, threadID); err != nil || used {
+			continue
+		}
+		if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
+			c.log.Warn("core: removing attachment", "err", err)
+		}
+	}
 }
 
 func (c *Core) closeSession(ctx context.Context, threadID string) {

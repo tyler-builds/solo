@@ -245,6 +245,7 @@ func (c *Core) onEvent(e agent.Event) {
 	c.notify(changes...)
 	if e.Kind == agent.EventTurnEnd || e.Kind == agent.EventExited {
 		c.schedule()
+		go c.countChanges(id)
 	}
 }
 

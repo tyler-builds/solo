@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"image"
 	"image/png"
@@ -405,4 +406,66 @@ func pngSize(t *testing.T, path string) (int, int) {
 		t.Fatal(err)
 	}
 	return cfg.Width, cfg.Height
+}
+
+func TestDoneArchiveAndDiscardCleanup(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+
+	// A worker that changes nothing is Done: nothing to merge, and it can be archived.
+	shared, _ := e.c.SaveImage(image.NewRGBA(image.Rect(0, 0, 4, 4)))
+	v, err := e.c.CreateWorker(ctx, WorkerSpec{Repo: "proj", Title: "Look around", Prompt: "just answer", Images: []string{shared}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitStatus(t, e.c, v.ID, StatusIdle)
+	deadline := time.Now().Add(5 * time.Second)
+	for v, _ = e.c.Thread(v.ID); !v.Done && time.Now().Before(deadline); v, _ = e.c.Thread(v.ID) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !v.Done || v.CanMerge || !v.CanArchive || v.Changed != 0 {
+		t.Fatalf("no-change worker %+v", v)
+	}
+	if err := e.c.AddProposal(v.ID, "ship it"); err == nil {
+		t.Fatal("proposed merging a thread with no changes")
+	}
+	wt := v.WorktreePath
+	if err := e.c.Archive(ctx, v.ID); err != nil {
+		t.Fatal(err)
+	}
+	v, _ = e.c.Thread(v.ID)
+	if v.Status != StatusArchived || !Finished(v.Status) {
+		t.Fatalf("archived %+v", v)
+	}
+	if _, err := os.Stat(wt); err == nil {
+		t.Fatal("worktree kept after archive")
+	}
+
+	// A worker with changes can't be archived; discarding it deletes its own images but not one
+	// another thread still shows.
+	own, _ := e.c.SaveImage(image.NewRGBA(image.Rect(0, 0, 4, 4)))
+	w, err := e.c.CreateWorker(ctx, WorkerSpec{Repo: "proj", Title: "Write", Prompt: "write a.txt hi", Images: []string{shared, own}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitStatus(t, e.c, w.ID, StatusIdle)
+	deadline = time.Now().Add(5 * time.Second)
+	for w, _ = e.c.Thread(w.ID); w.Changed < 0 && time.Now().Before(deadline); w, _ = e.c.Thread(w.ID) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if w.Done || !w.CanMerge || w.Changed != 1 {
+		t.Fatalf("changed worker %+v", w)
+	}
+	if err := e.c.Archive(ctx, w.ID); err == nil {
+		t.Fatal("archived a thread with changes")
+	}
+	if err := e.c.Discard(ctx, w.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(own); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("discarded thread's image kept: %v", err)
+	}
+	if _, err := os.Stat(shared); err != nil {
+		t.Fatalf("shared image removed: %v", err)
+	}
 }

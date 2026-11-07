@@ -287,6 +287,9 @@ func statusText(t core.ThreadView) string {
 	if t.Status == core.StatusQueued {
 		s += " (about to start)"
 	}
+	if t.Done {
+		s += " (done; it changed no files, so there is nothing to merge)"
+	}
 	return s + ", updated " + ago(t.UpdatedAt)
 }
 

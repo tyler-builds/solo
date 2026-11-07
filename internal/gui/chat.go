@@ -1194,7 +1194,7 @@ func (a *App) threadChip(ctx *ui.Context, id string) ui.Element {
 		MaxWidth(ui.Px(300)).Hover(ui.Style{BorderColor: t.BorderStrong, Background: t.SurfaceHover}).
 		Role(access.RoleButton).Label("Open " + th.Title).TabIndex(0).Tooltip(th.Title + " · " + statusLabel(th)).
 		OnClick(func() { a.openThread(id, "conversation") }).
-		Child(statusMark(ctx, th.Status)).
+		Child(statusMark(ctx, shownStatus(th))).
 		Child(ui.Text(th.Title).FontSize(12).Medium().Truncate().MinWidth(ui.Px(0)))
 }
 

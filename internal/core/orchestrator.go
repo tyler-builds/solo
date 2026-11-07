@@ -52,7 +52,7 @@ func (c *Core) EnsureOrchestrator() (ThreadView, error) {
 		return v, nil
 	}
 	ts := now()
-	t := &thread{row: store.Thread{
+	t := &thread{changed: -1, row: store.Thread{
 		ID:        OrchestratorID,
 		Kind:      store.KindOrchestrator,
 		SessionID: agent.NewUUID(),
@@ -127,6 +127,9 @@ func (c *Core) AddProposal(workerID, summary string) error {
 	v, ok := c.Thread(workerID)
 	if !ok {
 		return fmt.Errorf("no thread %s", workerID)
+	}
+	if v.CanArchive {
+		return fmt.Errorf("thread %q changed no files; there is nothing to merge", v.Title)
 	}
 	if !v.CanMerge {
 		return fmt.Errorf("thread %q can't be merged while it is %s", v.Title, v.Status)

@@ -82,10 +82,17 @@ func (a *App) threadPanel(ctx *ui.Context) ui.Element {
 		Child(ui.Text(fmt.Sprintf("+%d", added)).FontSize(12).Medium().TextColor(t.Success)).
 		Child(ui.Text(fmt.Sprintf("−%d", removed)).FontSize(12).Medium().TextColor(t.Danger))
 	actions := ui.Div().Row().Align(ui.Center).Gap(space1).Shrink(0)
-	if th.CanMerge {
+	switch {
+	case th.CanMerge:
 		tip := "Merge " + th.Branch + " into " + th.BaseBranch
 		actions = actions.Child(ui.Button("Merge").Icon(icons.GitMerge).Primary().Small().Tooltip(tip).
 			OnClick(func() { a.merge(id) }))
+	case th.CanArchive:
+		actions = actions.Child(ui.Button("Archive").Icon(icons.Archive).Secondary().Small().
+			Tooltip("It changed no files. Archive it to move it to Closed.").
+			OnClick(func() {
+				a.run("Archiving", func(ctx context.Context) error { return a.b.Archive(ctx, id) })
+			}))
 	}
 	if th.CanDiscard || th.CanInterrupt {
 		actions = actions.Child(ui.DropdownMenu(
@@ -111,7 +118,7 @@ func (a *App) threadPanel(ctx *ui.Context) ui.Element {
 	if th.InTurn && !th.TurnStarted.IsZero() {
 		statusText = "Working · " + elapsed(th.TurnStarted)
 	}
-	meta = meta.Child(ui.Text(statusText).FontSize(12).Semibold().TextColor(statusColor(ctx, th.Status)).NoWrap()).
+	meta = meta.Child(ui.Text(statusText).FontSize(12).Semibold().TextColor(statusColor(ctx, shownStatus(th))).NoWrap()).
 		Child(ui.Text(filepath.Base(th.RepoPath)).FontSize(12).Medium().TextColor(t.TextMuted).NoWrap())
 	// The branch and the change size stay together, so a narrow panel wraps them as one.
 	branch := ui.Div().Row().Align(ui.Center).Gap(space1)
@@ -129,7 +136,7 @@ func (a *App) threadPanel(ctx *ui.Context) ui.Element {
 	header := ui.Div().Row().Align(ui.Start).Gap(space2).PaddingLeft(space4).PaddingRight(space2).PaddingY(space3).Shrink(0).
 		Child(ui.Div().Column().Gap(space1).Grow(1).MinWidth(ui.Px(0)).
 			Child(ui.Div().Row().Align(ui.Center).Gap(space2).MinWidth(ui.Px(0)).
-				Child(statusMark(ctx, th.Status)).
+				Child(statusMark(ctx, shownStatus(th))).
 				Child(ui.Div().MinWidth(ui.Px(0)).Tooltip(th.Title).
 					Child(ui.Text(th.Title).FontSize(14).Semibold().Truncate()))).
 			Child(ui.Div().PaddingLeft(space5 + 2).Child(meta))).
