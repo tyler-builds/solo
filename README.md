@@ -24,12 +24,14 @@ Open Settings and add the folders that hold your repositories. Data lives in `~/
 ## Package (Linux)
 
 ```
-./scripts/appimage.sh        # dist/Solo-x86_64.AppImage, with the sidecar and claude bundled
+./scripts/appimage.sh        # dist/Solo-x86_64.AppImage, with the sidecar bundled
 uas add dist/Solo-x86_64.AppImage   # optional: install it with uas
 ```
 
 Needs Go, Bun, `mksquashfs` and ImageMagick. The AppImage runtime is downloaded once into
-`~/.cache/solo-build`.
+`~/.cache/solo-build`. The app needs only Claude Code installed and signed in: the sidecar is a
+compiled binary with Bun inside, and Solo finds `claude` on PATH or where its installer puts it
+(Settings shows what it found and takes a path to use instead).
 
 ## Develop
 

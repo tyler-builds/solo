@@ -86,6 +86,14 @@ func (f *fakeBackend) UpdateSettings(fn func(*core.Settings)) error {
 func (f *fakeBackend) RepoPaths() []string    { return f.repos }
 func (f *fakeBackend) RateLimit() agent.Event { return agent.Event{} }
 
+func (f *fakeBackend) CheckClaude(_ context.Context, override string) core.ClaudeStatus {
+	if override != "" {
+		return core.ClaudeStatus{Path: override, Source: "setting", Err: override + " doesn't exist"}
+	}
+	return core.ClaudeStatus{Path: "/home/you/.local/bin/claude", Source: "PATH", Version: "2.1.319",
+		Account: "you@example.com · Max"}
+}
+
 func (f *fakeBackend) add(thread, kind string, data any) {
 	raw, _ := json.Marshal(data)
 	f.nextID++

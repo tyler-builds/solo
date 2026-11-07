@@ -121,7 +121,7 @@ func (o *Orchestrator) openParams() agent.OpenParams {
 		BashAllow:             bashAllow,
 		MCPServerName:         "solo",
 		MCPTools:              toolSpecs,
-		ClaudePath:            agent.FindClaude(s.ClaudePath),
+		ClaudePath:            agent.FindClaude(s.ClaudePath).Path,
 	}
 }
 

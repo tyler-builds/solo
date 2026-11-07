@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Builds dist/Solo-x86_64.AppImage: the Go app, the compiled Bun sidecar and the SDK's claude binary.
+# Builds dist/Solo-x86_64.AppImage: the Go app and the compiled sidecar (which carries the Bun runtime).
+# Claude Code isn't bundled: Solo runs the user's own (see agent.FindClaude).
 # Needs go, bun, mksquashfs and magick. The AppImage runtime is downloaded once into
 # ~/.cache/solo-build, or taken from $APPIMAGE_RUNTIME.
 set -euo pipefail
@@ -25,15 +26,12 @@ fi
 
 echo "building sidecar"
 (cd sidecar && "$bun" install --frozen-lockfile >/dev/null && "$bun" run build >/dev/null)
-claude=sidecar/node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude
-[ -x "$claude" ] || { echo "missing $claude: run bun install in sidecar/" >&2; exit 1; }
 
 echo "building solo"
 rm -rf "$appdir"
 mkdir -p "$appdir/usr/bin" "$appdir/usr/share/applications" "$appdir/usr/share/icons/hicolor/256x256/apps"
 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o "$appdir/usr/bin/solo" ./cmd/solo
 cp bin/solo-agent "$appdir/usr/bin/solo-agent"
-cp "$claude" "$appdir/usr/bin/claude"
 
 magick -background none -density 384 internal/gui/brand/solo.svg -resize 256x256 \
 	"$appdir/usr/share/icons/hicolor/256x256/apps/$app_id.png"

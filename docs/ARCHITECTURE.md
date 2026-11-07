@@ -97,8 +97,11 @@ Raw `SDKMessage`s are also appended to a per-session JSONL file for debugging an
 - In-process MCP tools are marked `alwaysLoad`; otherwise Claude spends a ToolSearch round trip first.
 - The CLI also emits `command_lifecycle` (queued/started/completed per send uuid), which is useful
   for a "queued" state later.
-- Claude binary: the SDK-bundled CLI is used (not the user's `claude` on PATH). A compiled sidecar
-  can't resolve it, so packaging ships `claude` next to `solo-agent` (`agent.FindClaude`).
+- Claude binary: Solo runs the user's own Claude Code, as t3code does, so it shares their install,
+  sign-in and updates. `agent.FindClaude` tries the Settings path, then `claude` on PATH, then the
+  installers' default locations (a desktop launcher's PATH often lacks `~/.local/bin`). A compiled
+  sidecar can't fall back to the SDK's bundled CLI, so it refuses to open without a path. Settings
+  shows the version and account found (`core.CheckClaude`: `--version`, then a probe).
 
 ## Orchestrator
 
@@ -157,7 +160,8 @@ docs/
 2. **Core:** store, repo index, worktrees, ThreadManager.
 3. **Orchestrator:** session, MCP tools, proactive updates.
 4. **UI:** jamb views.
-5. **Packaging:** sidecar binary alongside the app; uses the user's existing Claude login.
+5. **Packaging:** `scripts/appimage.sh` (Linux). The compiled sidecar ships beside the app; Claude
+   Code is the user's own.
 
 ## Open defaults (change if you disagree)
 

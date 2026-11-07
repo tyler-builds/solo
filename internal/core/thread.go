@@ -292,7 +292,7 @@ func (c *Core) openParams(row store.Thread) agent.OpenParams {
 		SystemAppend:   workerInstructions(row),
 		PermissionMode: agent.PermissionBypass,
 		ToolPolicy:     agent.ToolPolicyAllow,
-		ClaudePath:     agent.FindClaude(claudePath),
+		ClaudePath:     agent.FindClaude(claudePath).Path,
 	}
 }
 

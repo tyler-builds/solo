@@ -3,7 +3,7 @@
 import { query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { PROTOCOL_VERSION, type OpenParams, type ProbeResult, type SendParams } from "./protocol";
 import { Peer, RpcError, errorText, log, pump } from "./rpc";
-import { Session, type SessionHost } from "./session";
+import { claudeExecutable, Session, type SessionHost } from "./session";
 
 const sessions = new Map<string, Session>();
 
@@ -63,7 +63,7 @@ peer.handle("probe", async (p: { claudePath?: string; cwd?: string }): Promise<P
   const q = query({
     prompt: never,
     options: {
-      ...(p.claudePath ? { pathToClaudeCodeExecutable: p.claudePath } : {}),
+      ...claudeExecutable(p.claudePath),
       ...(p.cwd ? { cwd: p.cwd } : {}),
       settingSources: ["user", "project", "local"],
     },

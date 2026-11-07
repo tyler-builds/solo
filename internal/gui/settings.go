@@ -20,7 +20,8 @@ var modelOptions = []ui.Option[string]{
 	{Value: "fable", Label: "Fable"},
 }
 
-// settingsDialog edits the folders to search for repositories, the models, and the worker limit.
+// settingsDialog edits the Claude Code path, the folders to search for repositories, the models, and
+// whether costs show.
 func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 	if !a.settings.Get() {
 		return nil
@@ -33,6 +34,8 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 		orchModel := ui.Local(ctx, "orch-model", initial.OrchestratorModel)
 		workerModel := ui.Local(ctx, "worker-model", initial.WorkerModel)
 		showCosts := ui.Local(ctx, "show-costs", initial.ShowCosts)
+		claudePath := ui.Local(ctx, "claude-path", initial.ClaudePath)
+		checked := ui.Local(ctx, "claude-checked", strings.TrimSpace(initial.ClaudePath))
 
 		add := func() {
 			f := strings.TrimSpace(newFolder.Peek())
@@ -72,7 +75,51 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 				Child(control).
 				Child(caption(ctx, help))
 		}
+		// Claude Code: what Solo found, and a path to use instead.
+		claude := ui.Query(ctx, "claude:"+checked.Get(), func(c context.Context) (core.ClaudeStatus, error) {
+			return a.b.CheckClaude(c, checked.Peek()), nil
+		})
+		check := func() {
+			p := strings.TrimSpace(claudePath.Peek())
+			if p == checked.Peek() {
+				claude.Refetch()
+				return
+			}
+			checked.Set(p)
+		}
+		var status ui.Element
+		if st := claude.Data; claude.Loading || claude.Fetching {
+			status = ui.Div().Row().Align(ui.Center).Gap(space2).
+				Child(ui.ProgressRing().Size(14)).
+				Child(muted(ctx, "Checking Claude Code…"))
+		} else {
+			icon, color, line := icons.CircleCheck, t.Success, "Claude Code "+st.Version
+			if st.Account != "" {
+				line += " · " + st.Account
+			}
+			if st.Err != "" {
+				icon, color, line = icons.CircleAlert, t.Danger, st.Err
+			}
+			where := "Not found"
+			if st.Path != "" {
+				where = st.Path + " · " + map[string]string{"setting": "from the path below", "PATH": "found on PATH",
+					"default location": "found in its default location", "bundled": "shipped with Solo"}[st.Source]
+			}
+			status = ui.Div().Row().Align(ui.Start).Gap(space2).
+				Child(ui.Div().PaddingTop(2).Child(ui.Icon(icon).Size(14).Color(color))).
+				Child(ui.Div().Column().Gap(2).Grow(1).MinWidth(ui.Px(0)).
+					Child(ui.Text(line).FontSize(13).TextColor(t.Text)).
+					Child(caption(ctx, where).TruncateHead()))
+		}
+		claudeBox := ui.Div().Column().Gap(space2).
+			Child(ui.Div().Padding(space3).Radius(radiusM).Border(1, t.Border).Background(t.Background).Child(status)).
+			Child(ui.Div().Row().Gap(space2).
+				Child(ui.TextInput(claudePath).Placeholder("Path to claude (leave empty to detect it)").Label("Path to claude").
+					Small().Width(ui.Full).Key("claude-path").OnSubmit(func(string) { check() })).
+				Child(ui.Button("Check").Icon(icons.RefreshCw).Secondary().Small().OnClick(check)))
+
 		body := ui.Div().Column().Gap(space5).Width(ui.Full).
+			Child(field("Claude Code", "Solo runs your installed Claude Code and uses its sign-in. A changed path applies to sessions started after you save.", claudeBox)).
 			Child(field("Repository folders",
 				"Solo looks for git repositories up to three folders deep.",
 				ui.Div().Column().Gap(space2).
@@ -93,11 +140,11 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 				Child(ui.Switch("Show", showCosts)))
 
 		save := ui.Button("Save").Primary().Key("settings-save").OnClick(func() {
-			f, om, wm, sc := folders.Peek(), orchModel.Peek(), workerModel.Peek(), showCosts.Peek()
+			f, om, wm, sc, cp := folders.Peek(), orchModel.Peek(), workerModel.Peek(), showCosts.Peek(), strings.TrimSpace(claudePath.Peek())
 			a.settings.Set(false)
 			a.run("Saving settings", func(context.Context) error {
 				return a.b.UpdateSettings(func(s *core.Settings) {
-					s.Folders, s.OrchestratorModel, s.WorkerModel, s.ShowCosts = f, om, wm, sc
+					s.Folders, s.OrchestratorModel, s.WorkerModel, s.ShowCosts, s.ClaudePath = f, om, wm, sc, cp
 				})
 			})
 		})

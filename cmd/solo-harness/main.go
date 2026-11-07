@@ -89,7 +89,7 @@ func main() {
 	defer stop()
 
 	if *probe {
-		res, err := m.Probe(ctx, agent.FindClaude(""))
+		res, err := m.Probe(ctx, agent.FindClaude("").Path)
 		if err != nil {
 			fatal(err)
 		}
@@ -104,7 +104,7 @@ func main() {
 		Model:          *model,
 		PermissionMode: agent.PermissionBypass,
 		ToolPolicy:     agent.ToolPolicyAllow,
-		ClaudePath:     agent.FindClaude(""),
+		ClaudePath:     agent.FindClaude("").Path,
 	}
 	if *resume != "" {
 		p.SessionID, p.Resume = *resume, true

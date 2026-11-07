@@ -237,24 +237,3 @@ func bunCommand(src string) (Command, error) {
 	}
 	return Command{Path: bun, Args: []string{"run", src}}, nil
 }
-
-// FindClaude returns the claude executable to run: the override, else a claude shipped next to the
-// app, else "" to let the SDK use the binary bundled with it (which works when the sidecar runs from
-// source). The user's own `claude` on PATH is not used by default: the SDK is tested against the CLI
-// version it bundles.
-func FindClaude(override string) string {
-	if override != "" {
-		return override
-	}
-	name := "claude"
-	if runtime.GOOS == "windows" {
-		name += ".exe"
-	}
-	if exe, err := os.Executable(); err == nil {
-		p := filepath.Join(filepath.Dir(exe), name)
-		if _, err := os.Stat(p); err == nil {
-			return p
-		}
-	}
-	return ""
-}

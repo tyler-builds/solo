@@ -30,6 +30,16 @@ import { Normalizer } from "./normalize";
 import type { AgentEventBody, AskResult, OpenParams, Question, SendParams, ToolCallResult } from "./protocol";
 import { errorText, log, type Peer } from "./rpc";
 
+// claudeExecutable is the SDK option naming the claude binary. A compiled sidecar can't fall back to
+// the SDK's bundled CLI, so it needs a path from Go.
+export function claudeExecutable(path?: string): { pathToClaudeCodeExecutable?: string } {
+  if (path) return { pathToClaudeCodeExecutable: path };
+  if (/\$bunfs|~BUN/.test(import.meta.path)) {
+    throw new Error("Claude Code not found. Install it, or set its path in Settings.");
+  }
+  return {};
+}
+
 const STDERR_TAIL = 2048;
 const EXIT_WAIT_MS = 10_000;
 
@@ -192,7 +202,7 @@ export class Session {
       ...(p.additionalDirectories?.length ? { additionalDirectories: p.additionalDirectories } : {}),
       ...(p.tools ? { tools: p.tools } : {}),
       ...(p.disallowedTools?.length ? { disallowedTools: p.disallowedTools } : {}),
-      ...(p.claudePath ? { pathToClaudeCodeExecutable: p.claudePath } : {}),
+      ...claudeExecutable(p.claudePath),
       env: { ...process.env, ...p.env },
       abortController: abort,
       permissionMode: p.permissionMode,

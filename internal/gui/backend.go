@@ -32,6 +32,7 @@ type Backend interface {
 	UpdateSettings(f func(*core.Settings)) error
 	RepoPaths() []string
 	RateLimit() agent.Event
+	CheckClaude(ctx context.Context, override string) core.ClaudeStatus
 }
 
 // Live is the real backend.
