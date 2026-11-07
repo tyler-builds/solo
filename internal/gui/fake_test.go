@@ -152,10 +152,11 @@ func demoBackend() *fakeBackend {
 				{Label: "In-memory", Description: "Simplest, but limits are per instance."},
 			}}}}}},
 		changes: map[string][]git.FileChange{forms.ID: {
-			{Path: "src/settings/SettingsPage.tsx", Status: "M", Added: 48, Removed: 112},
+			// These match demoDiff for the two files it shows.
+			{Path: "src/settings/SettingsPage.tsx", Status: "M", Added: 9, Removed: 10},
 			{Path: "src/settings/ProfileSection.tsx", Status: "M", Added: 22, Removed: 31},
 			{Path: "src/settings/NotificationsSection.tsx", Status: "M", Added: 19, Removed: 27},
-			{Path: "src/components/form/Toggle.tsx", Status: "A", Added: 36, Removed: 0},
+			{Path: "src/components/form/Toggle.tsx", Status: "A", Added: 11, Removed: 0},
 			{Path: "src/components/legacy/LegacyField.tsx", Status: "D", Added: 0, Removed: 64},
 			{Path: "src/settings/settings.test.tsx", Status: "M", Added: 12, Removed: 4},
 		}},
