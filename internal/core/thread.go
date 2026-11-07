@@ -43,9 +43,12 @@ type thread struct {
 	live    []liveKey // streaming blocks, in order
 	liveTxt map[liveKey]*LiveBlock
 	model   string // the model Claude reports
-	retry   string // the latest API retry, while it lasts
-	asks    map[string]chan agent.AskResult
-	askQs   map[string][]agent.Question
+	// step is the tool call in progress, and turnStart when the current turn began.
+	step      *ToolData
+	turnStart time.Time
+	retry     string // the latest API retry, while it lasts
+	asks      map[string]chan agent.AskResult
+	askQs     map[string][]agent.Question
 	// recovered is when the thread last moved to a new session after losing its conversation.
 	recovered time.Time
 	tasks     map[string]int64 // task id → item id
@@ -61,6 +64,8 @@ type liveKey struct {
 type ThreadView struct {
 	store.Thread
 	InTurn       bool
+	TurnStarted  time.Time // when the running turn began
+	Step         *ToolData // the tool call in progress, if any
 	ActualModel  string
 	Retry        string
 	PendingAsk   bool
@@ -76,6 +81,8 @@ func (t *thread) view() ThreadView {
 	v := ThreadView{
 		Thread:      t.row,
 		InTurn:      t.inTurn,
+		TurnStarted: t.turnStart,
+		Step:        t.step,
 		ActualModel: t.model,
 		Retry:       t.retry,
 		PendingAsk:  len(t.asks) > 0,

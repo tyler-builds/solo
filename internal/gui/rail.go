@@ -14,18 +14,25 @@ import (
 	"github.com/tyler-builds/solo/internal/core"
 )
 
-// statusOrder sorts the rail: what needs the user first, then work in progress, then results.
-var statusOrder = map[string]int{
-	core.StatusWaiting: 0, core.StatusRunning: 1, core.StatusStarting: 2, core.StatusIdle: 3,
-	core.StatusFailed: 4, core.StatusQueued: 5, core.StatusInterrupted: 6, core.StatusMerged: 7, core.StatusDiscarded: 8,
+// railGroups orders the rail: what needs the user first, then work in progress, then results.
+var railGroups = []struct {
+	title    string
+	statuses []string
+}{
+	{"Needs you", []string{core.StatusWaiting}},
+	{"Failed", []string{core.StatusFailed}},
+	{"Ready for review", []string{core.StatusIdle}},
+	{"Working", []string{core.StatusRunning, core.StatusStarting}},
+	{"Queued", []string{core.StatusQueued}},
+	{"Stopped", []string{core.StatusInterrupted}},
 }
 
-// rail lists the worker threads, filtered by the sidebar's repository.
+// rail lists the worker threads, grouped by state and filtered by the sidebar's repository.
 func (a *App) rail(ctx *ui.Context) ui.Element {
 	t := ctx.Theme()
 	filter := a.repoFilter()
 	var open, closed []core.ThreadView
-	running, waiting := 0, 0
+	running := false
 	for _, th := range a.threads.Get() {
 		if !th.IsWorker || (filter != "" && th.RepoPath != filter) {
 			continue
@@ -35,60 +42,59 @@ func (a *App) rail(ctx *ui.Context) ui.Element {
 			continue
 		}
 		open = append(open, th)
-		switch th.Status {
-		case core.StatusRunning, core.StatusStarting:
-			running++
-		case core.StatusWaiting:
-			waiting++
-		}
+		running = running || th.InTurn
 	}
-	slices.SortStableFunc(open, func(x, y core.ThreadView) int {
-		if d := statusOrder[x.Status] - statusOrder[y.Status]; d != 0 {
-			return d
-		}
-		return y.UpdatedAt.Compare(x.UpdatedAt)
-	})
-	slices.SortFunc(closed, func(x, y core.ThreadView) int { return y.UpdatedAt.Compare(x.UpdatedAt) })
+	// Elapsed times tick while anything works.
+	if running {
+		tick := ui.Local(ctx, "tick", 0)
+		tick.Get()
+		ctx.After(time.Second, func() { tick.Update(func(n int) int { return n + 1 }) })
+	}
 
-	var summary []string
-	if running > 0 {
-		summary = append(summary, fmt.Sprintf("%d working", running))
-	}
-	if waiting > 0 {
-		summary = append(summary, fmt.Sprintf("%d need you", waiting))
-	}
-	if len(summary) == 0 {
-		summary = append(summary, fmt.Sprintf("%d open", len(open)))
-	}
 	headTitle := "Threads"
 	if filter != "" {
 		headTitle = filepath.Base(filter)
 	}
 	head := ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space4).Height(ui.Px(52)).Shrink(0).
 		Child(ui.Text(headTitle).FontSize(14).Semibold().Truncate().Grow(1).MinWidth(ui.Px(0))).
-		Child(caption(ctx, strings.Join(summary, " · ")))
+		Child(subtle(ctx, fmt.Sprintf("%d open", len(open))))
 
-	list := ui.Div().Column().Gap(space2).PaddingX(space3).PaddingBottom(space3)
+	list := ui.Div().Column().Gap(space1).PaddingX(space2).PaddingBottom(space3)
 	if len(open) == 0 {
 		list = list.Child(ui.Div().Column().Align(ui.Center).Gap(space2).PaddingY(space8).PaddingX(space4).
 			Child(ui.Icon(icons.Layers).Size(22).Color(t.TextSubtle)).
 			Child(caption(ctx, "No open threads. Ask the orchestrator for something and its workers show up here.").Align(ui.Center)))
 	}
-	for _, th := range open {
-		list = list.Child(a.threadCard(ctx, th))
+	for _, g := range railGroups {
+		var group []core.ThreadView
+		for _, th := range open {
+			if slices.Contains(g.statuses, th.Status) {
+				group = append(group, th)
+			}
+		}
+		if len(group) == 0 {
+			continue
+		}
+		slices.SortStableFunc(group, func(x, y core.ThreadView) int { return y.UpdatedAt.Compare(x.UpdatedAt) })
+		list = list.Child(groupHeader(ctx, g.title, len(group), g.statuses[0]))
+		for _, th := range group {
+			list = list.Child(a.threadRow(ctx, th))
+		}
 	}
 	if len(closed) > 0 {
+		slices.SortFunc(closed, func(x, y core.ThreadView) int { return y.UpdatedAt.Compare(x.UpdatedAt) })
 		list = list.Child(ui.Component(func(ctx *ui.Context) ui.Element {
 			show := ui.Local(ctx, "show-closed", false)
-			col := ui.Div().Column().Gap(space2).MarginTop(space2).
-				Child(ui.Div().Row().Align(ui.Center).Gap(space1).Cursor(ui.CursorPointer).PaddingX(space1).
+			col := ui.Div().Column().Gap(space1).
+				Child(ui.Div().Row().Align(ui.Center).Gap(space1).Cursor(ui.CursorPointer).
+					PaddingX(space2).PaddingTop(space4).PaddingBottom(space1).
 					Role(access.RoleButton).Label("Closed threads").TabIndex(0).
 					OnClick(func() { show.Update(func(b bool) bool { return !b }) }).
-					Child(ui.Icon(map[bool]*icons.Icon{true: icons.ChevronDown, false: icons.ChevronRight}[show.Get()]).Size(13).Color(t.TextSubtle)).
-					Child(subtle(ctx, fmt.Sprintf("Closed (%d)", len(closed)))))
+					Child(ui.Text(fmt.Sprintf("Closed · %d", len(closed))).FontSize(11).Medium().TextColor(ctx.Theme().TextSubtle)).
+					Child(ui.Icon(map[bool]*icons.Icon{true: icons.ChevronDown, false: icons.ChevronRight}[show.Get()]).Size(12).Color(ctx.Theme().TextSubtle)))
 			if show.Get() {
 				for _, th := range closed {
-					col = col.Child(a.threadCard(ctx, th))
+					col = col.Child(a.threadRow(ctx, th))
 				}
 			}
 			return col
@@ -99,21 +105,35 @@ func (a *App) rail(ctx *ui.Context) ui.Element {
 		Child(ui.Div().Column().Grow(1).MinHeight(ui.Px(0)).ScrollY().Child(list))
 }
 
-// threadCard is one thread in the rail.
-func (a *App) threadCard(ctx *ui.Context, th core.ThreadView) ui.Element {
+func groupHeader(ctx *ui.Context, title string, n int, status string) ui.Element {
 	t := ctx.Theme()
-	c := statusColor(ctx, th.Status)
-	activity, actColor := a.activityLine(th), t.TextMuted
+	c := t.TextSubtle
+	if status == core.StatusWaiting {
+		c = t.Warning
+	}
+	return ui.Div().Row().Align(ui.Center).Gap(6).PaddingX(space2).PaddingTop(space3).PaddingBottom(space1).
+		Child(ui.Text(title).FontSize(11).Medium().TextColor(c)).
+		Child(ui.Text(fmt.Sprint(n)).FontSize(11).TextColor(t.TextSubtle))
+}
+
+// threadRow is one thread in the rail: its mark, title and time, and one line of what it is doing.
+func (a *App) threadRow(ctx *ui.Context, th core.ThreadView) ui.Element {
+	t := ctx.Theme()
+	selected := a.openID.Get() == th.ID
+	when, whenColor := shortAgo(th.UpdatedAt), t.TextSubtle
+	if th.InTurn && !th.TurnStarted.IsZero() {
+		when, whenColor = elapsed(th.TurnStarted), ui.Hex(pal(t).brand)
+	}
+	line, lineColor := a.activityLine(th), t.TextMuted
 	switch th.Status {
 	case core.StatusWaiting:
-		actColor = t.Warning
+		lineColor = t.Warning
 	case core.StatusFailed:
-		actColor = t.Danger
+		lineColor = t.Danger
 	}
-	when := shortAgo(th.UpdatedAt)
-	card := ui.Div().Column().Gap(6).Padding(space3).Radius(radiusL).Background(t.Background).
-		Border(1, t.Border).Cursor(ui.CursorPointer).
-		Hover(ui.Style{Background: t.SurfaceHover, BorderColor: t.BorderStrong}).
+	repo := filepath.Base(th.RepoPath)
+	row := ui.Div().Column().Gap(3).PaddingX(space2 + 2).PaddingY(space2).Radius(radiusM).
+		Cursor(ui.CursorPointer).Hover(ui.Style{Background: t.SurfaceHover}).
 		Role(access.RoleButton).Label(th.Title).TabIndex(0).Key("card-" + th.ID).
 		OnClick(func() {
 			if a.openID.Peek() == th.ID {
@@ -123,27 +143,17 @@ func (a *App) threadCard(ctx *ui.Context, th core.ThreadView) ui.Element {
 			}
 		}).
 		Child(ui.Div().Row().Align(ui.Center).Gap(space2).
-			Child(dot(c, 8)).
-			Child(ui.Text(th.Title).FontSize(13).Semibold().Truncate().Grow(1).MinWidth(ui.Px(0))).
-			Child(subtle(ctx, when).NoWrap())).
-		Child(ui.Div().Row().Align(ui.Center).Gap(6).PaddingLeft(space4).
-			Child(ui.Text(filepath.Base(th.RepoPath)).FontSize(12).Medium().TextColor(t.TextMuted).NoWrap()).
-			Child(ui.Text(branchLabel(th)).FontSize(12).TextColor(t.TextSubtle).TruncateHead().MinWidth(ui.Px(0)))).
-		Child(ui.Div().Row().Align(ui.Start).Gap(6).PaddingLeft(space4).
-			Child(ui.Text(activity).FontSize(12).TextColor(actColor).MaxLines(2).Grow(1).MinWidth(ui.Px(0))))
-	if th.Status == core.StatusWaiting {
-		card = card.Border(1, t.Warning.Alpha(0.5))
+			Child(statusMark(ctx, th.Status)).
+			Child(ui.Text(th.Title).FontSize(13).Medium().Truncate().Grow(1).MinWidth(ui.Px(0))).
+			Child(ui.Text(when).FontSize(11).TextColor(whenColor).NoWrap())).
+		Child(ui.Div().Row().Align(ui.Center).Gap(6).PaddingLeft(space5 + 2).MinWidth(ui.Px(0)).
+			Child(ui.Text(repo).FontSize(12).TextColor(t.TextSubtle).NoWrap()).
+			Child(ui.Text("·").FontSize(12).TextColor(t.TextSubtle)).
+			Child(ui.Text(line).FontSize(12).TextColor(lineColor).Truncate().Grow(1).MinWidth(ui.Px(0))))
+	if selected {
+		row = row.Background(t.SurfaceActive)
 	}
-	foot := ui.Div().Row().Align(ui.Center).Gap(space2).PaddingLeft(space4).
-		Child(ui.Text(statusLabel(th)).FontSize(11).Medium().TextColor(c))
-	if a.cfg.Get().ShowCosts && th.CostUSD > 0 {
-		foot = foot.Child(subtle(ctx, fmt.Sprintf("$%.2f", th.CostUSD)).FontSize(11))
-	}
-	card = card.Child(foot)
-	if a.openID.Get() == th.ID {
-		card = card.Background(t.SurfaceActive).Border(1, ui.Hex(pal(t).brand).Alpha(0.6))
-	}
-	return card
+	return row
 }
 
 func branchLabel(th core.ThreadView) string {
@@ -153,13 +163,13 @@ func branchLabel(th core.ThreadView) string {
 	return strings.TrimPrefix(th.Branch, "solo/")
 }
 
-// activityLine says what a thread is doing or did, in a line or two.
+// activityLine says what a thread is doing or did, in a line.
 func (a *App) activityLine(th core.ThreadView) string {
 	switch th.Status {
 	case core.StatusQueued:
 		return "Waiting for a free worker slot"
 	case core.StatusStarting:
-		return "Creating its worktree…"
+		return "Creating its worktree"
 	case core.StatusWaiting:
 		if qs := a.pending.Get()[th.ID]; len(qs) > 0 && len(qs[0].Questions) > 0 {
 			return "Asks: " + qs[0].Questions[0].Question
@@ -171,6 +181,9 @@ func (a *App) activityLine(th core.ThreadView) string {
 		if th.Retry != "" {
 			return th.Retry
 		}
+		if th.Step != nil {
+			return a.stepLabel(*th.Step)
+		}
 		for i := len(th.Live) - 1; i >= 0; i-- {
 			if !th.Live[i].Thinking {
 				if l := lastLine(th.Live[i].Text); l != "" {
@@ -178,17 +191,36 @@ func (a *App) activityLine(th core.ThreadView) string {
 				}
 			}
 		}
-		return "Working…"
+		return "Thinking"
 	case core.StatusInterrupted:
-		if th.Error != "" {
-			return th.Error
-		}
 		return "Stopped"
 	}
 	if th.Summary != "" {
 		return firstLine(stripMarkdown(th.Summary))
 	}
 	return firstLine(th.Prompt)
+}
+
+// stepLabel says what a tool call in progress is doing: "Running pnpm test".
+func (a *App) stepLabel(d core.ToolData) string {
+	_, verb, detail := a.describeTool(d)
+	if p, ok := presentTense[verb]; ok {
+		verb = p
+	}
+	if detail == "" {
+		return verb
+	}
+	return verb + " " + detail
+}
+
+var presentTense = map[string]string{
+	"Read": "Reading", "Edited": "Editing", "Wrote": "Writing", "Ran": "Running", "Searched": "Searching",
+	"Found files": "Finding files", "Fetched": "Fetching", "Searched the web": "Searching the web",
+	"Updated the plan": "Planning", "Started thread": "Starting thread", "Messaged": "Messaging",
+	"Checked": "Checking", "Read transcript": "Reading", "Reviewed changes": "Reviewing changes of",
+	"Listed threads": "Listing threads", "Listed repositories": "Listing repositories",
+	"Stopped": "Stopping", "Answered": "Answering", "Proposed merge": "Proposing a merge of",
+	"Loaded tools": "Loading tools", "Subagent": "Running subagent",
 }
 
 func lastLine(s string) string {

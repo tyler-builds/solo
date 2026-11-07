@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/tyler-builds/jamb/access"
 	"github.com/tyler-builds/jamb/icons"
 	"github.com/tyler-builds/jamb/input"
 	"github.com/tyler-builds/jamb/markdown"
+	"github.com/tyler-builds/jamb/markdown/mdcode"
 	"github.com/tyler-builds/jamb/ui"
 
 	"github.com/tyler-builds/solo/internal/agent"
@@ -18,6 +20,11 @@ import (
 )
 
 const chatMaxWidth = 780
+
+// code colors the code blocks of every transcript; one highlighter for the app.
+var code = mdcode.Highlight()
+
+func md(text string) ui.Element { return markdown.View(text).Code(code).Key("md") }
 
 // orchestratorView is the center panel: the conversation with the orchestrator.
 func (a *App) orchestratorView(ctx *ui.Context) ui.Element {
@@ -37,6 +44,7 @@ func (a *App) orchestratorView(ctx *ui.Context) ui.Element {
 		Child(ui.Div().Column().Align(ui.Center).PaddingX(space6).PaddingBottom(space4).Shrink(0).
 			Child(ui.Div().Column().Gap(space2).Width(ui.Full).MaxWidth(ui.Px(chatMaxWidth)).
 				Child(a.questionStrip(ctx)).
+				Child(a.attentionBar(ctx)).
 				Child(a.composer(ctx, v, "orch-draft", "Message the orchestrator…", func(text string) error {
 					return a.b.SendToOrchestrator(context.Background(), text)
 				})))).
@@ -45,17 +53,22 @@ func (a *App) orchestratorView(ctx *ui.Context) ui.Element {
 
 func (a *App) orchestratorBar(ctx *ui.Context, v core.ThreadView) ui.Element {
 	t := ctx.Theme()
-	state := "Ready"
+	state := ui.Div().Row().Align(ui.Center).Gap(6).MinWidth(ui.Px(0))
 	if v.InTurn {
-		state = "Working…"
+		label := "Thinking…"
+		if v.Step != nil {
+			label = a.stepLabel(*v.Step) + "…"
+		}
+		state = state.Child(ui.ProgressRing().Size(ui.RingSmall).Label("Working")).
+			Child(ui.Text(label).FontSize(12).TextColor(ui.Hex(pal(t).brand)).Truncate().MinWidth(ui.Px(0)))
+	} else {
+		state = state.Child(dot(t.TextSubtle, 6)).Child(caption(ctx, "Idle"))
 	}
 	return ui.Div().Row().Align(ui.Center).Gap(space3).PaddingX(space4).Height(ui.Px(52)).Shrink(0).
 		BorderEdges(ui.Edges{Bottom: 1}, t.Border).
 		Child(ui.Icon(icons.Bot).Size(18).Color(ui.Hex(pal(t).brand))).
-		Child(ui.Text("Orchestrator").FontSize(14).Semibold()).
-		Child(ui.Div().Row().Align(ui.Center).Gap(6).
-			Child(dot(map[bool]ui.Color{true: ui.Hex(pal(t).brand), false: t.TextSubtle}[v.InTurn], 6)).
-			Child(caption(ctx, state)))
+		Child(ui.Text("Orchestrator").FontSize(14).Semibold().NoWrap()).
+		Child(state)
 }
 
 func (a *App) welcome(ctx *ui.Context) ui.Element {
@@ -84,22 +97,48 @@ func (a *App) welcome(ctx *ui.Context) ui.Element {
 
 // row is one entry of a transcript list.
 type row struct {
-	key  string
-	item *core.Item
-	live *core.LiveBlock
-	busy bool // the "working" line at the end of a running turn
+	key   string
+	item  *core.Item
+	steps []*core.Item // a run of tool calls and thoughts, shown folded
+	live  *core.LiveBlock
+	busy  bool // the "working" line at the end of a running turn
 }
+
+// isStep reports whether an item is part of the agent's working steps rather than its conversation.
+func isStep(it *core.Item) bool {
+	return it.Kind == core.ItemTool || it.Kind == core.ItemThinking || it.Kind == core.ItemTask
+}
+
+// minFold is the shortest run of steps folded into one row.
+const minFold = 3
 
 // transcript renders a thread's items, its streaming text, and a working indicator, newest at the bottom.
 func (a *App) transcript(ctx *ui.Context, v core.ThreadView, items []core.Item, scope string) ui.Element {
 	rows := make([]row, 0, len(items)+4)
+	var run []*core.Item
+	flush := func() {
+		if len(run) >= minFold {
+			rows = append(rows, row{key: fmt.Sprintf("g%d", run[0].ID), steps: run})
+		} else {
+			for _, it := range run {
+				rows = append(rows, row{key: fmt.Sprintf("i%d", it.ID), item: it})
+			}
+		}
+		run = nil
+	}
 	for i := range items {
 		it := &items[i]
 		if !visible(it) {
 			continue
 		}
+		if isStep(it) {
+			run = append(run, it)
+			continue
+		}
+		flush()
 		rows = append(rows, row{key: fmt.Sprintf("i%d", it.ID), item: it})
 	}
+	flush()
 	for i := range v.Live {
 		rows = append(rows, row{key: fmt.Sprintf("live%d", i), live: &v.Live[i]})
 	}
@@ -109,7 +148,7 @@ func (a *App) transcript(ctx *ui.Context, v core.ThreadView, items []core.Item, 
 	h := ui.Local(ctx, scope+"-list", ui.NewListHandle()).Peek()
 	return ui.ListOf(rows, func(r row) string { return r.key }, func(_ int, r row) ui.Element {
 		return ui.Div().Column().Align(ui.Center).PaddingX(space6).
-			Child(ui.Div().Column().Width(ui.Full).MaxWidth(ui.Px(chatMaxWidth)).PaddingY(space2).
+			Child(ui.Div().Column().Width(ui.Full).MaxWidth(ui.Px(chatMaxWidth)).PaddingY(space1 + 2).
 				Child(a.rowView(ctx, v, r)))
 	}).Bottom().Handle(h).SelectionContainer().Key(scope + "-transcript").Label("Conversation").
 		Style(ui.Style{Grow: 1, Padding: ui.Edges{Top: space4, Bottom: space2}})
@@ -137,15 +176,19 @@ func (a *App) rowView(ctx *ui.Context, v core.ThreadView, r row) ui.Element {
 		label := "Thinking…"
 		if v.Retry != "" {
 			label = v.Retry
+		} else if v.Step != nil {
+			label = a.stepLabel(*v.Step) + "…"
 		}
-		return ui.Div().Row().Align(ui.Center).Gap(space2).
+		return ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space2).
 			Child(ui.ProgressRing().Size(ui.RingSmall).Label("Working")).
 			Child(caption(ctx, label))
 	case r.live != nil:
 		if r.live.Thinking {
 			return thinkingView(ctx, r.live.Text, true)
 		}
-		return markdown.View(r.live.Text).Key("md")
+		return md(r.live.Text)
+	case r.steps != nil:
+		return a.stepsView(ctx, r.steps)
 	}
 	it := r.item
 	switch it.Kind {
@@ -153,7 +196,7 @@ func (a *App) rowView(ctx *ui.Context, v core.ThreadView, r row) ui.Element {
 		var d core.UserData
 		it.Decode(&d)
 		if d.Synthetic {
-			return syntheticView(ctx, d.Text)
+			return a.updateView(ctx, d.Text)
 		}
 		return ui.Div().Row().Justify(ui.End).
 			Child(ui.Div().PaddingX(space3 + 2).PaddingY(space2 + 2).Radius(radiusL).MaxWidth(ui.Percent(85)).
@@ -162,7 +205,16 @@ func (a *App) rowView(ctx *ui.Context, v core.ThreadView, r row) ui.Element {
 	case core.ItemAssistant:
 		var d core.TextData
 		it.Decode(&d)
-		return markdown.View(d.Text).Key("md")
+		return md(d.Text)
+	default:
+		return a.stepView(ctx, it, v)
+	}
+}
+
+// stepView renders a single item that isn't a message.
+func (a *App) stepView(ctx *ui.Context, it *core.Item, v core.ThreadView) ui.Element {
+	t := ctx.Theme()
+	switch it.Kind {
 	case core.ItemThinking:
 		var d core.TextData
 		it.Decode(&d)
@@ -178,7 +230,7 @@ func (a *App) rowView(ctx *ui.Context, v core.ThreadView, r row) ui.Element {
 	case core.ItemQuestion:
 		var d core.QuestionData
 		it.Decode(&d)
-		return a.questionCard(ctx, v.ID, d, true)
+		return a.questionCard(ctx, v.ID, d)
 	case core.ItemProposal:
 		var d core.ProposalData
 		it.Decode(&d)
@@ -199,40 +251,135 @@ func (a *App) rowView(ctx *ui.Context, v core.ThreadView, r row) ui.Element {
 	return ui.Div()
 }
 
-// syntheticView is a thread update the app sent the orchestrator: a quiet strip, not a user bubble.
-func syntheticView(ctx *ui.Context, text string) ui.Element {
+// stepsView folds a run of tool calls and thoughts into one line: how many steps, and the latest.
+func (a *App) stepsView(ctx *ui.Context, steps []*core.Item) ui.Element {
+	return ui.Component(func(ctx *ui.Context) ui.Element {
+		t := ctx.Theme()
+		open := ui.Local(ctx, "open", false)
+		running, failed := false, false
+		latest := ""
+		tools := 0
+		for _, it := range steps {
+			if it.Kind != core.ItemTool {
+				continue
+			}
+			tools++
+			var d core.ToolData
+			it.Decode(&d)
+			running = running || !d.Done
+			failed = failed || d.IsError
+			_, verb, detail := a.describeTool(d)
+			latest = strings.TrimSpace(verb + " " + detail)
+		}
+		var state ui.Element = ui.Icon(icons.Check).Size(13).Color(t.TextSubtle)
+		if running {
+			state = ui.ProgressRing().Size(ui.RingSmall).Label("Running")
+		}
+		label := fmt.Sprintf("%d steps", len(steps))
+		head := ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space2).Height(ui.Px(28)).Radius(radiusS).
+			Cursor(ui.CursorPointer).Hover(ui.Style{Background: t.SurfaceHover}).
+			Role(access.RoleButton).Label(label).TabIndex(0).
+			OnClick(func() { open.Update(func(o bool) bool { return !o }) }).
+			Child(ui.Icon(map[bool]*icons.Icon{true: icons.ChevronDown, false: icons.ChevronRight}[open.Get()]).Size(14).Color(t.TextMuted)).
+			Child(ui.Text(label).FontSize(13).Medium().TextColor(t.TextMuted).NoWrap().Shrink(0)).
+			Child(ui.Text(latest).FontSize(12).TextColor(t.TextSubtle).Truncate().Grow(1).MinWidth(ui.Px(0)))
+		if failed {
+			head = head.Child(ui.Icon(icons.CircleAlert).Size(13).Color(t.Danger))
+		}
+		head = head.Child(state)
+		col := ui.Div().Column().Gap(2).Child(head)
+		if open.Get() {
+			inner := ui.Div().Column().Gap(2).PaddingLeft(space3).MarginLeft(space3).
+				BorderEdges(ui.Edges{Left: 1}, t.Border)
+			for _, it := range steps {
+				inner = inner.Child(a.stepView(ctx, it, core.ThreadView{}))
+			}
+			col = col.Child(inner)
+		}
+		return col
+	})
+}
+
+var updateLine = regexp.MustCompile(`^Thread ([0-9a-zA-Z-]{4,}) "(.*)" \(([^)]*)\) (.*)$`)
+
+// updateView shows a thread update the app sent the orchestrator: one clickable line per thread.
+func (a *App) updateView(ctx *ui.Context, text string) ui.Element {
 	t := ctx.Theme()
-	var lines []string
+	col := ui.Div().Column().Gap(2)
 	for _, l := range strings.Split(text, "\n") {
-		if strings.HasPrefix(l, "- ") {
-			lines = append(lines, strings.TrimPrefix(l, "- "))
+		l = strings.TrimPrefix(l, "- ")
+		m := updateLine.FindStringSubmatch(l)
+		if m == nil {
+			continue
+		}
+		id, name, rest := m[1], m[2], m[4]
+		icon, c, what := icons.Activity, t.TextMuted, rest
+		switch {
+		case strings.HasPrefix(rest, "finished its turn."):
+			icon, c = icons.CircleCheck, t.Success
+			what = "finished"
+			if s := strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(rest, "finished its turn."), " Summary:")); s != "" {
+				what += " · " + firstSentence(stripMarkdown(s))
+			}
+		case strings.HasPrefix(rest, "failed:"):
+			icon, c = icons.CircleAlert, t.Danger
+			what = "failed · " + strings.TrimSpace(strings.TrimPrefix(rest, "failed:"))
+		case strings.HasPrefix(rest, "is asking a question"):
+			icon, c, what = icons.MessageCircleQuestionMark, t.Warning, "has a question"
+		case strings.HasPrefix(rest, "was interrupted"):
+			icon, c, what = icons.CircleStop, t.TextSubtle, "was stopped"
+		case strings.HasPrefix(rest, "was merged into "):
+			icon, c = icons.GitMerge, ui.Hex(pal(t).info)
+			what = "merged into " + strings.TrimSuffix(strings.TrimPrefix(rest, "was merged into "), " by the user.")
+		case strings.HasPrefix(rest, "was discarded"):
+			icon, c, what = icons.Trash, t.TextSubtle, "was discarded"
+		}
+		threadID := a.findThreadID(id)
+		line := ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space2).Height(ui.Px(26)).Radius(radiusS).
+			Child(ui.Icon(icon).Size(14).Color(c)).
+			Child(ui.Text(name).FontSize(13).Medium().NoWrap().Shrink(0).MaxWidth(ui.Percent(45)).Truncate()).
+			Child(ui.Text(what).FontSize(12).TextColor(t.TextMuted).Truncate().Grow(1).MinWidth(ui.Px(0)))
+		if threadID != "" {
+			line = line.Cursor(ui.CursorPointer).Hover(ui.Style{Background: t.SurfaceHover}).
+				Role(access.RoleButton).Label(name + " " + what).TabIndex(0).
+				OnClick(func() { a.openThread(threadID, "conversation") }).
+				Child(ui.Icon(icons.ChevronRight).Size(13).Color(t.TextSubtle))
+		}
+		col = col.Child(line)
+	}
+	return col
+}
+
+func (a *App) findThreadID(prefix string) string {
+	for _, th := range a.threads.Peek() {
+		if strings.HasPrefix(th.ID, prefix) {
+			return th.ID
 		}
 	}
-	if len(lines) == 0 {
-		lines = []string{firstLine(text)}
+	return ""
+}
+
+func firstSentence(s string) string {
+	s = firstLine(s)
+	if i := strings.Index(s, ". "); i > 0 {
+		return s[:i]
 	}
-	col := ui.Div().Column().Gap(2).Grow(1).MinWidth(ui.Px(0))
-	for _, l := range lines {
-		col = col.Child(ui.Text(l).FontSize(12).TextColor(t.TextMuted).MaxLines(2))
-	}
-	return ui.Div().Row().Gap(space2+2).PaddingX(space3).PaddingY(space2).Radius(radiusM).
-		BorderEdges(ui.Edges{Left: 2}, ui.Hex(pal(t).brand).Alpha(0.6)).Background(t.Surface.Alpha(0.6)).
-		Child(ui.Icon(icons.Activity).Size(14).Color(t.TextSubtle)).
-		Child(col)
+	return strings.TrimSuffix(s, ".")
 }
 
 func thinkingView(ctx *ui.Context, text string, live bool) ui.Element {
 	return ui.Component(func(ctx *ui.Context) ui.Element {
 		t := ctx.Theme()
 		open := ui.Local(ctx, "open", live)
-		head := ui.Div().Row().Align(ui.Center).Gap(6).Cursor(ui.CursorPointer).
+		head := ui.Div().Row().Align(ui.Center).Gap(6).PaddingX(space2).Height(ui.Px(26)).Cursor(ui.CursorPointer).
+			Role(access.RoleButton).Label("Thinking").TabIndex(0).
 			OnClick(func() { open.Update(func(o bool) bool { return !o }) }).
 			Child(ui.Icon(icons.Brain).Size(13).Color(t.TextSubtle)).
 			Child(subtle(ctx, "Thinking")).
 			Child(ui.Icon(map[bool]*icons.Icon{true: icons.ChevronDown, false: icons.ChevronRight}[open.Get()]).Size(12).Color(t.TextSubtle))
 		col := ui.Div().Column().Gap(space1).Child(head)
 		if open.Get() {
-			col = col.Child(ui.Div().PaddingLeft(space4 + 3).
+			col = col.Child(ui.Div().PaddingLeft(space6 + 2).
 				Child(ui.Text(text).FontSize(12).TextColor(t.TextSubtle).Italic().Selectable()))
 		}
 		return col
@@ -254,8 +401,9 @@ func (a *App) toolView(ctx *ui.Context, d core.ToolData) ui.Element {
 		default:
 			state = ui.Icon(icons.Check).Size(13).Color(t.TextSubtle)
 		}
-		head := ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space2).Height(ui.Px(28)).Radius(radiusS).
+		head := ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space2).Height(ui.Px(26)).Radius(radiusS).
 			Cursor(ui.CursorPointer).Hover(ui.Style{Background: t.SurfaceHover}).
+			Role(access.RoleButton).Label(label + " " + detail).TabIndex(0).
 			OnClick(func() { open.Update(func(o bool) bool { return !o }) }).
 			Child(ui.Icon(icon).Size(14).Color(t.TextMuted)).
 			Child(ui.Text(label).FontSize(13).Medium().TextColor(t.TextMuted).NoWrap().Shrink(0)).
@@ -357,7 +505,7 @@ func taskView(ctx *ui.Context, d core.TaskData) ui.Element {
 	if detail == "" && d.ToolUses > 0 {
 		detail = fmt.Sprintf("%d tool uses", d.ToolUses)
 	}
-	return ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space2).Height(ui.Px(28)).
+	return ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space2).Height(ui.Px(26)).
 		Child(ui.Icon(icons.Bot).Size(14).Color(t.TextMuted)).
 		Child(ui.Text(d.Description).FontSize(13).Medium().TextColor(t.TextMuted).NoWrap().Shrink(0)).
 		Child(ui.Text(detail).FontSize(12).TextColor(t.TextSubtle).Truncate().Grow(1).MinWidth(ui.Px(0))).
@@ -367,7 +515,7 @@ func taskView(ctx *ui.Context, d core.TaskData) ui.Element {
 func turnView(ctx *ui.Context, d core.TurnData) ui.Element {
 	t := ctx.Theme()
 	if d.Status == agent.TurnInterrupted || d.Status == agent.TurnCancelled {
-		return ui.Div().Row().Align(ui.Center).Gap(6).
+		return ui.Div().Row().Align(ui.Center).Gap(6).PaddingX(space2).
 			Child(ui.Icon(icons.CircleStop).Size(13).Color(t.TextSubtle)).
 			Child(subtle(ctx, "Stopped"))
 	}
@@ -388,53 +536,51 @@ func (a *App) proposalCard(ctx *ui.Context, d core.ProposalData) ui.Element {
 	brand := ui.Hex(pal(t).brand)
 	var actions ui.Element
 	switch th.Status {
-	case core.StatusMerged:
-		actions = statusPill(ctx, th)
-	case core.StatusDiscarded:
+	case core.StatusMerged, core.StatusDiscarded:
 		actions = statusPill(ctx, th)
 	default:
 		actions = ui.Div().Row().Gap(space2).
-			Child(ui.Button("Review changes").Secondary().Small().OnClick(func() { a.openThread(d.ThreadID, "changes") })).
 			Child(ui.Button("Merge").Icon(icons.GitMerge).Primary().Small().Disabled(!th.CanMerge).
-				OnClick(func() { a.merge(d.ThreadID) }))
+				OnClick(func() { a.merge(d.ThreadID) })).
+			Child(ui.Button("Review changes").Secondary().Small().OnClick(func() { a.openThread(d.ThreadID, "changes") }))
 	}
 	meta := filepath.Base(th.RepoPath)
 	if th.Branch != "" {
-		meta += " · " + th.Branch + " → " + th.BaseBranch
+		meta += " · " + branchLabel(th) + " → " + th.BaseBranch
 	}
 	return ui.Div().Column().Gap(space3).Padding(space4).Radius(radiusL).Background(t.Surface).
 		Border(1, brand.Alpha(0.35)).
 		Child(ui.Div().Row().Align(ui.Center).Gap(space2).
 			Child(ui.Icon(icons.GitMerge).Size(16).Color(brand)).
-			Child(ui.Text("Ready to merge").FontSize(12).Semibold().TextColor(brand))).
-		Child(ui.Div().Column().Gap(space1).
-			Child(subhead(d.Title).FontSize(14)).
-			Child(caption(ctx, meta))).
+			Child(ui.Text("Ready to merge").FontSize(12).Semibold().TextColor(brand).NoWrap()).
+			Child(ui.Div().Grow(1)).
+			Child(subtle(ctx, meta).TruncateHead().MinWidth(ui.Px(0)))).
+		Child(subhead(d.Title).FontSize(14)).
 		Child(ui.Text(d.Summary).FontSize(13).TextColor(t.TextMuted)).
 		Child(actions)
 }
 
-// questionCard is an AskUserQuestion: the first unanswered question with its options as buttons.
-func (a *App) questionCard(ctx *ui.Context, threadID string, d core.QuestionData, inThread bool) ui.Element {
+// questionCard is an AskUserQuestion in a transcript: open, or how it was answered.
+func (a *App) questionCard(ctx *ui.Context, threadID string, d core.QuestionData) ui.Element {
 	t := ctx.Theme()
 	if d.Cancelled || len(d.Answers) > 0 || len(d.Questions) == 0 {
 		var parts []string
 		for _, q := range d.Questions {
 			ans := d.Answers[q.Question]
 			if d.Cancelled {
-				ans = "dismissed"
+				ans = "skipped"
 			}
 			parts = append(parts, fmt.Sprintf("%s → %s", q.Question, ans))
 		}
-		return ui.Div().Row().Align(ui.Center).Gap(6).
+		return ui.Div().Row().Align(ui.Center).Gap(6).PaddingX(space2).
 			Child(ui.Icon(icons.MessageCircleQuestionMark).Size(13).Color(t.TextSubtle)).
 			Child(subtle(ctx, strings.Join(parts, " · ")))
 	}
 	return a.askForm(ctx, threadID, d.ToolUseID, d.Questions, "")
 }
 
-// askForm shows questions with their options; picking options answers. title names the asking thread
-// when the form is shown outside it.
+// askForm shows questions with their options; picking options answers, as do the number keys. title
+// names the asking thread when the form is shown outside it.
 func (a *App) askForm(ctx *ui.Context, threadID, toolUseID string, qs []agent.Question, title string) ui.Element {
 	return ui.Component(func(ctx *ui.Context) ui.Element {
 		t := ctx.Theme()
@@ -464,43 +610,62 @@ func (a *App) askForm(ctx *ui.Context, threadID, toolUseID string, qs []agent.Qu
 			other.Set("")
 		}
 		head := ui.Div().Row().Align(ui.Center).Gap(space2).
-			Child(ui.Icon(icons.MessageCircleQuestionMark).Size(16).Color(t.Warning))
+			Child(ui.Icon(icons.MessageCircleQuestionMark).Size(15).Color(t.Warning))
 		if title != "" {
-			head = head.Child(ui.Text(title).FontSize(12).Semibold().TextColor(t.Warning).Truncate())
+			head = head.Child(ui.Text(title).FontSize(12).Semibold().TextColor(t.Warning).Truncate().MinWidth(ui.Px(0)))
 		} else {
 			head = head.Child(ui.Text("Question").FontSize(12).Semibold().TextColor(t.Warning))
 		}
-		if q.Header != "" {
-			head = head.Child(chip(ctx, q.Header))
+		if len(qs) > 1 {
+			head = head.Child(subtle(ctx, fmt.Sprintf("%d of %d", len(cur)+1, len(qs))))
 		}
-		opts := ui.Div().Column().Gap(space1 + 2)
-		for _, o := range q.Options {
+		opts := ui.Div().Column().Gap(space1)
+		for i, o := range q.Options {
 			label := o.Label
-			opts = opts.Child(ui.Div().Row().Align(ui.Center).Gap(space3).PaddingX(space3).PaddingY(space2).
+			opt := ui.Div().Row().Align(ui.Center).Gap(space3).PaddingX(space3).PaddingY(space2).
 				Radius(radiusM).Border(1, t.Border).Background(t.Background).Cursor(ui.CursorPointer).
-				Hover(ui.Style{Background: t.SurfaceHover, BorderColor: t.BorderStrong}).
+				Hover(ui.Style{Background: t.SurfaceHover, BorderColor: t.TextSubtle}).
 				Role(access.RoleButton).Label(o.Label).TabIndex(0).OnClick(func() { pick(label) }).
-				Child(ui.Div().Column().Gap(2).Grow(1).MinWidth(ui.Px(0)).
-					Child(ui.Text(o.Label).FontSize(13).Medium()).
-					Child(ui.Text(o.Description).FontSize(12).TextColor(t.TextMuted)).
-					Key("opt-" + label)))
+				Key("opt-" + label).
+				Child(ui.Div().Size(ui.Px(14), ui.Px(14)).Radius(7).Border(1.5, t.TextSubtle).Shrink(0))
+			text := ui.Div().Column().Gap(2).Grow(1).MinWidth(ui.Px(0)).Child(ui.Text(o.Label).FontSize(13).Medium())
+			if o.Description != "" {
+				text = text.Child(ui.Text(o.Description).FontSize(12).TextColor(t.TextMuted))
+			}
+			opt = opt.Child(text)
+			if i < 9 {
+				opt = opt.Child(ui.Kbd(fmt.Sprint(i + 1)))
+			}
+			opts = opts.Child(opt)
 		}
-		otherInput := ui.Div().Row().Gap(space2).
-			Child(ui.TextInput(other).Placeholder("Or type an answer…").Small().Width(ui.Full).
-				OnSubmit(func(s string) {
-					if strings.TrimSpace(s) != "" {
-						pick(strings.TrimSpace(s))
-					}
-				})).
-			Child(ui.Button("Dismiss").Ghost().Small().OnClick(func() {
-				a.run("Dismissing", func(context.Context) error { return a.b.Dismiss(threadID, toolUseID) })
-			}))
+		sendOther := func() {
+			if s := strings.TrimSpace(other.Peek()); s != "" {
+				pick(s)
+			}
+		}
+		otherRow := ui.Div().Row().Align(ui.Center).Gap(space2).
+			Child(ui.TextInput(other).Placeholder("Or answer in your own words").Label("Your answer").Small().Width(ui.Full).
+				OnSubmit(func(string) { sendOther() })).
+			Child(ui.Button("Send").Secondary().Small().Disabled(strings.TrimSpace(other.Get()) == "").OnClick(sendOther)).
+			Child(ui.Button("Skip").Ghost().Small().
+				Tooltip("Skip the question; the agent carries on with its own judgment").
+				OnClick(func() {
+					a.run("Skipping", func(context.Context) error { return a.b.Dismiss(threadID, toolUseID) })
+				}))
 		return ui.Div().Column().Gap(space3).Padding(space4).Radius(radiusL).Background(t.Surface).
 			Border(1, t.Warning.Alpha(0.4)).
+			OnKeyDown(func(e *ui.KeyEvent) {
+				if e.Key >= input.Key1 && e.Key <= input.Key9 && e.Mods == 0 {
+					if i := int(e.Key - input.Key1); i < len(q.Options) {
+						e.StopPropagation()
+						pick(q.Options[i].Label)
+					}
+				}
+			}).
 			Child(head).
 			Child(ui.Text(q.Question).FontSize(14).Medium()).
 			Child(opts).
-			Child(otherInput)
+			Child(otherRow)
 	})
 }
 
@@ -519,6 +684,54 @@ func (a *App) questionStrip(ctx *ui.Context) ui.Element {
 	return col
 }
 
+// attentionBar lists, above the composer, the threads that wait on the user for something other than
+// a question (those show in full above it): ready to merge, and failed.
+func (a *App) attentionBar(ctx *ui.Context) ui.Element {
+	t := ctx.Theme()
+	var ready, failed []core.ThreadView
+	for _, th := range a.threads.Get() {
+		if !th.IsWorker {
+			continue
+		}
+		switch th.Status {
+		case core.StatusIdle:
+			if th.CanMerge {
+				ready = append(ready, th)
+			}
+		case core.StatusFailed:
+			failed = append(failed, th)
+		}
+	}
+	if len(ready) == 0 && len(failed) == 0 {
+		return ui.Div()
+	}
+	pill := func(icon *icons.Icon, c ui.Color, text string, th core.ThreadView, tab string) ui.Element {
+		return ui.Div().Row().Align(ui.Center).Gap(6).PaddingX(space3).Height(ui.Px(28)).Radius(14).
+			Border(1, c.Alpha(0.35)).Background(c.Alpha(0.08)).Cursor(ui.CursorPointer).
+			Hover(ui.Style{Background: c.Alpha(0.16)}).
+			Role(access.RoleButton).Label(text).TabIndex(0).
+			OnClick(func() { a.openThread(th.ID, tab) }).
+			Child(ui.Icon(icon).Size(13).Color(c)).
+			Child(ui.Text(text).FontSize(12).Medium())
+	}
+	row := ui.Div().Row().Align(ui.Center).Gap(space2).Wrap()
+	if len(ready) > 0 {
+		text := ready[0].Title + " is ready to merge"
+		if len(ready) > 1 {
+			text = fmt.Sprintf("%d ready to merge", len(ready))
+		}
+		row = row.Child(pill(icons.GitMerge, t.Success, text, ready[0], "changes"))
+	}
+	if len(failed) > 0 {
+		text := failed[0].Title + " failed"
+		if len(failed) > 1 {
+			text = fmt.Sprintf("%d failed", len(failed))
+		}
+		row = row.Child(pill(icons.CircleAlert, t.Danger, text, failed[0], "conversation"))
+	}
+	return row.Child(ui.Div().Grow(1)).Child(ui.Kbd("Ctrl+J"))
+}
+
 // composer is a message box: Enter sends, Shift+Enter starts a new line.
 func (a *App) composer(ctx *ui.Context, v core.ThreadView, key, placeholder string, send func(string) error) ui.Element {
 	return ui.Component(func(ctx *ui.Context) ui.Element {
@@ -532,19 +745,24 @@ func (a *App) composer(ctx *ui.Context, v core.ThreadView, key, placeholder stri
 			draft.Set("")
 			a.run("Sending", func(context.Context) error { return send(text) })
 		}
-		sendBtn := ui.IconButton(icons.ArrowUp).Primary().Small().Label("Send").Tooltip("Send (Enter)").
-			Disabled(strings.TrimSpace(draft.Get()) == "").OnClick(submit)
-		actions := ui.Div().Row().Align(ui.Center).Gap(space2)
+		empty := strings.TrimSpace(draft.Get()) == ""
+		sendBtn := ui.IconButton(icons.ArrowUp).Small().Label("Send").Tooltip("Send (Enter) · Shift+Enter for a new line").OnClick(submit)
+		if empty {
+			sendBtn = sendBtn.Secondary().Disabled(true)
+		} else {
+			sendBtn = sendBtn.Primary()
+		}
+		actions := ui.Div().Row().Align(ui.Center).Gap(space1).Shrink(0)
 		if v.InTurn {
 			id := v.ID
-			actions = actions.Child(ui.Button("Stop").Icon(icons.Square).Ghost().Small().
+			actions = actions.Child(ui.IconButton(icons.Square).Ghost().Small().Label("Stop").
 				Tooltip("Stop the current turn").
 				OnClick(func() {
 					a.run("Stopping", func(ctx context.Context) error { return a.b.Interrupt(ctx, id) })
 				}))
 		}
 		actions = actions.Child(sendBtn)
-		area := ui.TextArea(draft).Placeholder(placeholder).Label(placeholder).MinRows(2).Borderless().
+		area := ui.TextArea(draft).Placeholder(placeholder).Label(placeholder).MinRows(1).Borderless().
 			MaxHeight(ui.Px(220)).Width(ui.Full).Key(key + "-area").
 			OnKeyDown(func(e *ui.KeyEvent) {
 				if e.Key == input.KeyEnter && e.Mods&input.ModShift == 0 {
@@ -552,17 +770,11 @@ func (a *App) composer(ctx *ui.Context, v core.ThreadView, key, placeholder stri
 					submit()
 				}
 			})
-		hint := "Enter to send · Shift+Enter for a new line"
-		if v.InTurn {
-			hint = "Messages sent now are read when the current step finishes"
-		}
-		return ui.Div().Column().Gap(space1).PaddingX(space3).PaddingTop(space2).PaddingBottom(space2).
-			Radius(radiusXL).Border(1, t.BorderStrong).Background(t.Surface).
+		return ui.Div().Row().Align(ui.End).Gap(space2).PaddingLeft(space3).PaddingRight(space2).PaddingY(space2).
+			MinHeight(ui.Px(52)).Radius(radiusXL).Border(1, t.BorderStrong).Background(t.Surface).
 			FocusWithin(ui.Style{BorderColor: t.TextSubtle}).
-			Child(area).
-			Child(ui.Div().Row().Align(ui.Center).
-				Child(subtle(ctx, hint).Grow(1)).
-				Child(actions))
+			Child(ui.Div().Column().Grow(1).MinWidth(ui.Px(0)).PaddingY(space1).Child(area)).
+			Child(actions)
 	})
 }
 

@@ -8,7 +8,10 @@ import (
 	"bytes"
 	"embed"
 	_ "embed"
+	"fmt"
+	"time"
 
+	"github.com/tyler-builds/jamb/icons"
 	"github.com/tyler-builds/jamb/ui"
 
 	"github.com/tyler-builds/solo/internal/core"
@@ -252,4 +255,37 @@ func Fonts() []Font {
 		out = append(out, Font{f.weight, data})
 	}
 	return out
+}
+
+// statusMark is a thread status's mark: a pulsing teal dot while it works, a check when it is ready,
+// and a plain dot otherwise (amber, red, or grey), so no two states look alike.
+func statusMark(ctx *ui.Context, status string) ui.Element {
+	t := ctx.Theme()
+	c := statusColor(ctx, status)
+	box := ui.Div().Size(ui.Px(14), ui.Px(14)).Center().Shrink(0)
+	switch status {
+	case core.StatusRunning, core.StatusStarting:
+		return box.Child(dot(c, 8).Play("pulse", []ui.Keyframe{
+			{At: 0.5, Motion: ui.Grow(1.35).Opacity(0.45)},
+		}, ui.Animation{Duration: 1200 * time.Millisecond, Repeat: true}))
+	case core.StatusIdle:
+		return box.Child(ui.Icon(icons.CircleCheck).Size(14).Color(c))
+	case core.StatusMerged:
+		return box.Child(ui.Icon(icons.GitMerge).Size(13).Color(c))
+	case core.StatusQueued:
+		return box.Child(ui.Div().Size(ui.Px(8), ui.Px(8)).Radius(4).Border(1.5, t.TextSubtle))
+	}
+	return box.Child(dot(c, 8))
+}
+
+// elapsed formats a running duration: "45s", "2m 14s", "1h 05m".
+func elapsed(since time.Time) string {
+	d := time.Since(since).Round(time.Second)
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm %02ds", int(d.Minutes()), int(d.Seconds())%60)
+	}
+	return fmt.Sprintf("%dh %02dm", int(d.Hours()), int(d.Minutes())%60)
 }

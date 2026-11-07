@@ -121,6 +121,10 @@ func demoBackend() *fakeBackend {
 	}
 	oauth := worker("a1f3c9d2-oauth", "Fix OAuth token refresh", repos[0], core.StatusRunning, 40*time.Second, 0.42)
 	oauth.InTurn, oauth.CanInterrupt = true, true
+	oauth.TurnStarted = ago(2*time.Minute + 14*time.Second)
+	step := tool("o9", "Bash", map[string]any{"command": "pnpm test src/auth"}, "")
+	step.Done = false
+	oauth.Step = &step
 	oauth.Live = []core.LiveBlock{{Text: "The refresh path now retries once on a 401. Running the auth test suite to confirm nothing else depends on the old behavior."}}
 	limiter := worker("b7e21a90-limit", "Rate limit /api/upload", repos[1], core.StatusWaiting, 2*time.Minute, 0.31)
 	limiter.PendingAsk, limiter.InTurn = true, true
@@ -185,6 +189,18 @@ func demoBackend() *fakeBackend {
 	f.add(w, core.ItemTool, tool("w6", "Bash", map[string]any{"command": "pnpm test --filter web"}, "Test Files  38 passed (38)\nTests  214 passed (214)"))
 	f.add(w, core.ItemTool, tool("w7", "Bash", map[string]any{"command": "git commit -am \"refactor(settings): use Form components\""}, "[solo/c3d4e5f6 9e1b2c4] refactor(settings): use Form components"))
 	f.add(w, core.ItemAssistant, core.TextData{Text: forms.Summary})
+	o2 := oauth.ID
+	f.add(o2, core.ItemNotice, core.NoticeData{Level: "info", Text: "Working on branch solo/a1f3c9d2 from main."})
+	f.add(o2, core.ItemUser, core.UserData{Text: "In web, the OAuth access token isn't refreshed when it expires mid-request (src/auth/refresh.ts). Retry once on a 401 after refreshing, add a test, and run the auth tests."})
+	f.add(o2, core.ItemTool, tool("o1", "Read", map[string]any{"file_path": "/wt/src/auth/refresh.ts"}, "…"))
+	f.add(o2, core.ItemTool, tool("o2", "Grep", map[string]any{"pattern": "refreshToken\\("}, "3 matches"))
+	f.add(o2, core.ItemTool, tool("o3", "Read", map[string]any{"file_path": "/wt/src/auth/session.ts"}, "…"))
+	f.add(o2, core.ItemAssistant, core.TextData{Text: "The interceptor gives up on a 401 because `refresh()` resolves after the request has already failed. I'll await the refresh and retry the request once:\n\n```ts\nif (res.status === 401 && !req.retried) {\n  await session.refresh();\n  return fetch(withAuth({ ...req, retried: true }));\n}\n```"})
+	f.add(o2, core.ItemTool, tool("o4", "Edit", map[string]any{"file_path": "/wt/src/auth/refresh.ts"}, "Updated"))
+	f.add(o2, core.ItemTool, tool("o5", "Write", map[string]any{"file_path": "/wt/src/auth/refresh.test.ts"}, "File created"))
+	running := tool("o9", "Bash", map[string]any{"command": "pnpm test src/auth"}, "")
+	running.Done = false
+	f.add(o2, core.ItemTool, running)
 	return f
 }
 

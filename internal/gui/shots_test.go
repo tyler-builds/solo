@@ -38,6 +38,7 @@ func TestShots(t *testing.T) {
 		{"opening", func(a *App, f *fakeBackend) { a.openID.Set("c3d4e5f6-forms"); a.panelAnim.Set(0.35) }},
 		{"narrow-thread", func(a *App, f *fakeBackend) { a.openThread("c3d4e5f6-forms", "conversation") }},
 		{"settings", func(a *App, f *fakeBackend) { a.settings.Set(true) }},
+		{"palette", func(a *App, f *fakeBackend) { a.palette.Set(true) }},
 		{"empty", nil},
 	}
 	for _, theme := range []struct {
@@ -60,7 +61,7 @@ func TestShots(t *testing.T) {
 			if sh.name == "narrow-thread" {
 				w = 1000
 			}
-			u := uitest.New(t, a.Root, uitest.Size(w, 900), uitest.Theme(theme.t))
+			u := uitest.New(t, a.Root, uitest.Size(w, 900), uitest.Theme(theme.t), uitest.Bindings(Bindings()...))
 			for i := 0; i < 10; i++ {
 				u.Advance(100 * time.Millisecond)
 				time.Sleep(20 * time.Millisecond)

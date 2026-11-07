@@ -36,6 +36,7 @@ func (c *Core) onEvent(e agent.Event) {
 
 	case agent.EventTurnStart:
 		t.inTurn = true
+		t.turnStart = now()
 		t.retry = ""
 		if !t.row.HasTranscript {
 			t.row.HasTranscript = true
@@ -81,6 +82,8 @@ func (c *Core) onEvent(e agent.Event) {
 				}
 			case "tool_use":
 				itemID := c.addItemLocked(t, ItemTool, b.ID, ToolData{ID: b.ID, Name: b.Name, Input: b.Input})
+				t.step = &ToolData{ID: b.ID, Name: b.Name, Input: b.Input}
+				threadChanged = true
 				if t.tools == nil {
 					t.tools = map[string]int64{}
 				}
@@ -108,6 +111,10 @@ func (c *Core) onEvent(e agent.Event) {
 				d.Result, d.IsError, d.Done = e.Text, e.IsError, true
 			})
 			delete(t.tools, e.ToolUseID)
+			if t.step != nil && t.step.ID == e.ToolUseID {
+				t.step = nil
+				threadChanged = true
+			}
 			itemsChanged = true
 		}
 
@@ -164,6 +171,7 @@ func (c *Core) onEvent(e agent.Event) {
 
 	case agent.EventTurnEnd:
 		t.inTurn = false
+		t.step = nil
 		t.retry = ""
 		t.live, t.liveTxt = nil, nil
 		// Tool calls the turn never answered (an interrupt) are done, without a result.
@@ -211,6 +219,7 @@ func (c *Core) onEvent(e agent.Event) {
 
 	case agent.EventExited:
 		t.inTurn = false
+		t.step = nil
 		t.live, t.liveTxt = nil, nil
 		if e.Error != "" {
 			c.addItemLocked(t, ItemNotice, "", NoticeData{Level: "error", Text: "Claude stopped: " + e.Error})

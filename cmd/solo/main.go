@@ -72,6 +72,7 @@ func run() error {
 		LightTheme: light,
 		DarkTheme:  dark,
 		Root:       g.Root,
+		Bindings:   gui.Bindings(),
 	})
 	return nil
 }

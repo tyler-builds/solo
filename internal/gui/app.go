@@ -42,6 +42,7 @@ type App struct {
 	animStop  func()
 	settings  *ui.Signal[bool]
 	confirm   *ui.Signal[*confirmation]
+	palette   *ui.Signal[bool]
 
 	items map[string]*ui.Signal[[]core.Item] // UI thread only
 
@@ -79,6 +80,7 @@ func New(b Backend) *App {
 		panelGoal: 50,
 		settings:  ui.NewSignal(false),
 		confirm:   ui.NewSignal[*confirmation](nil),
+		palette:   ui.NewSignal(false),
 		items:     map[string]*ui.Signal[[]core.Item]{},
 		dirty:     map[string]bool{},
 		watched:   map[string]bool{},
@@ -227,11 +229,14 @@ func (a *App) Root(ctx *ui.Context) ui.Element {
 	a.mu.Unlock()
 	t := ctx.Theme()
 	return ui.Div().Row().Size(ui.Full, ui.Full).Background(t.Panel).TextColor(t.Text).
+		OnAction(nextAction, a.nextAttention).
+		OnAction(paletteAction, func() { a.palette.Set(true) }).
 		Child(a.sidebar(ctx)).
 		Child(ui.Div().Column().Grow(1).Basis(ui.Px(0)).MinWidth(ui.Px(0)).Height(ui.Full).ClipContent().
 			Child(ui.Component(a.center))).
 		Child(ui.Component(a.settingsDialog)).
 		Child(ui.Component(a.confirmDialog)).
+		Child(ui.CommandPalette(a.palette).ItemsOnly().Placeholder("Go to a thread").Items(a.paletteItems)).
 		Child(ui.Toaster().Key("toaster"))
 }
 
@@ -354,14 +359,12 @@ func (a *App) sidebar(ctx *ui.Context) ui.Element {
 			open[th.RepoPath]++
 		}
 	}
-	active := 0
-	for _, th := range threads {
-		if th.IsWorker && core.Active(th.Status) {
-			active++
-		}
+	total := 0
+	for _, n := range open {
+		total += n
 	}
 	items := []ui.SidebarItem{
-		{Key: "orchestrator", Label: "All threads", Icon: icons.Layers, Badge: active},
+		{Key: "orchestrator", Label: "All threads", Icon: icons.Layers, Badge: total},
 		ui.SidebarHeading("Repositories"),
 	}
 	repos := a.repos.Get()
@@ -386,7 +389,7 @@ func (a *App) sidebar(ctx *ui.Context) ui.Element {
 func (a *App) sidebarFooter(ctx *ui.Context) ui.Element {
 	t := ctx.Theme()
 	rate := a.rate.Get()
-	status, c := "Claude ready", t.Success.Alpha(0.7)
+	status, c := "Claude ready", t.TextSubtle
 	if rate.Kind == agent.EventRateLimit {
 		switch rate.Status {
 		case "allowed_warning":
@@ -419,4 +422,62 @@ func (a *App) repoFilter() string {
 		return sel[5:]
 	}
 	return ""
+}
+
+var (
+	nextAction    = ui.NewAction("solo.next", "Go to the next thread that needs you")
+	paletteAction = ui.NewAction("solo.palette", "Go to a thread").Hide()
+)
+
+// Bindings are the app's keyboard shortcuts.
+func Bindings() []ui.Binding {
+	return []ui.Binding{ui.Bind("ctrl+j", nextAction), ui.Bind("ctrl+k", paletteAction)}
+}
+
+// nextAttention opens the next thread that needs the user: questions first, then failures, then work
+// ready to merge. Pressed again, it moves on to the one after.
+func (a *App) nextAttention() {
+	rank := map[string]int{core.StatusWaiting: 0, core.StatusFailed: 1, core.StatusIdle: 2}
+	var list []core.ThreadView
+	for _, th := range a.threads.Peek() {
+		if _, ok := rank[th.Status]; ok && th.IsWorker {
+			list = append(list, th)
+		}
+	}
+	if len(list) == 0 {
+		return
+	}
+	slices.SortStableFunc(list, func(x, y core.ThreadView) int { return rank[x.Status] - rank[y.Status] })
+	next := list[0]
+	for i, th := range list {
+		if th.ID == a.openID.Peek() {
+			next = list[(i+1)%len(list)]
+		}
+	}
+	tab := "conversation"
+	if next.Status == core.StatusIdle {
+		tab = "changes"
+	}
+	a.openThread(next.ID, tab)
+}
+
+// paletteItems lists the threads for the Ctrl+K palette.
+func (a *App) paletteItems(query string) []ui.PaletteItem {
+	var out []ui.PaletteItem
+	for _, th := range a.threads.Peek() {
+		if !th.IsWorker {
+			continue
+		}
+		id := th.ID
+		out = append(out, ui.PaletteItem{
+			Key:      id,
+			Label:    th.Title,
+			Detail:   filepath.Base(th.RepoPath) + " · " + statusLabel(th),
+			Icon:     icons.MessageSquare,
+			Keywords: []string{filepath.Base(th.RepoPath), th.Status},
+			Run:      func() { a.openThread(id, "conversation") },
+		})
+	}
+	out = append(out, ui.PaletteItem{Key: "settings", Label: "Settings", Icon: icons.Settings, Run: func() { a.settings.Set(true) }})
+	return out
 }
