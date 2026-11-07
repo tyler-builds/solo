@@ -1,136 +1,22 @@
 package agent
 
 import (
-	"bufio"
 	"context"
-	"encoding/json"
-	"fmt"
 	"log/slog"
 	"os"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/tyler-builds/solo/internal/agent/agenttest"
 )
 
-// The test binary doubles as a fake sidecar when SOLO_FAKE_SIDECAR is set. It speaks the real protocol
-// with scripted behavior keyed by the message text:
-//
-//	"tool"   calls tool.call and puts the answer in the turn's result
-//	"ask"    calls question.ask and puts the answer in the turn's result
-//	"cancel" calls question.ask, then cancels it with $/cancel
-//	"crash"  starts a turn and exits
-//	other    answers "resume=<bool>" (whether the session was opened with resume)
 func TestMain(m *testing.M) {
-	if os.Getenv("SOLO_FAKE_SIDECAR") == "1" {
-		fakeSidecar()
+	if agenttest.Main() {
 		return
 	}
 	os.Exit(m.Run())
-}
-
-func fakeSidecar() {
-	var wm sync.Mutex
-	write := func(v any) {
-		b, _ := json.Marshal(v)
-		wm.Lock()
-		os.Stdout.Write(append(b, '\n'))
-		wm.Unlock()
-	}
-	var mu sync.Mutex
-	resumed := map[string]bool{}
-	seq := map[string]int{}
-	pending := map[int64]chan json.RawMessage{}
-	nextID := int64(1000)
-	event := func(sid string, body map[string]any) {
-		mu.Lock()
-		seq[sid]++
-		body["sessionId"], body["seq"] = sid, seq[sid]
-		mu.Unlock()
-		write(map[string]any{"method": "event", "params": body})
-	}
-	request := func(method string, params any) (int64, chan json.RawMessage) {
-		mu.Lock()
-		nextID++
-		id := nextID
-		ch := make(chan json.RawMessage, 1)
-		pending[id] = ch
-		mu.Unlock()
-		write(map[string]any{"id": id, "method": method, "params": params})
-		return id, ch
-	}
-
-	sc := bufio.NewScanner(os.Stdin)
-	for sc.Scan() {
-		var m struct {
-			ID     *int64          `json:"id"`
-			Method string          `json:"method"`
-			Params json.RawMessage `json:"params"`
-			Result json.RawMessage `json:"result"`
-		}
-		if json.Unmarshal(sc.Bytes(), &m) != nil {
-			continue
-		}
-		if m.Method == "" && m.ID != nil {
-			mu.Lock()
-			ch := pending[*m.ID]
-			mu.Unlock()
-			if ch != nil {
-				ch <- m.Result
-			}
-			continue
-		}
-		reply := func(v any) { write(map[string]any{"id": *m.ID, "result": v}) }
-		switch m.Method {
-		case "hello":
-			reply(map[string]any{"protocol": ProtocolVersion, "runtime": "fake"})
-		case "session.open":
-			var p OpenParams
-			json.Unmarshal(m.Params, &p)
-			mu.Lock()
-			resumed[p.SessionID] = p.Resume
-			mu.Unlock()
-			reply(struct{}{})
-		case "session.send":
-			var p SendParams
-			json.Unmarshal(m.Params, &p)
-			reply(struct{}{})
-			go func() {
-				event(p.SessionID, map[string]any{"kind": "turn_start", "uuids": []string{p.UUID}})
-				result := ""
-				switch p.Text {
-				case "crash":
-					os.Exit(3)
-				case "tool":
-					_, ch := request("tool.call", ToolCallParams{SessionID: p.SessionID, Name: "list_threads", Args: json.RawMessage(`{}`)})
-					var r ToolCallResult
-					json.Unmarshal(<-ch, &r)
-					result = r.Text
-				case "ask":
-					_, ch := request("question.ask", AskParams{SessionID: p.SessionID, Questions: []Question{{Question: "Tabs?"}}})
-					var r AskResult
-					json.Unmarshal(<-ch, &r)
-					result = r.Answers["Tabs?"]
-				case "cancel":
-					id, _ := request("question.ask", AskParams{SessionID: p.SessionID, Questions: []Question{{Question: "Q?"}}})
-					time.Sleep(50 * time.Millisecond)
-					write(map[string]any{"method": "$/cancel", "params": map[string]any{"id": id}})
-					result = "cancelled"
-				default:
-					mu.Lock()
-					result = fmt.Sprintf("resume=%v", resumed[p.SessionID])
-					mu.Unlock()
-				}
-				event(p.SessionID, map[string]any{"kind": "text_delta", "messageId": "m1", "text": "hi"})
-				event(p.SessionID, map[string]any{"kind": "turn_end", "uuids": []string{p.UUID}, "status": "completed", "result": result})
-			}()
-		case "session.close", "session.interrupt":
-			reply(struct{}{})
-		case "shutdown":
-			reply(struct{}{})
-			os.Exit(0)
-		}
-	}
 }
 
 type recorder struct {
@@ -165,14 +51,11 @@ func (r *recorder) waitFor(t *testing.T, pred func(Event) bool) Event {
 
 func newTestManager(t *testing.T, cb Callbacks) (*Manager, *recorder) {
 	t.Helper()
-	exe, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
+	exe, env := agenttest.Command()
 	rec := newRecorder()
 	cb.OnEvent = rec.on
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	m := NewManager(Command{Path: exe, Env: []string{"SOLO_FAKE_SIDECAR=1"}}, cb, log)
+	m := NewManager(Command{Path: exe, Env: env}, cb, log)
 	t.Cleanup(m.Shutdown)
 	return m, rec
 }
@@ -200,7 +83,7 @@ func TestSendBindsTurnToUUID(t *testing.T) {
 		t.Fatal(err)
 	}
 	e := rec.waitFor(t, turnEnd(uuid))
-	if e.Status != TurnCompleted || e.Result != "resume=false" {
+	if e.Status != TurnCompleted || e.Result != "echo: hello resume=false" {
 		t.Fatalf("got %+v", e)
 	}
 }
@@ -211,16 +94,16 @@ func TestToolCallAndAsk(t *testing.T) {
 			return ToolCallResult{Text: "tool:" + p.Name}, nil
 		},
 		OnAsk: func(ctx context.Context, p AskParams) (AskResult, error) {
-			return AskResult{Answers: map[string]string{p.Questions[0].Question: "spaces"}}, nil
+			return AskResult{Answers: map[string]string{p.Questions[0].Question: "Spaces"}}, nil
 		},
 	})
 	id := openSession(t, m)
-	u1, _ := m.Send(context.Background(), id, "tool", false)
+	u1, _ := m.Send(context.Background(), id, "tool list_threads", false)
 	if e := rec.waitFor(t, turnEnd(u1)); e.Result != "tool:list_threads" {
 		t.Fatalf("tool result %q", e.Result)
 	}
 	u2, _ := m.Send(context.Background(), id, "ask", false)
-	if e := rec.waitFor(t, turnEnd(u2)); e.Result != "spaces" {
+	if e := rec.waitFor(t, turnEnd(u2)); e.Result != "Spaces" {
 		t.Fatalf("ask result %q", e.Result)
 	}
 }
@@ -263,7 +146,7 @@ func TestSidecarCrashEndsTurnAndResumesOnNextSend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if e := rec.waitFor(t, turnEnd(u2)); e.Result != "resume=true" {
+	if e := rec.waitFor(t, turnEnd(u2)); e.Result != "echo: hello resume=true" {
 		t.Fatalf("after crash: %q", e.Result)
 	}
 	m.mu.Lock()
