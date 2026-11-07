@@ -351,7 +351,7 @@ func (a *App) updateView(ctx *ui.Context, text string) ui.Element {
 		if m == nil {
 			continue
 		}
-		id, name, rest := m[1], m[2], m[4]
+		id, name, repo, rest := m[1], m[2], m[3], m[4]
 		icon, c, what := icons.Activity, t.TextMuted, rest
 		switch {
 		case strings.HasPrefix(rest, "finished its turn."):
@@ -376,6 +376,7 @@ func (a *App) updateView(ctx *ui.Context, text string) ui.Element {
 		threadID := a.findThreadID(id)
 		line := ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space2).Height(ui.Px(26)).Radius(radiusS).
 			Child(ui.Icon(icon).Size(14).Color(c)).
+			Child(ui.Text(repo).FontSize(12).TextColor(t.TextSubtle).NoWrap().Shrink(0)).
 			Child(ui.Text(name).FontSize(13).Medium().NoWrap().Shrink(0).MaxWidth(ui.Percent(45)).Truncate()).
 			Child(ui.Text(what).FontSize(12).TextColor(t.TextMuted).Truncate().Grow(1).MinWidth(ui.Px(0)))
 		if threadID != "" {
@@ -588,18 +589,12 @@ func (a *App) proposalCard(ctx *ui.Context, d core.ProposalData) ui.Element {
 				OnClick(func() { a.merge(d.ThreadID) })).
 			Child(ui.Button("Review changes").Secondary().Small().OnClick(func() { a.openThread(d.ThreadID, "changes") }))
 	}
-	meta := filepath.Base(th.RepoPath)
-	if th.Branch != "" {
-		meta += " · " + branchLabel(th) + " → " + th.BaseBranch
-	}
 	return ui.Div().Column().Gap(space3).Padding(space4).Radius(radiusL).Background(t.Surface).
 		Border(1, brand.Alpha(0.35)).
 		Child(ui.Div().Row().Align(ui.Center).Gap(space2).
 			Child(ui.Icon(icons.GitMerge).Size(16).Color(brand)).
-			Child(ui.Text("Merge proposed").FontSize(12).Semibold().TextColor(brand).NoWrap()).
-			Child(ui.Div().Grow(1)).
-			Child(subtle(ctx, meta).TruncateHead().MinWidth(ui.Px(0)))).
-		Child(subhead(d.Title).FontSize(14)).
+			Child(ui.Text("Merge proposed").FontSize(12).Semibold().TextColor(brand).NoWrap())).
+		Child(a.threadContext(ctx, d.ThreadID, true)).
 		Child(ui.Text(d.Summary).FontSize(13).TextColor(t.TextMuted)).
 		Child(actions)
 }
@@ -655,11 +650,7 @@ func (a *App) askForm(ctx *ui.Context, threadID, toolUseID string, qs []agent.Qu
 		}
 		head := ui.Div().Row().Align(ui.Center).Gap(space2).
 			Child(ui.Icon(icons.MessageCircleQuestionMark).Size(15).Color(t.Warning))
-		if title != "" {
-			head = head.Child(ui.Text(title).FontSize(12).Semibold().TextColor(t.Warning).Truncate().MinWidth(ui.Px(0)))
-		} else {
-			head = head.Child(ui.Text("Question").FontSize(12).Semibold().TextColor(t.Warning))
-		}
+		head = head.Child(ui.Text("Question").FontSize(12).Semibold().TextColor(t.Warning))
 		if len(qs) > 1 {
 			head = head.Child(subtle(ctx, fmt.Sprintf("%d of %d", len(cur)+1, len(qs))))
 		}
@@ -707,6 +698,7 @@ func (a *App) askForm(ctx *ui.Context, threadID, toolUseID string, qs []agent.Qu
 				}
 			}).
 			Child(head).
+			Child(ui.If(title != "", a.threadContext(ctx, threadID, false))).
 			Child(ui.Text(q.Question).FontSize(14).Medium()).
 			Child(opts).
 			Child(otherRow)
@@ -769,14 +761,14 @@ func (a *App) attentionBar(ctx *ui.Context) ui.Element {
 	}
 	row := ui.Div().Row().Align(ui.Center).Gap(space2).MinWidth(ui.Px(0))
 	if len(ready) > 0 {
-		text := ready[0].Title + " is ready to merge"
+		text := filepath.Base(ready[0].RepoPath) + " · " + ready[0].Title + " is ready to merge"
 		if len(ready) > 1 {
 			text = fmt.Sprintf("%d ready to merge", len(ready))
 		}
 		row = row.Child(pill(icons.GitMerge, t.Success, text, ready[0], "changes"))
 	}
 	if len(failed) > 0 {
-		text := failed[0].Title + " failed"
+		text := filepath.Base(failed[0].RepoPath) + " · " + failed[0].Title + " failed"
 		if len(failed) > 1 {
 			text = fmt.Sprintf("%d failed", len(failed))
 		}
@@ -895,4 +887,26 @@ func (a *App) threadChip(ctx *ui.Context, id string) ui.Element {
 		OnClick(func() { a.openThread(id, "conversation") }).
 		Child(statusMark(ctx, th.Status)).
 		Child(ui.Text(th.Title).FontSize(12).Medium().Truncate().MinWidth(ui.Px(0)))
+}
+
+// threadContext says which repository and thread a card is about: the repository, the thread (a chip
+// that opens it), and, for a merge, its branch and target.
+func (a *App) threadContext(ctx *ui.Context, id string, branch bool) ui.Element {
+	t := ctx.Theme()
+	th, ok := a.thread(id)
+	if !ok {
+		return ui.Div()
+	}
+	row := ui.Div().Row().Align(ui.Center).Gap(space2).Wrap().
+		Child(ui.Div().Row().Align(ui.Center).Gap(space1 + 2).Shrink(0).
+			Child(ui.Icon(icons.FolderGit2).Size(14).Color(t.TextMuted)).
+			Child(ui.Text(filepath.Base(th.RepoPath)).FontSize(13).Semibold())).
+		Child(ui.Icon(icons.ChevronRight).Size(12).Color(t.TextSubtle)).
+		Child(a.threadChip(ctx, id))
+	if branch && th.Branch != "" {
+		row = row.Child(ui.Div().Row().Align(ui.Center).Gap(space1).Shrink(0).
+			Child(ui.Icon(icons.GitBranch).Size(12).Color(t.TextSubtle)).
+			Child(subtle(ctx, branchLabel(th)+" → "+th.BaseBranch)))
+	}
+	return row
 }
