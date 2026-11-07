@@ -12,7 +12,7 @@ Claude **worker threads**, each working in its own git worktree.
 | Orchestrator | One **global** session, resumed across restarts. Knowledge of live state comes from tools, not its transcript. |
 | Repos | Settings hold a list of folders; every git repo found under them is known to the orchestrator. |
 | Workers | One git worktree + branch per thread, `bypassPermissions`, no sandbox. |
-| Landing | Orchestrator reports diff and test results; **you** click Merge. |
+| Landing | Solo proposes; **you** click Open PR (GitHub via `gh`, GitLab via `glab`), then Merge once checks pass, or the forge auto-merges. Repos without a remote merge locally. |
 | Layout | Title bar (go-to-thread, settings) · thread rail on the left · orchestrator chat · a thread panel that slides in from the right (50/50, resizable). The rail filters by repository when threads span several. |
 | Persistence | SQLite (`modernc.org/sqlite`, no cgo), owned by Go. Claude's own transcripts are used only for `resume`. |
 
@@ -142,6 +142,13 @@ Raw `SDKMessage`s are also appended to a per-session JSONL file for debugging an
   and moves the thread to Settings › History; discarding marks it done too. **Restore** recreates the
   worktree at the same path (on the branch if it survived, else a new one from the base branch's head),
   so the Claude session resumes.
+- Pull requests (`internal/forge`): the forge comes from origin's host, or `git config solo.forge
+  github|gitlab` for self-hosted ones. Open PR commits leftovers, pushes the branch and opens the PR
+  against the base branch (title: the worker's one commit, else the thread title; body: its summary).
+  With Settings › Git › Auto-merge, Solo also runs `gh pr merge --auto` (`glab mr merge --auto-merge`).
+  A watcher polls open PRs every 30 s: failed checks (sent to Solo to have the thread fix them, or just
+  shown, per the setting), passed checks, closed, merged (the thread closes and its worktree goes).
+  New commits a thread makes are pushed to its PR at the end of each turn.
 - Discarding a thread deletes its message images, except ones another thread's history still shows.
 
 ## UI (jamb)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/tyler-builds/solo/internal/forge"
 	"path/filepath"
 	"strings"
 	"time"
@@ -89,7 +90,7 @@ var toolSpecs = []agent.ToolSpec{
 	},
 	{
 		Name:        "propose_merge",
-		Description: "Show the user a Merge card for a worker whose work you reviewed and recommend merging. Only the user can merge.",
+		Description: "Show the user a landing card for a worker whose work you reviewed and recommend landing: Open PR (or MR) when the repository has a GitHub or GitLab remote, else Merge. Only the user can press it.",
 		InputSchema: schema(`{"type":"object","properties":{
 			"id":{"type":"string","description":"Thread ID or short ID."},
 			"summary":{"type":"string","description":"One or two sentences: what the change does and why it's ready."}},"required":["id","summary"]}`),
@@ -318,6 +319,21 @@ func (o *Orchestrator) describe(ctx context.Context, v core.ThreadView) string {
 	}
 	if v.Error != "" {
 		fmt.Fprintf(&b, "\nError: %s\n", v.Error)
+	}
+	if pr := v.PR; pr != nil {
+		fmt.Fprintf(&b, "\n%s #%d: %s, %s, checks %s", pr.Kind.Noun(), pr.Number, pr.URL, pr.State, pr.Checks)
+		if pr.AutoMerge {
+			b.WriteString(", auto-merge on")
+		}
+		if pr.Blocked != "" && pr.State == forge.StateOpen {
+			b.WriteString(", can't merge yet: " + pr.Blocked)
+		}
+		if len(pr.Failed) > 0 {
+			b.WriteString("; failed: " + failedChecks(pr.Failed))
+		}
+		b.WriteString("\n")
+	} else if v.Forge != forge.None && v.CanOpenPR {
+		fmt.Fprintf(&b, "\nLanding: the user opens a %s from your merge proposal.\n", v.Forge.Noun())
 	}
 	if qs := o.c.PendingQuestions(v.ID); len(qs) > 0 {
 		b.WriteString("\nWaiting on these questions:\n")

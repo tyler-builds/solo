@@ -9,6 +9,7 @@ import (
 	"embed"
 	_ "embed"
 	"fmt"
+	"github.com/tyler-builds/solo/internal/forge"
 	"time"
 
 	"github.com/tyler-builds/jamb/icons"
@@ -153,10 +154,23 @@ func subtle(ctx *ui.Context, s string) *ui.TextElement {
 // statusNoChanges is shown for a worker that finished with nothing to merge (ThreadView.NoChanges).
 const statusNoChanges = "no-changes"
 
-// shownStatus is the status the UI shows for a thread: its own, or statusNoChanges.
+// Statuses the UI shows for a worker with an open pull request.
+const (
+	statusInReview     = "in-review"
+	statusChecksFailed = "checks-failed"
+)
+
+// shownStatus is the status the UI shows for a thread: its own, or one of the UI's (no changes, a
+// pull request in review or with failed checks).
 func shownStatus(v core.ThreadView) string {
 	if v.NoChanges {
 		return statusNoChanges
+	}
+	if v.PR != nil && v.PR.State == forge.StateOpen && !core.Active(v.Status) && v.Status != core.StatusFailed {
+		if v.PR.Checks == forge.ChecksFailing {
+			return statusChecksFailed
+		}
+		return statusInReview
 	}
 	return v.Status
 }
@@ -166,6 +180,10 @@ func statusColor(ctx *ui.Context, status string) ui.Color {
 	switch status {
 	case statusNoChanges:
 		return t.TextMuted
+	case statusInReview:
+		return ui.Hex(pal(t).info)
+	case statusChecksFailed:
+		return t.Danger
 	case core.StatusRunning, core.StatusStarting:
 		return ui.Hex(pal(t).brand)
 	case core.StatusWaiting:
@@ -191,18 +209,27 @@ func statusLabel(v core.ThreadView) string {
 		return "Working"
 	case core.StatusWaiting:
 		return "Needs answer"
-	case core.StatusIdle:
+	case core.StatusIdle, core.StatusInterrupted:
+		switch shownStatus(v) {
+		case statusInReview:
+			return "In review"
+		case statusChecksFailed:
+			return "Checks failed"
+		}
+		if v.Status == core.StatusInterrupted {
+			return "Stopped"
+		}
 		switch {
 		case v.NoChanges:
 			return "No changes"
+		case v.CanOpenPR:
+			return "Ready for a " + v.Forge.Noun()
 		case v.IsWorker:
 			return "Ready to merge"
 		}
 		return "Idle"
 	case core.StatusFailed:
 		return "Failed"
-	case core.StatusInterrupted:
-		return "Stopped"
 	case core.StatusMerged:
 		return "Merged"
 	case core.StatusDiscarded:
@@ -294,6 +321,10 @@ func statusMark(ctx *ui.Context, status string) ui.Element {
 		}, ui.Animation{Duration: 1200 * time.Millisecond, Repeat: true}))
 	case core.StatusIdle, statusNoChanges:
 		return box.Child(ui.Icon(icons.CircleCheck).Size(14).Color(c))
+	case statusInReview:
+		return box.Child(ui.Icon(icons.GitPullRequest).Size(13).Color(c))
+	case statusChecksFailed:
+		return box.Child(ui.Icon(icons.CircleX).Size(14).Color(c))
 	case core.StatusArchived:
 		return box.Child(ui.Icon(icons.CircleCheck).Size(14).Color(c))
 	case core.StatusMerged:
@@ -319,6 +350,10 @@ func statusIcon(status string) *icons.Icon {
 		return icons.CircleAlert
 	case core.StatusIdle, statusNoChanges:
 		return icons.CircleCheck
+	case statusInReview:
+		return icons.GitPullRequest
+	case statusChecksFailed:
+		return icons.CircleX
 	case core.StatusArchived:
 		return icons.CircleCheck
 	case core.StatusRunning, core.StatusStarting, core.StatusQueued:

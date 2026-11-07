@@ -2,6 +2,7 @@ package gui
 
 import (
 	"fmt"
+	"github.com/tyler-builds/solo/internal/forge"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -20,8 +21,9 @@ var railGroups = []struct {
 	statuses []string
 }{
 	{"Needs answer", []string{core.StatusWaiting}},
-	{"Failed", []string{core.StatusFailed}},
-	{"Ready to merge", []string{core.StatusIdle}},
+	{"Failed", []string{core.StatusFailed, statusChecksFailed}},
+	{"Ready", []string{core.StatusIdle}},
+	{"In review", []string{statusInReview}},
 	{"No changes", []string{statusNoChanges}},
 	{"Merged", []string{core.StatusMerged}},
 	{"Stopped", []string{core.StatusInterrupted}},
@@ -157,7 +159,11 @@ func (a *App) repoMenu(ctx *ui.Context) ui.Element {
 
 // needsUser reports whether a thread waits on the user: a question, a failure, or work to review.
 func needsUser(th core.ThreadView) bool {
-	return th.Status == core.StatusWaiting || th.Status == core.StatusFailed || (th.Status == core.StatusIdle && th.CanMerge)
+	if th.PR != nil && th.PR.State == forge.StateOpen {
+		return th.CanMerge && !th.PR.AutoMerge // checks passed and it waits for the user's Merge
+	}
+	return th.Status == core.StatusWaiting || th.Status == core.StatusFailed ||
+		(th.Status == core.StatusIdle && (th.CanMerge || th.CanOpenPR))
 }
 
 func groupHeader(ctx *ui.Context, title string, n int, status string) ui.Element {
@@ -235,6 +241,9 @@ func branchLabel(th core.ThreadView) string {
 
 // activityLine says what a thread is doing or did, in a line.
 func (a *App) activityLine(th core.ThreadView) string {
+	if s := shownStatus(th); s == statusInReview || s == statusChecksFailed {
+		return prLine(th.PR)
+	}
 	switch th.Status {
 	case core.StatusQueued:
 		return "Starting"
@@ -274,6 +283,23 @@ func (a *App) activityLine(th core.ThreadView) string {
 		return firstLine(stripMarkdown(th.Summary))
 	}
 	return firstLine(th.Prompt)
+}
+
+// prLine says where a pull request stands: "PR #7 · waiting for checks".
+func prLine(pr *forge.PR) string {
+	parts := []string{fmt.Sprintf("%s #%d", pr.Kind.Noun(), pr.Number)}
+	switch {
+	case pr.Checks == forge.ChecksFailing:
+		parts = append(parts, "checks failed")
+	case pr.Mergeable:
+		parts = append(parts, "ready to merge")
+	case pr.Blocked != "":
+		parts = append(parts, pr.Blocked)
+	}
+	if pr.AutoMerge {
+		parts = append(parts, "auto-merge on")
+	}
+	return strings.Join(parts, " · ")
 }
 
 // stepLabel says what a tool call in progress is doing: "Running pnpm test".

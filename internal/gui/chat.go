@@ -740,9 +740,13 @@ func (a *App) proposalCard(ctx *ui.Context, d core.ProposalData, steps []*core.I
 			}
 			// A narrow chat column keeps Merge and Review changes on the row and moves the rest to "…".
 			narrow := a.chatWidth(ctx) < 640
+			land := a.landControl(ctx, th)
+			if land == nil {
+				land = ui.Button("Merge").Icon(icons.GitMerge).Primary().Small().Disabled(true)
+			}
 			actions = ui.Div().Row().Align(ui.Center).Gap(space2).
-				Child(ui.Button("Merge").Icon(icons.GitMerge).Primary().Small().Disabled(!th.CanMerge).
-					OnClick(func() { a.merge(id) })).
+				Child(land).
+				Child(a.prLink(ctx, th)).
 				Child(ui.Button("Review changes").Secondary().Small().OnClick(func() { a.openThread(id, "changes") }))
 			if !narrow {
 				actions = actions.Child(ui.Button("Request changes").Ghost().Small().
@@ -984,7 +988,7 @@ func (a *App) attentionBar(ctx *ui.Context) ui.Element {
 		}
 		switch th.Status {
 		case core.StatusIdle:
-			if th.CanMerge && !shown[th.ID] {
+			if needsUser(th) && (th.CanMerge || th.CanOpenPR) && !shown[th.ID] {
 				ready = append(ready, th)
 			}
 		case core.StatusFailed:
@@ -1006,9 +1010,9 @@ func (a *App) attentionBar(ctx *ui.Context) ui.Element {
 	}
 	row := ui.Div().Row().Align(ui.Center).Gap(space2).MinWidth(ui.Px(0))
 	if len(ready) > 0 {
-		text := filepath.Base(ready[0].RepoPath) + " · " + ready[0].Title + " is ready to merge"
+		text := filepath.Base(ready[0].RepoPath) + " · " + ready[0].Title + " is ready"
 		if len(ready) > 1 {
-			text = fmt.Sprintf("%d ready to merge", len(ready))
+			text = fmt.Sprintf("%d ready to land", len(ready))
 		}
 		row = row.Child(pill(icons.GitMerge, t.Success, text, ready[0], "changes"))
 	}

@@ -131,7 +131,7 @@ func (c *Core) AddProposal(workerID, summary string) error {
 	if v.NoChanges || (v.Changed == 0 && !Finished(v.Status)) {
 		return fmt.Errorf("thread %q changed no files; there is nothing to merge", v.Title)
 	}
-	if !v.CanMerge {
+	if !v.CanMerge && !v.CanOpenPR {
 		return fmt.Errorf("thread %q can't be merged while it is %s", v.Title, v.Status)
 	}
 	data, _ := json.Marshal(ProposalData{ThreadID: workerID, Title: v.Title, Summary: summary})

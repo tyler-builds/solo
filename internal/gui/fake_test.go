@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/tyler-builds/solo/internal/forge"
 	"image"
 	"image/color"
 	"image/draw"
@@ -32,6 +33,7 @@ type fakeBackend struct {
 	repos    []string
 	sent     []string
 	merged   []string
+	opened   []string
 	nextID   int64
 }
 
@@ -83,6 +85,15 @@ func (f *fakeBackend) Merge(_ context.Context, id string) (string, error) {
 	f.merged = append(f.merged, id)
 	f.mu.Unlock()
 	return "", errors.New("fake")
+}
+func (f *fakeBackend) MergeLocal(ctx context.Context, id string) (string, error) {
+	return f.Merge(ctx, id)
+}
+func (f *fakeBackend) OpenPR(_ context.Context, id string) (forge.PR, error) {
+	f.mu.Lock()
+	f.opened = append(f.opened, id)
+	f.mu.Unlock()
+	return forge.PR{Kind: forge.GitHub, Number: 1, URL: "https://github.com/acme/web/pull/1"}, nil
 }
 func (f *fakeBackend) Discard(context.Context, string) error { return nil }
 func (f *fakeBackend) Settings() core.Settings               { return f.settings }
@@ -208,6 +219,15 @@ func demoBackend() *fakeBackend {
 	flaky.Error = "Tests failed: 2 of 148 in billing/worker_test.go; the retry timer races with the test clock."
 	readme := worker("e1e2e3e4-readme", "Update install steps in README", repos[2], core.StatusQueued, 30*time.Second, 0)
 	readme.HasWorktree, readme.WorktreePath, readme.Branch = false, "", ""
+	forms.Forge, forms.CanOpenPR, forms.CanMerge, forms.CanMergeLocal = forge.GitHub, true, false, true
+	review := worker("b1b2b3b4-paginate", "Paginate the audit log", repos[1], core.StatusIdle, 40*time.Minute, 0.66)
+	review.Forge, review.CanMerge, review.CanMergeLocal = forge.GitHub, false, false
+	review.PR = &forge.PR{Kind: forge.GitHub, Number: 142, URL: "https://github.com/acme/api/pull/142", State: forge.StateOpen,
+		Checks: forge.ChecksPending, AutoMerge: true, Blocked: "waiting for checks"}
+	ci := worker("c1c2c3c4-csv", "Add CSV export to reports", repos[0], core.StatusIdle, 55*time.Minute, 0.81)
+	ci.Forge, ci.CanMerge, ci.CanMergeLocal = forge.GitHub, false, false
+	ci.PR = &forge.PR{Kind: forge.GitHub, Number: 88, URL: "https://github.com/acme/web/pull/88", State: forge.StateOpen,
+		Checks: forge.ChecksFailing, Failed: []forge.Check{{Name: "test (web)"}}, Blocked: "checks failed"}
 	audit := worker("a0b1c2d3-audit", "Find where uploads are logged", repos[1], core.StatusIdle, 25*time.Minute, 0.09)
 	audit.Summary = "Uploads are logged in `internal/upload/handler.go:142` through the request logger; nothing writes file names. No changes needed."
 	audit.NoChanges, audit.CanMerge, audit.CanDone, audit.Changed = true, false, true, 0
@@ -222,7 +242,7 @@ func demoBackend() *fakeBackend {
 		ActualModel: "claude-opus-5-5"}
 
 	f := &fakeBackend{
-		threads: []core.ThreadView{orch, oauth, limiter, forms, audit, flaky, readme, bump, old, gone},
+		threads: []core.ThreadView{orch, oauth, limiter, forms, review, ci, audit, flaky, readme, bump, old, gone},
 		items:   map[string][]core.Item{},
 		repos:   repos,
 		settings: core.Settings{Folders: []string{"~/code"}, OrchestratorModel: "opus", WorkerModel: "sonnet", ScanDepth: 3,

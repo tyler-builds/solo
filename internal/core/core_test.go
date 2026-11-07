@@ -560,3 +560,162 @@ func TestBranchNamingAndLatestBase(t *testing.T) {
 		t.Fatalf("repo rules: %s", v.Branch)
 	}
 }
+
+// fakeGH puts a gh on PATH that opens pull request #7, answers views from view.json in its folder,
+// and logs merges.
+func fakeGH(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	script := `#!/bin/sh
+d="$(dirname "$0")"
+case "$1 $2" in
+"pr create") echo "$@" > "$d/create"; echo "Creating pull request"; echo "https://github.com/acme/proj/pull/7" ;;
+"pr view") cat "$d/view.json" ;;
+"pr merge") echo "$@" >> "$d/merge" ;;
+*) echo "unexpected: $@" >&2; exit 1 ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(dir, "gh"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return dir
+}
+
+func setView(t *testing.T, dir, state, merge string, checks ...string) {
+	t.Helper()
+	var rollup []string
+	for _, c := range checks {
+		name, concl, _ := strings.Cut(c, "=")
+		status := "COMPLETED"
+		if concl == "PENDING" {
+			status, concl = "IN_PROGRESS", ""
+		}
+		rollup = append(rollup, fmt.Sprintf(`{"__typename":"CheckRun","name":%q,"status":%q,"conclusion":%q,"detailsUrl":"https://ci/%s"}`, name, status, concl, name))
+	}
+	j := fmt.Sprintf(`{"number":7,"url":"https://github.com/acme/proj/pull/7","state":%q,"autoMergeRequest":null,"mergeStateStatus":%q,"reviewDecision":"","statusCheckRollup":[%s]}`,
+		state, merge, strings.Join(rollup, ","))
+	if err := os.WriteFile(filepath.Join(dir, "view.json"), []byte(j), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPullRequestFlow(t *testing.T) {
+	gh := fakeGH(t)
+	e := newEnv(t)
+	ctx := context.Background()
+	run := func(dir string, args ...string) string {
+		t.Helper()
+		out, err := git.Run(ctx, dir, args...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	origin := filepath.Join(e.root, "origin.git")
+	run(e.root, "clone", "-q", "--bare", e.repo, origin)
+	run(e.repo, "remote", "add", "origin", origin)
+	run(e.repo, "config", "solo.forge", "github")
+	e.c.UpdateSettings(func(s *Settings) { s.AutoMerge = true })
+	events := make(chan string, 20)
+	e.c.Subscribe(func(ch Change) {
+		if ch.PREvent != "" {
+			events <- ch.PREvent
+		}
+	})
+	waitEvent := func(want string) {
+		t.Helper()
+		for {
+			select {
+			case got := <-events:
+				if got == want {
+					return
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatalf("no %s event", want)
+			}
+		}
+	}
+	waitCounted := func(id string) ThreadView {
+		t.Helper()
+		v := waitStatus(t, e.c, id, StatusIdle)
+		for deadline := time.Now().Add(5 * time.Second); (v.Changed < 0 || v.Forge == "") && time.Now().Before(deadline); v, _ = e.c.Thread(id) {
+			time.Sleep(20 * time.Millisecond)
+		}
+		return v
+	}
+
+	v, err := e.c.CreateWorker(ctx, WorkerSpec{Repo: "proj", Title: "Add hello", Prompt: "write hello.txt hi"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	v = waitCounted(v.ID)
+	if v.Forge != "github" || !v.CanOpenPR || v.CanMerge || !v.CanMergeLocal {
+		t.Fatalf("before the PR %+v", v)
+	}
+	if _, err := e.c.Merge(ctx, v.ID); err == nil {
+		t.Fatal("merged locally in a repository with a forge")
+	}
+
+	// Opening pushes the branch, opens the PR against main and turns on auto-merge.
+	setView(t, gh, "OPEN", "BLOCKED", "test=PENDING")
+	pr, err := e.c.OpenPR(ctx, v.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitEvent(PROpened)
+	if pr.Number != 7 || pr.State != "open" || pr.Checks != "pending" || !pr.AutoMerge {
+		t.Fatalf("pr %+v", pr)
+	}
+	create, _ := os.ReadFile(filepath.Join(gh, "create"))
+	if !strings.Contains(string(create), "--base main --head "+v.Branch) || !strings.Contains(string(create), "--title Add hello") {
+		t.Fatalf("gh pr create %s", create)
+	}
+	if merge, _ := os.ReadFile(filepath.Join(gh, "merge")); !strings.Contains(string(merge), "--auto --squash") {
+		t.Fatalf("auto-merge: %q", merge)
+	}
+	if remote := run(e.repo, "ls-remote", "origin", v.Branch); remote == "" {
+		t.Fatal("branch not pushed")
+	}
+	if v, _ = e.c.Thread(v.ID); v.CanOpenPR || v.CanMerge || v.CanDone {
+		t.Fatalf("with the PR open %+v", v)
+	}
+
+	// Failing checks are noticed; new commits are pushed to the PR.
+	setView(t, gh, "OPEN", "BLOCKED", "test=FAILURE", "lint=SUCCESS")
+	e.c.CheckPRs(ctx)
+	waitEvent(PRChecksFailed)
+	if v, _ = e.c.Thread(v.ID); v.PR.Checks != "failing" || len(v.PR.Failed) != 1 || v.PR.Failed[0].Name != "test" || v.PR.Blocked != "checks failed" {
+		t.Fatalf("failing %+v", v.PR)
+	}
+	if err := e.c.Send(ctx, v.ID, "write fix.txt fixed"); err != nil {
+		t.Fatal(err)
+	}
+	waitStatus(t, e.c, v.ID, StatusIdle)
+	run(v.WorktreePath, "add", "-A")
+	run(v.WorktreePath, "commit", "-q", "-m", "fix")
+	e.c.countChanges(v.ID)
+	head := run(v.WorktreePath, "rev-parse", "HEAD")
+	if remote := run(e.repo, "ls-remote", "origin", v.Branch); !strings.HasPrefix(remote, head) {
+		t.Fatalf("new commit not pushed: remote %q, local %s", remote, head)
+	}
+
+	// Passing and mergeable: Merge merges the PR; when the forge says merged, the thread closes.
+	setView(t, gh, "OPEN", "CLEAN", "test=SUCCESS")
+	e.c.CheckPRs(ctx)
+	waitEvent(PRChecksPassed)
+	if v, _ = e.c.Thread(v.ID); !v.CanMerge {
+		t.Fatalf("mergeable PR can't merge: %+v", v.PR)
+	}
+	setView(t, gh, "MERGED", "UNKNOWN")
+	if _, err := e.c.Merge(ctx, v.ID); err != nil {
+		t.Fatal(err)
+	}
+	waitEvent(PRMerged)
+	if v, _ = e.c.Thread(v.ID); v.Status != StatusMerged || v.WorktreePath != "" || !v.CanDone {
+		t.Fatalf("after merge %+v", v)
+	}
+	if merge, _ := os.ReadFile(filepath.Join(gh, "merge")); !strings.Contains(string(merge), "pr merge https://github.com/acme/proj/pull/7 --squash") {
+		t.Fatalf("merge log %q", merge)
+	}
+}

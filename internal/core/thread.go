@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/tyler-builds/solo/internal/forge"
 	"os"
 	"path/filepath"
 	"slices"
@@ -60,6 +61,8 @@ type thread struct {
 	tools     map[string]int64 // tool_use id → item id
 	// changed is how many files its branch changes from where it started; -1 until counted.
 	changed int
+	forge   forge.Kind // where its repository's pull requests go; found with the change count
+	pr      *forge.PR  // its pull request, once opened
 }
 
 type liveKey struct {
@@ -89,6 +92,14 @@ type ThreadView struct {
 	Changed int
 	// NoChanges is a worker whose last turn finished with nothing to merge.
 	NoChanges bool
+	// Forge is where the repository's pull requests go (None: it merges locally), and PR the thread's
+	// pull request once opened.
+	Forge forge.Kind
+	PR    *forge.PR
+	// CanOpenPR: it has changes to land in a repository with a forge, and no open pull request.
+	CanOpenPR bool
+	// CanMergeLocal: it has changes and no open pull request, so it can merge in the local checkout.
+	CanMergeLocal bool
 }
 
 func (t *thread) view() ThreadView {
@@ -109,10 +120,20 @@ func (t *thread) view() ThreadView {
 	}
 	v.CanInterrupt = t.inTurn
 	settled := v.IsWorker && v.HasWorktree && !Finished(t.row.Status) && !Active(t.row.Status) && t.row.Status != StatusQueued
-	v.CanMerge = settled && t.changed != 0
+	v.Forge = t.forge
+	if t.pr != nil {
+		pr := *t.pr
+		v.PR = &pr
+	}
+	prOpen := t.pr != nil && t.pr.State == forge.StateOpen
+	hasWork := settled && t.changed != 0
+	v.CanMergeLocal = hasWork && !prOpen
+	v.CanOpenPR = hasWork && !prOpen && t.forge != forge.None
+	// Merge: the open pull request when it can merge now, or locally when there's no forge.
+	v.CanMerge = hasWork && ((prOpen && t.pr.Mergeable) || (!prOpen && t.forge == forge.None))
 	v.NoChanges = settled && t.changed == 0 && t.row.Status == StatusIdle
 	v.CanDone = v.IsWorker && t.row.DoneAt.IsZero() && !t.inTurn &&
-		(t.row.Status == StatusMerged || (settled && t.changed == 0))
+		(t.row.Status == StatusMerged || (settled && t.changed == 0) || (t.pr != nil && t.pr.State == forge.StateClosed))
 	v.CanDiscard = v.IsWorker && !Finished(t.row.Status)
 	return v
 }
@@ -506,7 +527,22 @@ func (c *Core) Merge(ctx context.Context, threadID string) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("no thread %s", threadID)
 	}
-	if !v.CanMerge {
+	if v.PR != nil && v.PR.State == forge.StateOpen {
+		return "", c.mergePR(ctx, v)
+	}
+	if v.Forge != forge.None {
+		return "", fmt.Errorf("open a %s for %q first, or merge it locally", v.Forge.Noun(), v.Title)
+	}
+	return c.MergeLocal(ctx, threadID)
+}
+
+// MergeLocal merges a worker's branch into its base branch in the repository's own checkout.
+func (c *Core) MergeLocal(ctx context.Context, threadID string) (string, error) {
+	v, ok := c.Thread(threadID)
+	if !ok {
+		return "", fmt.Errorf("no thread %s", threadID)
+	}
+	if !v.CanMergeLocal {
 		return "", fmt.Errorf("thread %q can't be merged while it is %s", v.Title, v.Status)
 	}
 	if _, err := git.CommitAll(ctx, v.WorktreePath, "chore: uncommitted work from "+v.Title); err != nil {
@@ -730,13 +766,17 @@ func (c *Core) countChanges(id string) {
 		c.log.Warn("core: counting changes", "thread", id, "err", err)
 		return
 	}
+	kind := c.forgeFor(v.RepoPath)
+	if v.PR != nil && v.PR.State == forge.StateOpen && !v.InTurn {
+		c.pushPR(ctx, v)
+	}
 	c.mu.Lock()
 	t := c.threads[id]
-	if t == nil || t.changed == len(files) {
+	if t == nil || (t.changed == len(files) && t.forge == kind) {
 		c.mu.Unlock()
 		return
 	}
-	t.changed = len(files)
+	t.changed, t.forge = len(files), kind
 	c.mu.Unlock()
 	nv, _ := c.Thread(id)
 	c.notify(Change{Kind: ChangeThread, ThreadID: id, PrevStatus: nv.Status, Status: nv.Status})

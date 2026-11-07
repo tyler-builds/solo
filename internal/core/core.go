@@ -9,8 +9,10 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/tyler-builds/solo/internal/forge"
 	"log/slog"
 	"maps"
 	"os"
@@ -97,6 +99,8 @@ type Config struct {
 	DataDir string
 	Agent   agent.Command
 	Log     *slog.Logger
+	// PRPoll is how often open pull requests are checked; 0 means every 30 seconds.
+	PRPoll time.Duration
 }
 
 // ChangeKind says what changed.
@@ -116,7 +120,19 @@ type Change struct {
 	ThreadID string
 	// For ChangeThread: the status before and after, equal when something else changed.
 	PrevStatus, Status string
+	// PREvent is set when something happened to the thread's pull request: PROpened, PRChecksFailed,
+	// PRChecksPassed, PRMerged or PRClosed.
+	PREvent string
 }
+
+// Pull request events (Change.PREvent).
+const (
+	PROpened       = "opened"
+	PRChecksFailed = "checks_failed"
+	PRChecksPassed = "checks_passed"
+	PRMerged       = "merged"
+	PRClosed       = "closed"
+)
 
 // ToolHandler serves the app tools a session calls (the orchestrator's). It returns the text the model
 // reads, and whether it is an error.
@@ -141,6 +157,9 @@ type Core struct {
 	recap     func(ThreadView) string
 	rateLimit agent.Event
 	closed    bool
+	forges    map[string]forge.Kind // by repository
+	stop      chan struct{}         // closed by Close
+	pollNow   chan struct{}         // asks the pull request watcher to look now
 }
 
 // DefaultDataDir is where Solo keeps its data: ~/.local/share/solo on Linux, %LOCALAPPDATA%\Solo on
@@ -187,6 +206,9 @@ func New(cfg Config) (*Core, error) {
 		threads:   map[string]*thread{},
 		bySession: map[string]*thread{},
 		subs:      map[int]func(Change){},
+		forges:    map[string]forge.Kind{},
+		stop:      make(chan struct{}),
+		pollNow:   make(chan struct{}, 1),
 	}
 	if _, err := db.GetSetting("settings", &c.settings); err != nil {
 		cfg.Log.Warn("core: settings unreadable; using defaults", "err", err)
@@ -199,6 +221,12 @@ func New(cfg Config) (*Core, error) {
 	}
 	for _, row := range rows {
 		t := &thread{row: *row, changed: -1}
+		if row.PR != "" {
+			var pr forge.PR
+			if json.Unmarshal([]byte(row.PR), &pr) == nil {
+				t.pr = &pr
+			}
+		}
 		// A thread that was working when the app stopped lost its process; say so.
 		switch t.row.Status {
 		case StatusStarting, StatusRunning, StatusWaiting:
@@ -220,6 +248,7 @@ func New(cfg Config) (*Core, error) {
 			go c.countChanges(id)
 		}
 	}
+	go c.watchPRs()
 	return c, nil
 }
 
@@ -231,6 +260,7 @@ func (c *Core) Close() {
 		return
 	}
 	c.closed = true
+	close(c.stop)
 	c.mu.Unlock()
 	c.agent.Shutdown()
 	c.db.Close()

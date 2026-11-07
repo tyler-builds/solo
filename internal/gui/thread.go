@@ -3,6 +3,7 @@ package gui
 import (
 	"context"
 	"fmt"
+	"github.com/tyler-builds/solo/internal/forge"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -31,6 +32,66 @@ func (a *App) merge(id string) {
 		a.notify(ui.ToastSuccess, "Merged", fmt.Sprintf("%s is in %s (%s).", th.Title, th.BaseBranch, commit))
 		return nil
 	})
+}
+
+// openPR opens a pull request for a thread.
+func (a *App) openPR(id string) {
+	a.run("Opening the pull request", func(ctx context.Context) error {
+		pr, err := a.b.OpenPR(ctx, id)
+		if err != nil {
+			return err
+		}
+		a.notify(ui.ToastSuccess, fmt.Sprintf("Opened %s #%d", pr.Kind.Noun(), pr.Number), pr.URL)
+		return nil
+	})
+}
+
+// mergeLocal merges a thread's branch in the local checkout, skipping the pull request.
+func (a *App) mergeLocal(id string) {
+	a.run("Merge", func(ctx context.Context) error {
+		_, err := a.b.MergeLocal(ctx, id)
+		return err
+	})
+}
+
+// landControl is a thread's main landing action: Open PR, Merge (its pull request, or locally without
+// a forge), or a note that auto-merge will do it. nil when there is nothing to land.
+func (a *App) landControl(ctx *ui.Context, th core.ThreadView) ui.Element {
+	t := ctx.Theme()
+	id := th.ID
+	switch {
+	case th.CanOpenPR:
+		noun := th.Forge.Noun()
+		return ui.Button("Open " + noun).Icon(icons.GitPullRequestArrow).Primary().Small().
+			Tooltip("Push " + th.Branch + " and open a " + noun + " against " + th.BaseBranch).OnClick(func() { a.openPR(id) })
+	case th.PR != nil && th.PR.State == forge.StateOpen:
+		if th.CanMerge {
+			return ui.Button("Merge").Icon(icons.GitMerge).Primary().Small().
+				Tooltip(fmt.Sprintf("Merge %s #%d into %s", th.PR.Kind.Noun(), th.PR.Number, th.BaseBranch)).OnClick(func() { a.merge(id) })
+		}
+		if th.PR.AutoMerge {
+			return ui.Div().Row().Align(ui.Center).Gap(6).PaddingX(space2).Height(ui.Px(28)).Shrink(0).
+				Tooltip("It merges once its required checks pass").
+				Child(ui.Icon(icons.Timer).Size(13).Color(t.TextMuted)).
+				Child(ui.Text("Auto-merge on").FontSize(12).Medium().TextColor(t.TextMuted).NoWrap())
+		}
+		return ui.Button("Merge").Icon(icons.GitMerge).Secondary().Small().Disabled(true).
+			Tooltip("Can't merge yet: " + th.PR.Blocked)
+	case th.CanMerge:
+		return ui.Button("Merge").Icon(icons.GitMerge).Primary().Small().
+			Tooltip("Merge " + th.Branch + " into " + th.BaseBranch).OnClick(func() { a.merge(id) })
+	}
+	return nil
+}
+
+// prLink opens a thread's pull request in the browser.
+func (a *App) prLink(ctx *ui.Context, th core.ThreadView) ui.Element {
+	if th.PR == nil {
+		return nil
+	}
+	url := th.PR.URL
+	return ui.Button(fmt.Sprintf("#%d", th.PR.Number)).Icon(icons.ExternalLink).Ghost().Small().
+		Tooltip("Open the " + th.PR.Kind.Noun() + " in your browser").OnClick(func() { _ = ctx.OpenURL(url) })
 }
 
 // changeData is a worker's changed files and diff.
@@ -82,17 +143,16 @@ func (a *App) threadPanel(ctx *ui.Context) ui.Element {
 		Child(ui.Text(fmt.Sprintf("+%d", added)).FontSize(12).Medium().TextColor(t.Success)).
 		Child(ui.Text(fmt.Sprintf("−%d", removed)).FontSize(12).Medium().TextColor(t.Danger))
 	actions := ui.Div().Row().Align(ui.Center).Gap(space1).Shrink(0)
+	actions = actions.Child(a.prLink(ctx, th))
 	switch {
-	case th.CanMerge:
-		tip := "Merge " + th.Branch + " into " + th.BaseBranch
-		actions = actions.Child(ui.Button("Merge").Icon(icons.GitMerge).Primary().Small().Tooltip(tip).
-			OnClick(func() { a.merge(id) }))
+	case th.CanOpenPR || th.CanMerge || (th.PR != nil && th.PR.State == forge.StateOpen):
+		actions = actions.Child(a.landControl(ctx, th))
 	case th.CanDone:
 		actions = actions.Child(ui.Button("Done").Icon(icons.Check).Primary().Small().
 			Tooltip("Take it out of your list. Settings › History can restore it.").
 			OnClick(func() { a.markDone(th) }))
 	}
-	if th.CanDiscard || th.CanInterrupt {
+	if th.CanDiscard || th.CanInterrupt || th.CanMergeLocal {
 		actions = actions.Child(ui.DropdownMenu(
 			ui.IconButton(icons.Ellipsis).Ghost().Small().Label("More actions").Tooltip("More"),
 			func() []ui.MenuItem {
@@ -101,6 +161,12 @@ func (a *App) threadPanel(ctx *ui.Context) ui.Element {
 					items = append(items, ui.MenuItem{Label: "Stop", Icon: icons.Square, OnClick: func() {
 						a.run("Stopping", func(ctx context.Context) error { return a.b.Interrupt(ctx, id) })
 					}})
+				}
+				if th.CanMergeLocal && th.Forge != forge.None {
+					items = append(items, ui.MenuItem{Label: "Merge locally instead", Icon: icons.GitMerge, OnClick: func() { a.mergeLocal(id) }})
+				}
+				if th.CanDone && (th.CanOpenPR || th.CanMerge || th.PR != nil) {
+					items = append(items, ui.MenuItem{Label: "Done", Icon: icons.Check, OnClick: func() { a.markDone(th) }})
 				}
 				if th.CanDiscard {
 					items = append(items, ui.MenuItem{Label: "Discard thread…", Icon: icons.Trash, OnClick: func() { a.confirmDiscard(th) }})

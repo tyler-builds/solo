@@ -7,6 +7,7 @@ package orchestrator
 import (
 	"context"
 	"fmt"
+	"github.com/tyler-builds/solo/internal/forge"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -151,7 +152,7 @@ func (o *Orchestrator) onChange(ch core.Change) {
 		}
 		return
 	}
-	if ch.PrevStatus == ch.Status {
+	if ch.PrevStatus == ch.Status && ch.PREvent == "" {
 		return
 	}
 	v, ok := o.c.Thread(ch.ThreadID)
@@ -159,6 +160,35 @@ func (o *Orchestrator) onChange(ch core.Change) {
 		return
 	}
 	var line string
+	if pr := v.PR; pr != nil && ch.PREvent != "" && ch.PREvent != core.PRMerged {
+		noun := fmt.Sprintf("%s #%d (%s)", pr.Kind.Noun(), pr.Number, pr.URL)
+		switch ch.PREvent {
+		case core.PROpened:
+			line = fmt.Sprintf("%s: the user opened %s.", label(v), noun)
+			if pr.AutoMerge {
+				line += " Auto-merge is on, so it merges once its required checks pass."
+			}
+		case core.PRChecksPassed:
+			line = fmt.Sprintf("%s: checks passed on %s.", label(v), noun)
+		case core.PRClosed:
+			line = fmt.Sprintf("%s: %s was closed without merging.", label(v), noun)
+		case core.PRChecksFailed:
+			line = fmt.Sprintf("%s: checks failed on %s: %s.", label(v), noun, failedChecks(pr.Failed))
+			if o.c.Settings().OnChecksFail == core.ChecksNotify {
+				line += " The user handles failed checks themselves: tell them, and don't ask the thread to fix it."
+			} else {
+				line += " Have the thread fix them with message_thread (it can read the failures with gh pr checks or glab ci view); Solo pushes its new commits to the " + pr.Kind.Noun() + "."
+			}
+		}
+		o.mu.Lock()
+		o.pending = append(o.pending, line)
+		o.mu.Unlock()
+		o.schedule()
+		return
+	}
+	if ch.PrevStatus == ch.Status {
+		return
+	}
 	switch ch.Status {
 	case core.StatusIdle:
 		line = fmt.Sprintf("%s finished its turn. Summary: %s", label(v), clip(oneLine(v.Summary), 600))
@@ -170,6 +200,9 @@ func (o *Orchestrator) onChange(ch core.Change) {
 		line = fmt.Sprintf("%s was interrupted.", label(v))
 	case core.StatusMerged:
 		line = fmt.Sprintf("%s was merged into %s by the user.", label(v), v.BaseBranch)
+		if v.PR != nil {
+			line = fmt.Sprintf("%s: %s #%d merged into %s.", label(v), v.PR.Kind.Noun(), v.PR.Number, v.BaseBranch)
+		}
 	case core.StatusDiscarded:
 		line = fmt.Sprintf("%s was discarded by the user.", label(v))
 	default:
@@ -281,4 +314,19 @@ func expandHome(p string) string {
 		}
 	}
 	return p
+}
+
+func failedChecks(cs []forge.Check) string {
+	var out []string
+	for _, c := range cs {
+		if c.URL != "" {
+			out = append(out, c.Name+" ("+c.URL+")")
+		} else {
+			out = append(out, c.Name)
+		}
+	}
+	if len(out) == 0 {
+		return "see the checks"
+	}
+	return strings.Join(out, ", ")
 }

@@ -73,6 +73,7 @@ func TestShots(t *testing.T) {
 			a.settingsTab = "git"
 			a.settings.Set(true)
 		}},
+		{"review", func(a *App, f *fakeBackend) { a.openThread("b1b2b3b4-paginate", "conversation") }},
 		{"empty", nil},
 	}
 	for _, theme := range []struct {

@@ -55,7 +55,7 @@ func TestShiftEnterDoesNotSend(t *testing.T) {
 	}
 }
 
-func TestCardOpensThreadAndMergeButton(t *testing.T) {
+func TestCardOpensThreadAndOpenPRButton(t *testing.T) {
 	f := demoBackend()
 	a, u := newUI(t, f)
 	u.Click("card-c3d4e5f6-forms")
@@ -63,18 +63,18 @@ func TestCardOpensThreadAndMergeButton(t *testing.T) {
 	if a.openID.Peek() != "c3d4e5f6-forms" {
 		t.Fatalf("drawer shows %q", a.openID.Peek())
 	}
-	u.ByRole(access.RoleButton, "Merge").Click()
+	u.ByRole(access.RoleButton, "Open PR").Click()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		f.mu.Lock()
-		n := len(f.merged)
+		n := len(f.opened)
 		f.mu.Unlock()
 		if n == 1 {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatal("merge was not requested")
+	t.Fatal("no pull request was opened")
 }
 
 func TestQuestionOptionAnswers(t *testing.T) {
