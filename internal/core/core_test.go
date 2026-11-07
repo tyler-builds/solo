@@ -408,64 +408,101 @@ func pngSize(t *testing.T, path string) (int, int) {
 	return cfg.Width, cfg.Height
 }
 
-func TestDoneArchiveAndDiscardCleanup(t *testing.T) {
+func TestDoneRestoreAndDiscardCleanup(t *testing.T) {
 	e := newEnv(t)
 	ctx := context.Background()
+	counted := func(id string) ThreadView {
+		t.Helper()
+		v := waitStatus(t, e.c, id, StatusIdle)
+		for deadline := time.Now().Add(5 * time.Second); v.Changed < 0 && time.Now().Before(deadline); v, _ = e.c.Thread(id) {
+			time.Sleep(20 * time.Millisecond)
+		}
+		return v
+	}
 
-	// A worker that changes nothing is Done: nothing to merge, and it can be archived.
+	// A worker that changes nothing has nothing to merge; it stays until the user marks it done.
 	shared, _ := e.c.SaveImage(image.NewRGBA(image.Rect(0, 0, 4, 4)))
 	v, err := e.c.CreateWorker(ctx, WorkerSpec{Repo: "proj", Title: "Look around", Prompt: "just answer", Images: []string{shared}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	waitStatus(t, e.c, v.ID, StatusIdle)
-	deadline := time.Now().Add(5 * time.Second)
-	for v, _ = e.c.Thread(v.ID); !v.Done && time.Now().Before(deadline); v, _ = e.c.Thread(v.ID) {
-		time.Sleep(20 * time.Millisecond)
-	}
-	if !v.Done || v.CanMerge || !v.CanArchive || v.Changed != 0 {
+	v = counted(v.ID)
+	if !v.NoChanges || v.CanMerge || !v.CanDone || v.Changed != 0 || !v.DoneAt.IsZero() {
 		t.Fatalf("no-change worker %+v", v)
 	}
 	if err := e.c.AddProposal(v.ID, "ship it"); err == nil {
 		t.Fatal("proposed merging a thread with no changes")
 	}
 	wt := v.WorktreePath
-	if err := e.c.Archive(ctx, v.ID); err != nil {
+	if err := e.c.Done(ctx, v.ID); err != nil {
 		t.Fatal(err)
 	}
 	v, _ = e.c.Thread(v.ID)
-	if v.Status != StatusArchived || !Finished(v.Status) {
-		t.Fatalf("archived %+v", v)
+	if v.Status != StatusArchived || v.DoneAt.IsZero() || v.CanDone {
+		t.Fatalf("done %+v", v)
 	}
 	if _, err := os.Stat(wt); err == nil {
-		t.Fatal("worktree kept after archive")
+		t.Fatal("worktree kept after done")
 	}
 
-	// A worker with changes can't be archived; discarding it deletes its own images but not one
-	// another thread still shows.
+	// Restore brings it back at the same path, and it can work again (and its session resumes).
+	if err := e.c.Restore(ctx, v.ID); err != nil {
+		t.Fatal(err)
+	}
+	v, _ = e.c.Thread(v.ID)
+	if v.Status != StatusIdle || !v.DoneAt.IsZero() || v.WorktreePath != wt {
+		t.Fatalf("restored %+v", v)
+	}
+	if err := e.c.Send(ctx, v.ID, "write b.txt more"); err != nil {
+		t.Fatal(err)
+	}
+	if v = counted(v.ID); v.Changed != 1 || !v.CanMerge || v.CanDone {
+		t.Fatalf("after more work %+v", v)
+	}
+	if err := e.c.Done(ctx, v.ID); err == nil {
+		t.Fatal("marked a thread with unmerged changes done")
+	}
+
+	// A merged thread stays in the rail until marked done.
+	if _, err := e.c.Merge(ctx, v.ID); err != nil {
+		t.Fatal(err)
+	}
+	v, _ = e.c.Thread(v.ID)
+	if !v.DoneAt.IsZero() || !v.CanDone {
+		t.Fatalf("merged %+v", v)
+	}
+	if err := e.c.Done(ctx, v.ID); err != nil {
+		t.Fatal(err)
+	}
+	if v, _ = e.c.Thread(v.ID); v.Status != StatusMerged || v.DoneAt.IsZero() {
+		t.Fatalf("merged and done %+v", v)
+	}
+
+	// Discarding leaves the rail at once, deleting the thread's own images but not one another
+	// thread still shows.
 	own, _ := e.c.SaveImage(image.NewRGBA(image.Rect(0, 0, 4, 4)))
 	w, err := e.c.CreateWorker(ctx, WorkerSpec{Repo: "proj", Title: "Write", Prompt: "write a.txt hi", Images: []string{shared, own}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	waitStatus(t, e.c, w.ID, StatusIdle)
-	deadline = time.Now().Add(5 * time.Second)
-	for w, _ = e.c.Thread(w.ID); w.Changed < 0 && time.Now().Before(deadline); w, _ = e.c.Thread(w.ID) {
-		time.Sleep(20 * time.Millisecond)
-	}
-	if w.Done || !w.CanMerge || w.Changed != 1 {
-		t.Fatalf("changed worker %+v", w)
-	}
-	if err := e.c.Archive(ctx, w.ID); err == nil {
-		t.Fatal("archived a thread with changes")
-	}
+	counted(w.ID)
 	if err := e.c.Discard(ctx, w.ID); err != nil {
 		t.Fatal(err)
+	}
+	if w, _ = e.c.Thread(w.ID); w.DoneAt.IsZero() {
+		t.Fatal("discarded thread still in the rail")
 	}
 	if _, err := os.Stat(own); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("discarded thread's image kept: %v", err)
 	}
 	if _, err := os.Stat(shared); err != nil {
 		t.Fatalf("shared image removed: %v", err)
+	}
+
+	// Done survives a restart.
+	e.c.Close()
+	c := e.open(t)
+	if v, _ = c.Thread(v.ID); v.DoneAt.IsZero() {
+		t.Fatal("done lost after restart")
 	}
 }

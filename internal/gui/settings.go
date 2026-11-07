@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/tyler-builds/jamb/icons"
 	"github.com/tyler-builds/jamb/ui"
@@ -137,7 +138,9 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 				Child(ui.Div().Column().Gap(space1).Grow(1).MinWidth(ui.Px(0)).
 					Child(subhead("Costs")).
 					Child(caption(ctx, "What each thread has cost so far, as Claude estimates it."))).
-				Child(ui.Switch("Show", showCosts)))
+				Child(ui.Switch("Show", showCosts))).
+			Child(field("History", "Threads you marked done or discarded. Restoring one puts it back in your list with its worktree, so you can keep talking to it.",
+				a.historyList(ctx)))
 
 		save := ui.Button("Save").Primary().Key("settings-save").OnClick(func() {
 			f, om, wm, sc, cp := folders.Peek(), orchModel.Peek(), workerModel.Peek(), showCosts.Peek(), strings.TrimSpace(claudePath.Peek())
@@ -155,6 +158,37 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 	})
 }
 
+// historyList lists the threads the user marked done, newest first, each with Restore.
+func (a *App) historyList(ctx *ui.Context) ui.Element {
+	t := ctx.Theme()
+	var done []core.ThreadView
+	for _, th := range a.threads.Get() {
+		if th.IsWorker && !th.DoneAt.IsZero() {
+			done = append(done, th)
+		}
+	}
+	box := ui.Div().Column().Radius(radiusM).Border(1, t.Border).Background(t.Background).MaxHeight(ui.Px(208)).ScrollY()
+	if len(done) == 0 {
+		return box.Padding(space3).Child(caption(ctx, "Nothing yet. Threads you mark done show up here."))
+	}
+	slices.SortFunc(done, func(x, y core.ThreadView) int { return y.DoneAt.Compare(x.DoneAt) })
+	for i, th := range done {
+		id := th.ID
+		row := ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space3).PaddingY(space2).
+			Child(statusMark(ctx, shownStatus(th))).
+			Child(ui.Div().Column().Gap(2).Grow(1).MinWidth(ui.Px(0)).
+				Child(ui.Text(th.Title).FontSize(13).Truncate()).
+				Child(caption(ctx, filepath.Base(th.RepoPath)+" · "+statusLabel(th)+" · "+doneAgo(th.DoneAt)).Truncate())).
+			Child(ui.Div().Shrink(0).Child(ui.Button("Restore").Icon(icons.RotateCcw).Secondary().Small().
+				Tooltip("Back to your list").OnClick(func() { a.restore(id) })))
+		if i > 0 {
+			row = row.BorderEdges(ui.Edges{Top: 1}, t.Border)
+		}
+		box = box.Child(row)
+	}
+	return box
+}
+
 // confirmDialog asks before a destructive action.
 func (a *App) confirmDialog(ctx *ui.Context) ui.Element {
 	c := a.confirm.Get()
@@ -168,4 +202,11 @@ func (a *App) confirmDialog(ctx *ui.Context) ui.Element {
 	return ui.Modal(c.title, ui.Div().Width(ui.Full).Child(muted(ctx, c.body))).Width(ui.Px(460)).
 		Footer(ui.Button("Cancel").Secondary().OnClick(func() { a.confirm.Set(nil) }), do).
 		OnClose(func() { a.confirm.Set(nil) }).Key("confirm")
+}
+
+func doneAgo(t time.Time) string {
+	if s := shortAgo(t); s != "now" {
+		return "done " + s + " ago"
+	}
+	return "done just now"
 }

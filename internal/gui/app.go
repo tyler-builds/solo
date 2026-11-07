@@ -61,6 +61,7 @@ type App struct {
 	mu        sync.Mutex
 	post      func(func())
 	toast     func(variant ui.ToastVariant, title, msg string)
+	undoToast func(msg string, undo func())
 	dirtyAll  bool
 	dirty     map[string]bool
 	watched   map[string]bool
@@ -225,6 +226,30 @@ func (a *App) run(what string, f func(ctx context.Context) error) {
 	}()
 }
 
+// markDone takes a thread out of the rail into History, with an Undo.
+func (a *App) markDone(th core.ThreadView) {
+	if a.openID.Peek() == th.ID {
+		a.closeThread()
+	}
+	id, title := th.ID, th.Title
+	a.run("Marking it done", func(ctx context.Context) error {
+		if err := a.b.Done(ctx, id); err != nil {
+			return err
+		}
+		a.onUI(func() {
+			if a.undoToast != nil {
+				a.undoToast("“"+title+"” moved to History.", func() { a.restore(id) })
+			}
+		})
+		return nil
+	})
+}
+
+// restore brings a thread back from History.
+func (a *App) restore(id string) {
+	a.run("Restoring", func(ctx context.Context) error { return a.b.Restore(ctx, id) })
+}
+
 // onUI runs fn on the UI thread.
 func (a *App) onUI(fn func()) {
 	a.mu.Lock()
@@ -250,6 +275,7 @@ func (a *App) Root(ctx *ui.Context) ui.Element {
 	if a.post == nil {
 		a.post = ctx.Post
 		a.toast = func(v ui.ToastVariant, title, msg string) { ctx.Toast(v, msg).Title(title) }
+		a.undoToast = func(msg string, undo func()) { ctx.Toast(ui.ToastSuccess, msg).Action("Undo", undo) }
 		// Pick up what changed before the window existed.
 		a.scheduled = true
 		go a.refresh()
@@ -500,11 +526,6 @@ func (a *App) paletteItems(query string) []ui.PaletteItem {
 	for _, th := range a.openThreads(false) {
 		out = append(out, item(th))
 	}
-	for _, th := range a.threads.Peek() {
-		if th.IsWorker && core.Finished(th.Status) {
-			out = append(out, item(th))
-		}
-	}
 	out = append(out, ui.PaletteItem{Key: "settings", Label: "Settings", Icon: icons.Settings, Run: func() { a.settings.Set(true) }})
 	return out
 }
@@ -528,7 +549,7 @@ func (a *App) openThreads(track bool) []core.ThreadView {
 	for _, g := range railGroups {
 		var group []core.ThreadView
 		for _, th := range threads {
-			if th.IsWorker && slices.Contains(g.statuses, th.Status) && (filter == "" || th.RepoPath == filter) {
+			if inRail(th) && slices.Contains(g.statuses, shownStatus(th)) && (filter == "" || th.RepoPath == filter) {
 				group = append(group, th)
 			}
 		}

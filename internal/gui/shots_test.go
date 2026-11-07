@@ -65,6 +65,7 @@ func TestShots(t *testing.T) {
 			a.lightbox.Set(sampleScreenshot(t.TempDir(), color.RGBA{47, 214, 193, 255}))
 		}},
 		{"done", func(a *App, f *fakeBackend) { a.openThread("a0b1c2d3-audit", "conversation") }},
+		{"history", func(a *App, f *fakeBackend) { a.settings.Set(true) }},
 		{"empty", nil},
 	}
 	for _, theme := range []struct {

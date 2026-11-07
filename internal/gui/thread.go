@@ -87,12 +87,10 @@ func (a *App) threadPanel(ctx *ui.Context) ui.Element {
 		tip := "Merge " + th.Branch + " into " + th.BaseBranch
 		actions = actions.Child(ui.Button("Merge").Icon(icons.GitMerge).Primary().Small().Tooltip(tip).
 			OnClick(func() { a.merge(id) }))
-	case th.CanArchive:
-		actions = actions.Child(ui.Button("Archive").Icon(icons.Archive).Secondary().Small().
-			Tooltip("It changed no files. Archive it to move it to Closed.").
-			OnClick(func() {
-				a.run("Archiving", func(ctx context.Context) error { return a.b.Archive(ctx, id) })
-			}))
+	case th.CanDone:
+		actions = actions.Child(ui.Button("Done").Icon(icons.Check).Primary().Small().
+			Tooltip("Take it out of your list. Settings › History can restore it.").
+			OnClick(func() { a.markDone(th) }))
 	}
 	if th.CanDiscard || th.CanInterrupt {
 		actions = actions.Child(ui.DropdownMenu(

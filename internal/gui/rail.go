@@ -22,24 +22,24 @@ var railGroups = []struct {
 	{"Needs answer", []string{core.StatusWaiting}},
 	{"Failed", []string{core.StatusFailed}},
 	{"Ready to merge", []string{core.StatusIdle}},
-	{"Done", []string{statusDone}},
+	{"No changes", []string{statusNoChanges}},
+	{"Merged", []string{core.StatusMerged}},
 	{"Stopped", []string{core.StatusInterrupted}},
 	// Last, and pinned to the bottom of the rail: work in progress needs nothing from the user.
 	{"Working", []string{core.StatusRunning, core.StatusStarting, core.StatusQueued}},
 }
 
+// inRail reports whether a thread shows in the rail: a worker the user hasn't marked done.
+func inRail(th core.ThreadView) bool { return th.IsWorker && th.DoneAt.IsZero() }
+
 // rail lists the worker threads, grouped by state and filtered by the sidebar's repository.
 func (a *App) rail(ctx *ui.Context) ui.Element {
 	t := ctx.Theme()
 	filter := a.repoFilter()
-	var open, closed []core.ThreadView
+	var open []core.ThreadView
 	running := false
 	for _, th := range a.threads.Get() {
-		if !th.IsWorker || (filter != "" && th.RepoPath != filter) {
-			continue
-		}
-		if core.Finished(th.Status) {
-			closed = append(closed, th)
+		if !inRail(th) || (filter != "" && th.RepoPath != filter) {
 			continue
 		}
 		open = append(open, th)
@@ -103,25 +103,6 @@ func (a *App) rail(ctx *ui.Context) ui.Element {
 		for _, th := range group {
 			list = list.Child(a.threadRow(ctx, th))
 		}
-	}
-	if len(closed) > 0 {
-		slices.SortFunc(closed, func(x, y core.ThreadView) int { return y.UpdatedAt.Compare(x.UpdatedAt) })
-		list = list.Child(ui.Component(func(ctx *ui.Context) ui.Element {
-			show := ui.Local(ctx, "show-closed", false)
-			col := ui.Div().Column().Gap(space1).
-				Child(ui.Div().Row().Align(ui.Center).Gap(space1).Cursor(ui.CursorPointer).
-					PaddingX(space2).PaddingTop(space4).PaddingBottom(space1).
-					Role(access.RoleButton).Label("Closed threads").TabIndex(0).
-					OnClick(func() { show.Update(func(b bool) bool { return !b }) }).
-					Child(ui.Text(fmt.Sprintf("Closed · %d", len(closed))).FontSize(11).Medium().TextColor(ctx.Theme().TextSubtle)).
-					Child(ui.Icon(map[bool]*icons.Icon{true: icons.ChevronDown, false: icons.ChevronRight}[show.Get()]).Size(12).Color(ctx.Theme().TextSubtle)))
-			if show.Get() {
-				for _, th := range closed {
-					col = col.Child(a.threadRow(ctx, th))
-				}
-			}
-			return col
-		}))
 	}
 	rail := ui.Div().Column().Size(ui.Full, ui.Full).Background(t.Panel).
 		Child(head).
@@ -214,12 +195,23 @@ func (a *App) threadRow(ctx *ui.Context, th core.ThreadView) ui.Element {
 		Child(ui.Div().Row().Align(ui.Center).Gap(space2).
 			Child(statusMark(ctx, shownStatus(th))).
 			Child(ui.Text(th.Title).FontSize(13).Medium().Truncate().Grow(1).MinWidth(ui.Px(0))).
-			Child(ui.Text(when).FontSize(11).TextColor(whenColor).NoWrap())).
+			Child(a.rowEnd(ctx, th, when, whenColor))).
 		Child(a.rowDetail(ctx, repo, line, lineColor))
 	if selected {
 		row = row.Background(t.SurfaceActive)
 	}
 	return row
+}
+
+// rowEnd is the end of a rail row's first line: its time, or a Done button for a thread with nothing
+// left to merge.
+func (a *App) rowEnd(ctx *ui.Context, th core.ThreadView, when string, c ui.Color) ui.Element {
+	if th.CanDone {
+		return ui.Div().Height(ui.Px(16)).Row().Align(ui.Center).
+			Child(ui.IconButton(icons.Check).Ghost().Small().Label("Mark “" + th.Title + "” done").
+				Tooltip("Done: take it out of your list").OnClick(func() { a.markDone(th) }))
+	}
+	return ui.Text(when).FontSize(11).TextColor(c).NoWrap()
 }
 
 // rowDetail is a rail row's second line: the repository (unless the list shows only one) and the
@@ -272,6 +264,11 @@ func (a *App) activityLine(th core.ThreadView) string {
 		return "Thinking"
 	case core.StatusInterrupted:
 		return "Stopped"
+	case core.StatusMerged:
+		if th.BaseBranch != "" {
+			return "Merged into " + th.BaseBranch
+		}
+		return "Merged"
 	}
 	if th.Summary != "" {
 		return firstLine(stripMarkdown(th.Summary))

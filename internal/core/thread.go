@@ -27,7 +27,7 @@ const (
 	StatusInterrupted = "interrupted" // stopped by the user, or by Solo closing
 	StatusMerged      = "merged"      // its branch was merged and its worktree removed
 	StatusDiscarded   = "discarded"   // its worktree and branch were deleted
-	StatusArchived    = "archived"    // done without changes; its worktree and branch were removed
+	StatusArchived    = "archived"    // marked done with no changes; its worktree and branch were removed
 )
 
 // Active reports whether a thread with the status is starting or working.
@@ -82,11 +82,13 @@ type ThreadView struct {
 	CanMerge     bool
 	CanDiscard   bool
 	CanInterrupt bool
-	CanArchive   bool
+	// CanDone: the user may mark it done, which takes it out of the rail into History. Only threads with
+	// nothing left to merge: merged, or finished without changes.
+	CanDone bool
 	// Changed is how many files a worker's branch changes from where it started; -1 until counted.
 	Changed int
-	// Done is a worker whose last turn finished with nothing to merge.
-	Done bool
+	// NoChanges is a worker whose last turn finished with nothing to merge.
+	NoChanges bool
 }
 
 func (t *thread) view() ThreadView {
@@ -108,8 +110,9 @@ func (t *thread) view() ThreadView {
 	v.CanInterrupt = t.inTurn
 	settled := v.IsWorker && v.HasWorktree && !Finished(t.row.Status) && !Active(t.row.Status) && t.row.Status != StatusQueued
 	v.CanMerge = settled && t.changed != 0
-	v.Done = settled && t.changed == 0 && t.row.Status == StatusIdle
-	v.CanArchive = settled && t.changed == 0
+	v.NoChanges = settled && t.changed == 0 && t.row.Status == StatusIdle
+	v.CanDone = v.IsWorker && t.row.DoneAt.IsZero() && !t.inTurn &&
+		(t.row.Status == StatusMerged || (settled && t.changed == 0))
 	v.CanDiscard = v.IsWorker && !Finished(t.row.Status)
 	return v
 }
@@ -544,6 +547,7 @@ func (c *Core) Discard(ctx context.Context, threadID string) error {
 	var ch Change
 	if t := c.threads[threadID]; t != nil {
 		t.row.WorktreePath = ""
+		t.row.DoneAt = now() // a discarded thread leaves the rail at once
 		ch = c.setStatusLocked(t, StatusDiscarded, "")
 	}
 	c.mu.Unlock()
@@ -554,32 +558,92 @@ func (c *Core) Discard(ctx context.Context, threadID string) error {
 	return nil
 }
 
-// Archive closes a worker that finished with nothing to merge: it removes its worktree and branch and
-// keeps its history.
-func (c *Core) Archive(ctx context.Context, threadID string) error {
+// Done marks a thread done: it leaves the rail for History. A thread that finished without changes
+// also loses its worktree and branch (Restore brings them back). Only threads with nothing to merge
+// can be done; others are merged or discarded first.
+func (c *Core) Done(ctx context.Context, threadID string) error {
 	v, ok := c.Thread(threadID)
 	if !ok {
 		return fmt.Errorf("no thread %s", threadID)
 	}
-	if !v.CanArchive {
-		if v.Changed > 0 {
+	if !v.CanDone {
+		if v.Changed > 0 && !Finished(v.Status) {
 			return fmt.Errorf("thread %q has changes; merge or discard it", v.Title)
 		}
-		return fmt.Errorf("thread %q can't be archived while it is %s", v.Title, v.Status)
+		return fmt.Errorf("thread %q can't be marked done while it is %s", v.Title, v.Status)
 	}
-	c.closeSession(ctx, threadID)
-	if err := git.RemoveWorktree(ctx, v.RepoPath, v.WorktreePath, v.Branch, true); err != nil {
-		c.log.Warn("core: archiving worktree", "err", err)
+	if v.WorktreePath != "" {
+		c.closeSession(ctx, threadID)
+		if err := git.RemoveWorktree(ctx, v.RepoPath, v.WorktreePath, v.Branch, true); err != nil {
+			c.log.Warn("core: removing a done thread's worktree", "err", err)
+		}
 	}
 	c.mu.Lock()
-	var ch Change
-	if t := c.threads[threadID]; t != nil {
-		t.row.WorktreePath = ""
-		ch = c.setStatusLocked(t, StatusArchived, "")
+	t := c.threads[threadID]
+	if t == nil {
+		c.mu.Unlock()
+		return fmt.Errorf("no thread %s", threadID)
 	}
-	c.mu.Unlock()
-	c.addNotice(threadID, "info", "Archived.")
+	var ch Change
+	t.row.WorktreePath = ""
+	t.row.DoneAt = now()
+	if Finished(t.row.Status) {
+		t.row.UpdatedAt = now()
+		err := c.db.SaveThread(&t.row)
+		c.mu.Unlock()
+		if err != nil {
+			return err
+		}
+		ch = Change{Kind: ChangeThread, ThreadID: threadID, PrevStatus: t.row.Status, Status: t.row.Status}
+	} else {
+		ch = c.setStatusLocked(t, StatusArchived, "")
+		c.mu.Unlock()
+	}
 	c.notify(ch)
+	return nil
+}
+
+// Restore brings a done thread back to the rail. Its worktree is recreated at the same path, so its
+// Claude session resumes: on its branch if that still exists, or on a new branch of the same name
+// from the current head of the branch it started from.
+func (c *Core) Restore(ctx context.Context, threadID string) error {
+	v, ok := c.Thread(threadID)
+	if !ok {
+		return fmt.Errorf("no thread %s", threadID)
+	}
+	if !v.IsWorker || v.DoneAt.IsZero() {
+		return fmt.Errorf("thread %q isn't in History", v.Title)
+	}
+	if _, err := os.Stat(v.RepoPath); err != nil {
+		return fmt.Errorf("%s is gone: %w", v.RepoPath, err)
+	}
+	path := v.WorktreePath
+	if path == "" {
+		path = c.worktreePath(v.RepoPath, strings.TrimPrefix(v.Branch, "solo/"))
+	}
+	wt := git.Worktree{Path: path}
+	if _, err := os.Stat(path); err != nil {
+		var err error
+		if wt, err = git.RestoreWorktree(ctx, v.RepoPath, path, v.Branch, v.BaseBranch); err != nil {
+			return fmt.Errorf("recreating the worktree: %w", err)
+		}
+	}
+	c.mu.Lock()
+	t := c.threads[threadID]
+	if t == nil {
+		c.mu.Unlock()
+		return fmt.Errorf("no thread %s", threadID)
+	}
+	t.row.WorktreePath, t.row.DoneAt, t.row.Error = wt.Path, time.Time{}, ""
+	if wt.BaseCommit != "" {
+		t.row.BaseCommit = wt.BaseCommit
+	}
+	t.changed, t.opened = -1, false
+	ch := c.setStatusLocked(t, StatusIdle, "")
+	c.mu.Unlock()
+	c.addNotice(threadID, "info", "Restored from History.")
+	c.notify(ch)
+	go c.countChanges(threadID)
 	return nil
 }
 

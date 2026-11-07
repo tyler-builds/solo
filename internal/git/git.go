@@ -194,6 +194,24 @@ func AddWorktree(ctx context.Context, repo, path, branch, base string) (Worktree
 	return Worktree{Path: path, Branch: branch, BaseBranch: base, BaseCommit: commit}, nil
 }
 
+// RestoreWorktree recreates a removed worktree at path: on branch when it still exists, or on a new
+// branch of that name from base's current commit. BaseCommit is where a new branch starts, or "" when
+// the branch was kept.
+func RestoreWorktree(ctx context.Context, repo, path, branch, base string) (Worktree, error) {
+	if _, err := Run(ctx, repo, "rev-parse", "--verify", "refs/heads/"+branch); err == nil {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return Worktree{}, err
+		}
+		_, _ = Run(ctx, repo, "worktree", "prune")
+		if _, err := Run(ctx, repo, "worktree", "add", path, branch); err != nil {
+			return Worktree{}, err
+		}
+		return Worktree{Path: path, Branch: branch, BaseBranch: base}, nil
+	}
+	_, _ = Run(ctx, repo, "worktree", "prune")
+	return AddWorktree(ctx, repo, path, branch, base)
+}
+
 // RemoveWorktree removes the worktree, discarding its changes, and deletes its branch when
 // deleteBranch is set.
 func RemoveWorktree(ctx context.Context, repo, path, branch string, deleteBranch bool) error {

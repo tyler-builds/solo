@@ -260,7 +260,7 @@ func (o *Orchestrator) listThreads(repo string, includeClosed bool) (string, err
 	var b strings.Builder
 	n := 0
 	for _, t := range o.c.Threads() {
-		if t.Kind != store.KindWorker || (repoPath != "" && t.RepoPath != repoPath) || (!includeClosed && core.Finished(t.Status)) {
+		if t.Kind != store.KindWorker || (repoPath != "" && t.RepoPath != repoPath) || (!includeClosed && (core.Finished(t.Status) || !t.DoneAt.IsZero())) {
 			continue
 		}
 		n++
@@ -287,8 +287,11 @@ func statusText(t core.ThreadView) string {
 	if t.Status == core.StatusQueued {
 		s += " (about to start)"
 	}
-	if t.Done {
-		s += " (done; it changed no files, so there is nothing to merge)"
+	if t.NoChanges {
+		s += " (finished; it changed no files, so there is nothing to merge)"
+	}
+	if !t.DoneAt.IsZero() {
+		s += " (the user marked it done)"
 	}
 	return s + ", updated " + ago(t.UpdatedAt)
 }

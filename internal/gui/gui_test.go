@@ -84,3 +84,20 @@ func TestQuestionOptionAnswers(t *testing.T) {
 		t.Fatal("the worker's question is not shown")
 	}
 }
+
+func TestRailDoneButtonMarksDone(t *testing.T) {
+	f := demoBackend()
+	a, u := newUI(t, f)
+	u.ByRole(access.RoleButton, "Mark “Find where uploads are logged” done").Click()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if th, _ := f.Thread("a0b1c2d3-audit"); !th.DoneAt.IsZero() {
+			if a.openID.Peek() != "" {
+				t.Fatalf("the click also opened %q", a.openID.Peek())
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("not marked done")
+}

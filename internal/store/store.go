@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS threads (
 	error          TEXT NOT NULL DEFAULT '',
 	prompt         TEXT NOT NULL DEFAULT '',
 	prompt_images  TEXT NOT NULL DEFAULT '',
+	done_at        INTEGER NOT NULL DEFAULT 0,
 	cost_usd       REAL NOT NULL DEFAULT 0,
 	context_tokens INTEGER NOT NULL DEFAULT 0,
 	created_at     INTEGER NOT NULL,
@@ -73,7 +74,7 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("store: schema: %w", err)
 	}
 	// Columns added after the first release. SQLite has no ADD COLUMN IF NOT EXISTS.
-	for _, col := range []string{`prompt_images TEXT NOT NULL DEFAULT ''`} {
+	for _, col := range []string{`prompt_images TEXT NOT NULL DEFAULT ''`, `done_at INTEGER NOT NULL DEFAULT 0`} {
 		if _, err := db.Exec(`ALTER TABLE threads ADD COLUMN ` + col); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			db.Close()
 			return nil, fmt.Errorf("store: migrate: %w", err)
@@ -131,7 +132,8 @@ type Thread struct {
 	Summary       string
 	Error         string
 	Prompt        string
-	PromptImages  []string // image files sent with the prompt
+	PromptImages  []string  // image files sent with the prompt
+	DoneAt        time.Time // when the user marked it done (it leaves the rail for History); zero while open
 	CostUSD       float64
 	ContextTokens int
 	CreatedAt     time.Time
@@ -139,19 +141,19 @@ type Thread struct {
 }
 
 const threadCols = `id, kind, session_id, has_transcript, title, repo_path, worktree_path, branch, base_branch,
-	base_commit, model, status, summary, error, prompt, prompt_images, cost_usd, context_tokens, created_at, updated_at`
+	base_commit, model, status, summary, error, prompt, prompt_images, done_at, cost_usd, context_tokens, created_at, updated_at`
 
 // SaveThread inserts or replaces the thread.
 func (s *Store) SaveThread(t *Thread) error {
-	_, err := s.db.Exec(`INSERT INTO threads(`+threadCols+`) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+	_, err := s.db.Exec(`INSERT INTO threads(`+threadCols+`) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(id) DO UPDATE SET kind=excluded.kind, session_id=excluded.session_id,
 		has_transcript=excluded.has_transcript, title=excluded.title, repo_path=excluded.repo_path,
 		worktree_path=excluded.worktree_path, branch=excluded.branch, base_branch=excluded.base_branch,
 		base_commit=excluded.base_commit, model=excluded.model, status=excluded.status, summary=excluded.summary,
-		error=excluded.error, prompt=excluded.prompt, prompt_images=excluded.prompt_images, cost_usd=excluded.cost_usd,
+		error=excluded.error, prompt=excluded.prompt, prompt_images=excluded.prompt_images, done_at=excluded.done_at, cost_usd=excluded.cost_usd,
 		context_tokens=excluded.context_tokens, updated_at=excluded.updated_at`,
 		t.ID, t.Kind, t.SessionID, t.HasTranscript, t.Title, t.RepoPath, t.WorktreePath, t.Branch, t.BaseBranch,
-		t.BaseCommit, t.Model, t.Status, t.Summary, t.Error, t.Prompt, joinPaths(t.PromptImages), t.CostUSD, t.ContextTokens,
+		t.BaseCommit, t.Model, t.Status, t.Summary, t.Error, t.Prompt, joinPaths(t.PromptImages), unixMilli(t.DoneAt), t.CostUSD, t.ContextTokens,
 		t.CreatedAt.UnixMilli(), t.UpdatedAt.UnixMilli())
 	return err
 }
@@ -168,12 +170,16 @@ func (s *Store) Threads() ([]*Thread, error) {
 		var t Thread
 		var created, updated int64
 		var images string
+		var done int64
 		if err := rows.Scan(&t.ID, &t.Kind, &t.SessionID, &t.HasTranscript, &t.Title, &t.RepoPath, &t.WorktreePath,
-			&t.Branch, &t.BaseBranch, &t.BaseCommit, &t.Model, &t.Status, &t.Summary, &t.Error, &t.Prompt, &images,
+			&t.Branch, &t.BaseBranch, &t.BaseCommit, &t.Model, &t.Status, &t.Summary, &t.Error, &t.Prompt, &images, &done,
 			&t.CostUSD, &t.ContextTokens, &created, &updated); err != nil {
 			return nil, err
 		}
 		t.PromptImages = splitPaths(images)
+		if done != 0 {
+			t.DoneAt = time.UnixMilli(done)
+		}
 		t.CreatedAt, t.UpdatedAt = time.UnixMilli(created), time.UnixMilli(updated)
 		out = append(out, &t)
 	}
@@ -276,4 +282,12 @@ func splitPaths(s string) []string {
 		return nil
 	}
 	return strings.Split(s, "\n")
+}
+
+// unixMilli is t in milliseconds, with the zero time as 0.
+func unixMilli(t time.Time) int64 {
+	if t.IsZero() {
+		return 0
+	}
+	return t.UnixMilli()
 }

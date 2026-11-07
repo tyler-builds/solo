@@ -130,8 +130,12 @@ Raw `SDKMessage`s are also appended to a per-session JSONL file for debugging an
   orchestrator (`answer_question`) can reply.
 - Status machine: `queued → starting → running ⇄ waiting → idle | failed | interrupted → merged |
   discarded | archived`. No concurrency cap. After each turn Solo counts the files the branch changes:
-  an idle thread with changes is "Ready to merge"; one without is "Done" and can only be archived
-  (worktree and branch removed, history kept).
+  an idle thread with changes is "Ready to merge"; one without shows "No changes".
+- Threads stay in the rail until the user marks them **Done**, which is offered only when nothing is
+  left to merge (merged, or no changes). Done sets `done_at`, removes a leftover worktree and branch,
+  and moves the thread to Settings › History; discarding marks it done too. **Restore** recreates the
+  worktree at the same path (on the branch if it survived, else a new one from the base branch's head),
+  so the Claude session resumes.
 - Discarding a thread deletes its message images, except ones another thread's history still shows.
 
 ## UI (jamb)

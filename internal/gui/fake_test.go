@@ -93,12 +93,23 @@ func (f *fakeBackend) UpdateSettings(fn func(*core.Settings)) error {
 func (f *fakeBackend) RepoPaths() []string    { return f.repos }
 func (f *fakeBackend) RateLimit() agent.Event { return agent.Event{} }
 
-func (f *fakeBackend) Archive(_ context.Context, id string) error {
+func (f *fakeBackend) Done(_ context.Context, id string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for i := range f.threads {
 		if f.threads[i].ID == id {
-			f.threads[i].Status, f.threads[i].Done, f.threads[i].CanArchive = core.StatusArchived, false, false
+			f.threads[i].DoneAt, f.threads[i].CanDone = time.Now(), false
+		}
+	}
+	return nil
+}
+
+func (f *fakeBackend) Restore(_ context.Context, id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := range f.threads {
+		if f.threads[i].ID == id {
+			f.threads[i].DoneAt, f.threads[i].Status = time.Time{}, core.StatusIdle
 		}
 	}
 	return nil
@@ -194,15 +205,19 @@ func demoBackend() *fakeBackend {
 	readme.HasWorktree, readme.WorktreePath, readme.Branch = false, "", ""
 	audit := worker("a0b1c2d3-audit", "Find where uploads are logged", repos[1], core.StatusIdle, 25*time.Minute, 0.09)
 	audit.Summary = "Uploads are logged in `internal/upload/handler.go:142` through the request logger; nothing writes file names. No changes needed."
-	audit.Done, audit.CanMerge, audit.CanArchive, audit.Changed = true, false, true, 0
+	audit.NoChanges, audit.CanMerge, audit.CanDone, audit.Changed = true, false, true, 0
 	bump := worker("f0f0f0f0-gobump", "Bump Go to 1.27", repos[3], core.StatusMerged, 3*time.Hour, 0.12)
-	bump.CanMerge, bump.CanDiscard = false, false
+	bump.CanMerge, bump.CanDiscard, bump.CanDone = false, false, true
+	old := worker("f1f1f1f1-old", "Rename the config loader", repos[0], core.StatusMerged, 26*time.Hour, 0.2)
+	old.CanMerge, old.CanDiscard, old.DoneAt = false, false, ago(20*time.Hour)
+	gone := worker("f2f2f2f2-gone", "Try a WASM build", repos[3], core.StatusDiscarded, 50*time.Hour, 0.4)
+	gone.CanMerge, gone.CanDiscard, gone.DoneAt = false, false, ago(48*time.Hour)
 	orch := core.ThreadView{Thread: store.Thread{ID: core.OrchestratorID, Kind: store.KindOrchestrator, Title: "Orchestrator",
 		Status: core.StatusIdle, ContextTokens: 61000, CostUSD: 2.14, CreatedAt: ago(5 * time.Hour), UpdatedAt: ago(time.Minute)},
 		ActualModel: "claude-opus-5-5"}
 
 	f := &fakeBackend{
-		threads:  []core.ThreadView{orch, oauth, limiter, forms, audit, flaky, readme, bump},
+		threads:  []core.ThreadView{orch, oauth, limiter, forms, audit, flaky, readme, bump, old, gone},
 		items:    map[string][]core.Item{},
 		repos:    repos,
 		settings: core.Settings{Folders: []string{"~/code"}, OrchestratorModel: "opus", WorkerModel: "sonnet", ScanDepth: 3},
