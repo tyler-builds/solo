@@ -575,7 +575,7 @@ func (a *App) dotStrip(ctx *ui.Context) ui.Element {
 			OnClick(func() { a.openThread(id, "conversation") }).
 			Child(statusMark(ctx, th.Status))
 		if id == open {
-			b = b.Background(t.SurfaceActive)
+			b = b.Background(t.SurfaceActive).BorderEdges(ui.Edges{Left: 2}, ui.Hex(pal(t).brand))
 		}
 		col = col.Child(b)
 	}

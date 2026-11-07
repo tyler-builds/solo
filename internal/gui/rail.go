@@ -19,7 +19,7 @@ var railGroups = []struct {
 	title    string
 	statuses []string
 }{
-	{"Needs you", []string{core.StatusWaiting}},
+	{"Questions", []string{core.StatusWaiting}},
 	{"Failed", []string{core.StatusFailed}},
 	{"Ready to merge", []string{core.StatusIdle}},
 	{"Working", []string{core.StatusRunning, core.StatusStarting}},

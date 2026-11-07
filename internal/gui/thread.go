@@ -241,7 +241,10 @@ func (a *App) changesView(ctx *ui.Context, res ui.QueryResult[changeData]) ui.El
 			Child(ui.Empty("No changes yet").Icon(icons.FileCode).Description("Files the worker changes show up here."))
 	}
 	files := parseDiff(res.Data.diff)
-	return ui.Component(func(ctx *ui.Context) ui.Element { return diffView(ctx, res.Data.files, files) })
+	return ui.Component(func(ctx *ui.Context) ui.Element {
+		// Side by side needs room; a narrow panel shows the unified diff.
+		return diffView(ctx, res.Data.files, files, a.panelWidth(ctx) >= 900)
+	})
 }
 
 // diffFile is one file of a unified diff.
@@ -435,7 +438,7 @@ const diffRow = 22
 
 // diffView shows the file list, then each file's diff: a header that folds it, and its lines with
 // old and new line numbers, colored by change and by syntax.
-func diffView(ctx *ui.Context, stats []git.FileChange, files []*diffFile) ui.Element {
+func diffView(ctx *ui.Context, stats []git.FileChange, files []*diffFile, roomy bool) ui.Element {
 	t := ctx.Theme()
 	folded := ui.Local(ctx, "folded", map[string]bool{})
 	h := ui.Local(ctx, "list", ui.NewListHandle()).Peek()
@@ -525,7 +528,15 @@ func diffView(ctx *ui.Context, stats []git.FileChange, files []*diffFile) ui.Ele
 			Child(ui.Icon(map[bool]*icons.Icon{true: icons.ChevronRight, false: icons.ChevronDown}[fold[path]]).Size(13).Color(t.TextMuted)).
 			Child(ui.Text(path).Mono().FontSize(12).Semibold().TruncateHead().Grow(1).MinWidth(ui.Px(0))).
 			Child(ui.Text(fmt.Sprintf("+%d", f.add)).Mono().FontSize(11).TextColor(t.Success)).
-			Child(ui.Text(fmt.Sprintf("−%d", f.del)).Mono().FontSize(11).TextColor(t.Danger))
+			Child(ui.Text(fmt.Sprintf("−%d", f.del)).Mono().FontSize(11).TextColor(t.Danger)).
+			Child(ui.Div().Size(ui.Px(20), ui.Px(20)).Center().Radius(radiusS).Cursor(ui.CursorPointer).
+				Hover(ui.Style{Background: t.SurfaceHover}).
+				Role(access.RoleButton).Label("Copy path").Tooltip("Copy path").TabIndex(0).
+				OnClick(func() {
+					ctx.SetClipboard(path)
+					ctx.Toast(ui.ToastInfo, path).Title("Path copied")
+				}).
+				Child(ui.Icon(icons.Copy).Size(12).Color(t.TextSubtle)))
 	}
 	hunk := func(text string, indent float32) ui.Element {
 		return ui.Div().Row().Align(ui.Center).Height(ui.Px(diffRow)).Background(t.Surface).PaddingLeft(indent).
@@ -533,7 +544,7 @@ func diffView(ctx *ui.Context, stats []git.FileChange, files []*diffFile) ui.Ele
 	}
 
 	var body ui.Element
-	if !split.Get() {
+	if !split.Get() || !roomy {
 		body = ui.UniformList(len(rows), func(i int) ui.Element {
 			r := rows[i]
 			f := r.file
@@ -639,7 +650,7 @@ func diffView(ctx *ui.Context, stats []git.FileChange, files []*diffFile) ui.Ele
 		Child(ui.Text(fmt.Sprintf("+%d", added)).FontSize(12).TextColor(t.Success)).
 		Child(ui.Text(fmt.Sprintf("−%d", removed)).FontSize(12).TextColor(t.Danger)).
 		Child(ui.Div().Grow(1)).
-		Child(segmented(ctx, split))
+		Child(segmented(ctx, split, roomy))
 	return ui.Div().Column().Grow(1).MinHeight(ui.Px(0)).
 		Child(summary).
 		Child(list).
@@ -668,7 +679,7 @@ func fileStatusColor(ctx *ui.Context, s string) ui.Color {
 var diffSplit = ui.NewSignal(false)
 
 // segmented is the Unified / Split switch of the diff.
-func segmented(ctx *ui.Context, split *ui.Signal[bool]) ui.Element {
+func segmented(ctx *ui.Context, split *ui.Signal[bool], roomy bool) ui.Element {
 	t := ctx.Theme()
 	opt := func(label string, on bool) ui.Element {
 		d := ui.Div().PaddingX(space3).Height(ui.Px(24)).Radius(radiusS - 1).Center().Cursor(ui.CursorPointer).
@@ -679,7 +690,11 @@ func segmented(ctx *ui.Context, split *ui.Signal[bool]) ui.Element {
 		}
 		return d.Hover(ui.Style{Background: t.SurfaceHover}).Child(ui.Text(label).FontSize(12).TextColor(t.TextMuted))
 	}
-	return ui.Div().Row().Align(ui.Center).Gap(2).Padding(2).Radius(radiusS+2).Border(1, t.Border).Background(t.Surface).
+	seg := ui.Div().Row().Align(ui.Center).Gap(2).Padding(2).Radius(radiusS+2).Border(1, t.Border).Background(t.Surface).
 		Child(opt("Unified", false)).
 		Child(opt("Split", true))
+	if !roomy {
+		return seg.Opacity(0.5).Tooltip("Widen the panel to compare side by side")
+	}
+	return seg
 }

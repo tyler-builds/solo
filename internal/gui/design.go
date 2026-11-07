@@ -280,6 +280,12 @@ func statusMark(ctx *ui.Context, status string) ui.Element {
 		return box.Child(ui.Icon(icons.GitMerge).Size(13).Color(c))
 	case core.StatusQueued:
 		return box.Child(ui.Div().Size(ui.Px(8), ui.Px(8)).Radius(4).Border(1.5, t.TextSubtle))
+	case core.StatusWaiting:
+		return box.Child(ui.Icon(icons.MessageCircleQuestionMark).Size(14).Color(c))
+	case core.StatusFailed:
+		return box.Child(ui.Icon(icons.CircleAlert).Size(14).Color(c))
+	case core.StatusInterrupted:
+		return box.Child(ui.Icon(icons.CircleStop).Size(13).Color(c))
 	}
 	return box.Child(dot(c, 8))
 }
