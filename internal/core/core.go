@@ -12,10 +12,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -34,11 +36,60 @@ type Settings struct {
 	ClaudePath        string   `json:"claudePath,omitempty"`
 	// ShowCosts shows what threads have cost in the UI.
 	ShowCosts bool `json:"showCosts,omitempty"`
+
+	// Effort for each model; "" leaves it to Claude.
+	OrchestratorEffort string `json:"orchestratorEffort,omitempty"`
+	WorkerEffort       string `json:"workerEffort,omitempty"`
+	// NamingModel and NamingEffort name branches (see BranchRules).
+	NamingModel  string `json:"namingModel,omitempty"`
+	NamingEffort string `json:"namingEffort,omitempty"`
+
+	// BranchRules tell the naming model how to name a thread's branch; RepoBranchRules override them for
+	// a repository (by path). With no rules, branches are named solo/<title>-<id>.
+	BranchRules     string            `json:"branchRules,omitempty"`
+	RepoBranchRules map[string]string `json:"repoBranchRules,omitempty"`
+
+	// AutoMerge turns on the forge's auto-merge when Solo opens a pull request, so it merges once its
+	// required checks pass.
+	AutoMerge bool `json:"autoMerge,omitempty"`
+	// MergeMethod is how pull requests merge: squash, merge or rebase.
+	MergeMethod string `json:"mergeMethod,omitempty"`
+	// OnChecksFail is what happens when a pull request's checks fail: ChecksFix or ChecksNotify.
+	OnChecksFail string `json:"onChecksFail,omitempty"`
 }
+
+// What happens when a pull request's checks fail.
+const (
+	ChecksFix    = "fix"    // Solo hears about it and usually has the thread fix it
+	ChecksNotify = "notify" // the thread shows the failure and waits for the user
+)
 
 // DefaultSettings are used until the user changes them.
 func DefaultSettings() Settings {
-	return Settings{ScanDepth: 3, OrchestratorModel: "opus", WorkerModel: "sonnet"}
+	s := Settings{ScanDepth: 3, OrchestratorModel: "opus", WorkerModel: "sonnet"}
+	s.normalize()
+	return s
+}
+
+// normalize fills settings added after the user's were saved.
+func (s *Settings) normalize() {
+	if s.NamingModel == "" {
+		s.NamingModel = "haiku"
+	}
+	if s.MergeMethod == "" {
+		s.MergeMethod = "squash"
+	}
+	if s.OnChecksFail == "" {
+		s.OnChecksFail = ChecksFix
+	}
+}
+
+// BranchRulesFor returns the branch naming rules for a repository.
+func (s Settings) BranchRulesFor(repo string) string {
+	if r := strings.TrimSpace(s.RepoBranchRules[repo]); r != "" {
+		return r
+	}
+	return strings.TrimSpace(s.BranchRules)
 }
 
 // Config configures a Core.
@@ -140,6 +191,7 @@ func New(cfg Config) (*Core, error) {
 	if _, err := db.GetSetting("settings", &c.settings); err != nil {
 		cfg.Log.Warn("core: settings unreadable; using defaults", "err", err)
 	}
+	c.settings.normalize()
 	rows, err := db.Threads()
 	if err != nil {
 		db.Close()
@@ -241,7 +293,9 @@ func (c *Core) UpdateSettings(f func(*Settings)) error {
 	c.mu.Lock()
 	s := c.settings
 	s.Folders = slices.Clone(s.Folders)
+	s.RepoBranchRules = maps.Clone(s.RepoBranchRules)
 	f(&s)
+	s.normalize()
 	if s.ScanDepth < 1 {
 		s.ScanDepth = 1
 	}

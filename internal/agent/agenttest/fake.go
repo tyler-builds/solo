@@ -135,6 +135,7 @@ func run() {
 			UUID      string `json:"uuid"`
 			Text      string `json:"text"`
 			Model     string `json:"model"`
+			Prompt    string `json:"prompt"`
 			Images    []struct {
 				MediaType string `json:"mediaType"`
 			} `json:"images"`
@@ -182,6 +183,19 @@ func run() {
 			reply(struct{}{})
 		case "session.setModel":
 			reply(struct{}{})
+		case "complete":
+			// Names a branch from the "Task title:" line, or answers badly when asked to.
+			title := ""
+			for _, l := range strings.Split(p.Prompt, "\n") {
+				if v, ok := strings.CutPrefix(l, "Task title: "); ok {
+					title = v
+				}
+			}
+			if strings.Contains(p.Prompt, "BADNAME") {
+				reply(map[string]any{"text": "`Here you go: feat/Odd Name~^:`"})
+				continue
+			}
+			reply(map[string]any{"text": "feat/" + strings.ReplaceAll(strings.ToLower(title), " ", "-")})
 		case "probe":
 			reply(map[string]any{"claudeVersion": "0.0.0", "models": []any{}, "account": map[string]any{}})
 		case "shutdown":

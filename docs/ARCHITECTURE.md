@@ -122,7 +122,13 @@ Raw `SDKMessage`s are also appended to a per-session JSONL file for debugging an
 
 ## Worker threads
 
-- `git worktree add <data>/worktrees/<repo>/<slug> -b solo/<slug> <base>`. The worktree is removed
+- Worktrees start from the latest default branch: Solo fetches `origin/<default>` (origin's HEAD, else
+  main or master) and runs `git worktree add <data>/worktrees/<repo>/<title>-<id> -b <branch>
+  origin/<default>`. Without a remote, the local main or master.
+- Branch names: `solo/<title>-<id>`, unless Settings has naming rules (global, or per repository).
+  Then a small model (`complete` RPC: one turn, no tools, no session) names it; an unusable answer
+  falls back to the default name, and a taken name gets a numeric suffix.
+- Settings › Models shows the model and effort for each feature: Solo, threads and branch names. The worktree is removed
   after merge or discard; the branch is kept until merged.
 - Session: `cwd` = worktree, `permissionMode: "bypassPermissions"`,
   `allowDangerouslySkipPermissions: true`, default model configurable.

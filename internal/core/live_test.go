@@ -20,6 +20,7 @@ import (
 
 	"github.com/tyler-builds/solo/internal/agent"
 	"github.com/tyler-builds/solo/internal/git"
+	"github.com/tyler-builds/solo/internal/store"
 )
 
 func TestLiveWorkerCommitsAndMerges(t *testing.T) {
@@ -122,5 +123,28 @@ func TestLiveWorkerSeesImage(t *testing.T) {
 	t.Logf("status=%s summary=%q", v.Status, v.Summary)
 	if !strings.Contains(strings.ToLower(v.Summary), "red") {
 		t.Fatalf("Claude didn't see the image: %q %s", v.Summary, v.Error)
+	}
+}
+
+func TestLiveBranchNaming(t *testing.T) {
+	cmd, err := agent.FindCommand()
+	if err != nil {
+		t.Skip(err)
+	}
+	c, err := New(Config{DataDir: t.TempDir(), Agent: cmd, Log: slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	repo := t.TempDir()
+	git.Run(context.Background(), repo, "init", "-q", "-b", "main")
+	c.UpdateSettings(func(s *Settings) {
+		s.BranchRules = "Use fix/<ticket>-<two-word-summary> in lowercase. The ticket is OW-1234 style when the task names one; otherwise leave it out."
+	})
+	name := c.nameBranch(context.Background(), store.Thread{ID: "abcdef123456", RepoPath: repo, Title: "Fix token refresh",
+		Prompt: "OW-4821: the OAuth access token isn't refreshed when it expires mid-request."})
+	t.Logf("branch: %s", name)
+	if !strings.HasPrefix(strings.ToLower(name), "fix/ow-4821-") {
+		t.Fatalf("branch %q doesn't follow the rules", name)
 	}
 }

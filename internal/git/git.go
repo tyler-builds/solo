@@ -387,3 +387,92 @@ func IsRepo(dir string) bool {
 	out, err := Run(context.Background(), dir, "rev-parse", "--is-inside-work-tree")
 	return err == nil && out == "true"
 }
+
+// Base is where a new worktree starts.
+type Base struct {
+	Ref    string // what to start from: "origin/main" after a fetch, or a local branch
+	Branch string // the branch name to open pull requests against and merge into: "main"
+	Remote bool   // Ref is the remote's copy
+	// FetchErr is set when the fetch failed (offline, say); Ref is then the last fetched copy.
+	FetchErr error
+}
+
+// LatestBase finds the branch a new worktree starts from, and fetches it so the worktree starts from
+// its latest commit. want names the branch; empty means the default branch: origin's HEAD, else main
+// or master, else the checkout's current branch.
+func LatestBase(ctx context.Context, repo, want string) (Base, error) {
+	_, err := Run(ctx, repo, "remote", "get-url", "origin")
+	hasOrigin := err == nil
+	exists := func(ref string) bool {
+		_, err := Run(ctx, repo, "rev-parse", "--verify", "-q", ref+"^{commit}")
+		return err == nil
+	}
+	branch := want
+	if branch == "" && hasOrigin {
+		if head, err := Run(ctx, repo, "symbolic-ref", "--short", "-q", "refs/remotes/origin/HEAD"); err == nil {
+			branch = strings.TrimPrefix(head, "origin/")
+		}
+	}
+	if branch == "" {
+		for _, c := range []string{"main", "master"} {
+			if exists("refs/remotes/origin/"+c) || exists("refs/heads/"+c) {
+				branch = c
+				break
+			}
+		}
+	}
+	if branch == "" {
+		cur, err := Run(ctx, repo, "symbolic-ref", "--short", "-q", "HEAD")
+		if err != nil {
+			return Base{}, fmt.Errorf("%s has no main or master branch to start from; name a base branch", filepath.Base(repo))
+		}
+		branch = cur
+	}
+	b := Base{Ref: branch, Branch: branch}
+	if hasOrigin {
+		fctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+		_, b.FetchErr = Run(fctx, repo, "fetch", "--quiet", "origin", branch)
+		cancel()
+		if exists("refs/remotes/origin/" + branch) {
+			b.Ref, b.Remote = "origin/"+branch, true
+		}
+	}
+	if !exists(b.Ref) {
+		return Base{}, fmt.Errorf("branch %q not found in %s", branch, filepath.Base(repo))
+	}
+	return b, nil
+}
+
+// BranchExists reports whether the repository has the branch, locally or on origin.
+func BranchExists(ctx context.Context, repo, name string) bool {
+	for _, ref := range []string{"refs/heads/" + name, "refs/remotes/origin/" + name} {
+		if _, err := Run(ctx, repo, "rev-parse", "--verify", "-q", ref); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// ValidBranchName reports whether git accepts name as a branch name.
+func ValidBranchName(ctx context.Context, repo, name string) bool {
+	if name == "" || strings.HasPrefix(name, "-") {
+		return false
+	}
+	_, err := Run(ctx, repo, "check-ref-format", "--branch", name)
+	return err == nil
+}
+
+// Push pushes the worktree's branch to origin and sets it as the upstream.
+func Push(ctx context.Context, worktree, branch string) error {
+	_, err := Run(ctx, worktree, "push", "--quiet", "-u", "origin", branch)
+	return err
+}
+
+// RemoteURL returns origin's URL, or "" when there is none.
+func RemoteURL(ctx context.Context, repo string) string {
+	u, err := Run(ctx, repo, "remote", "get-url", "origin")
+	if err != nil {
+		return ""
+	}
+	return u
+}

@@ -353,8 +353,11 @@ func (a *App) stepView(ctx *ui.Context, it *core.Item, v core.ThreadView) ui.Ele
 		var d core.NoticeData
 		it.Decode(&d)
 		c := t.TextSubtle
-		if d.Level == "error" {
+		switch d.Level {
+		case "error":
 			c = t.Danger
+		case "warning":
+			c = t.Warning
 		}
 		return ui.Div().Row().Justify(ui.Center).Child(ui.Text(d.Text).FontSize(12).TextColor(c).Align(ui.Center))
 	}

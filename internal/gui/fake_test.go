@@ -152,7 +152,12 @@ func (f *fakeBackend) CheckClaude(_ context.Context, override string) core.Claud
 		return core.ClaudeStatus{Path: override, Source: "setting", Err: override + " doesn't exist"}
 	}
 	return core.ClaudeStatus{Path: "/home/you/.local/bin/claude", Source: "PATH", Version: "2.1.319",
-		Account: "you@example.com · Max"}
+		Account: "you@example.com · Max", Models: []agent.ModelInfo{
+			{Value: "default", DisplayName: "Default (recommended)"},
+			{Value: "opus", DisplayName: "Opus 5.5", EffortLevels: []string{"low", "medium", "high", "xhigh", "max"}},
+			{Value: "sonnet", DisplayName: "Sonnet 5.5", EffortLevels: []string{"low", "medium", "high", "max"}},
+			{Value: "haiku", DisplayName: "Haiku 5.5"},
+		}}
 }
 
 func (f *fakeBackend) add(thread, kind string, data any) {
@@ -217,10 +222,11 @@ func demoBackend() *fakeBackend {
 		ActualModel: "claude-opus-5-5"}
 
 	f := &fakeBackend{
-		threads:  []core.ThreadView{orch, oauth, limiter, forms, audit, flaky, readme, bump, old, gone},
-		items:    map[string][]core.Item{},
-		repos:    repos,
-		settings: core.Settings{Folders: []string{"~/code"}, OrchestratorModel: "opus", WorkerModel: "sonnet", ScanDepth: 3},
+		threads: []core.ThreadView{orch, oauth, limiter, forms, audit, flaky, readme, bump, old, gone},
+		items:   map[string][]core.Item{},
+		repos:   repos,
+		settings: core.Settings{Folders: []string{"~/code"}, OrchestratorModel: "opus", WorkerModel: "sonnet", ScanDepth: 3,
+			NamingModel: "haiku", OrchestratorEffort: "high", MergeMethod: "squash", OnChecksFail: core.ChecksFix},
 		pending: map[string][]core.PendingQuestion{limiter.ID: {{ToolUseID: "toolu_q1", Questions: []agent.Question{{
 			Question: "Which store should back the upload rate limiter?", Header: "Limiter",
 			Options: []agent.QuestionOption{

@@ -271,14 +271,23 @@ func (c *Core) startWorker(id string) {
 	c.mu.Unlock()
 
 	if row.WorktreePath == "" {
-		path := c.worktreePath(row.RepoPath, strings.TrimPrefix(row.Branch, "solo/"))
-		wt, err := git.AddWorktree(ctx, row.RepoPath, path, row.Branch, row.BaseBranch)
+		// Start from the latest commit of the default branch (or the one Solo named), fetched now.
+		base, err := git.LatestBase(ctx, row.RepoPath, row.BaseBranch)
+		if err != nil {
+			fail(err)
+			return
+		}
+		if base.FetchErr != nil {
+			c.addNotice(id, "warning", fmt.Sprintf("Couldn't fetch %s from origin, so this starts from the last copy fetched.", base.Branch))
+		}
+		branch := c.nameBranch(ctx, row)
+		wt, err := git.AddWorktree(ctx, row.RepoPath, c.threadWorktreePath(row), branch, base.Ref)
 		if err != nil {
 			fail(err)
 			return
 		}
 		c.mu.Lock()
-		t.row.WorktreePath, t.row.BaseBranch, t.row.BaseCommit = wt.Path, wt.BaseBranch, wt.BaseCommit
+		t.row.WorktreePath, t.row.Branch, t.row.BaseBranch, t.row.BaseCommit = wt.Path, wt.Branch, base.Branch, wt.BaseCommit
 		t.row.UpdatedAt = now()
 		err = c.db.SaveThread(&t.row)
 		c.mu.Unlock()
@@ -286,7 +295,7 @@ func (c *Core) startWorker(id string) {
 			fail(err)
 			return
 		}
-		c.addNotice(id, "info", fmt.Sprintf("Working on branch %s from %s.", wt.Branch, wt.BaseBranch))
+		c.addNotice(id, "info", fmt.Sprintf("Working on branch %s from %s.", wt.Branch, base.Ref))
 	}
 	// Workers are started by the orchestrator, which wrote the prompt.
 	if err := c.send(ctx, id, row.Prompt, row.PromptImages, false, FromOrchestrator); err != nil {
@@ -298,7 +307,7 @@ func (c *Core) startWorker(id string) {
 // spec reads core state.
 func (c *Core) openParams(row store.Thread) agent.OpenParams {
 	c.mu.Lock()
-	spec, claudePath := c.orchSpec, c.settings.ClaudePath
+	spec, claudePath, effort := c.orchSpec, c.settings.ClaudePath, c.settings.WorkerEffort
 	c.mu.Unlock()
 	if row.Kind == store.KindOrchestrator && spec != nil {
 		p := spec()
@@ -313,6 +322,7 @@ func (c *Core) openParams(row store.Thread) agent.OpenParams {
 		Resume:         row.HasTranscript,
 		Cwd:            row.WorktreePath,
 		Model:          row.Model,
+		Effort:         effort,
 		Title:          row.Title,
 		SystemAppend:   workerInstructions(row),
 		PermissionMode: agent.PermissionBypass,
@@ -619,12 +629,15 @@ func (c *Core) Restore(ctx context.Context, threadID string) error {
 	}
 	path := v.WorktreePath
 	if path == "" {
-		path = c.worktreePath(v.RepoPath, strings.TrimPrefix(v.Branch, "solo/"))
+		path = c.threadWorktreePath(v.Thread)
 	}
 	wt := git.Worktree{Path: path}
 	if _, err := os.Stat(path); err != nil {
-		var err error
-		if wt, err = git.RestoreWorktree(ctx, v.RepoPath, path, v.Branch, v.BaseBranch); err != nil {
+		base, err := git.LatestBase(ctx, v.RepoPath, v.BaseBranch)
+		if err != nil {
+			return err
+		}
+		if wt, err = git.RestoreWorktree(ctx, v.RepoPath, path, v.Branch, base.Ref); err != nil {
 			return fmt.Errorf("recreating the worktree: %w", err)
 		}
 	}
@@ -645,6 +658,60 @@ func (c *Core) Restore(ctx context.Context, threadID string) error {
 	c.notify(ch)
 	go c.countChanges(threadID)
 	return nil
+}
+
+// threadWorktreePath is where a worker's worktree lives. It depends only on the thread, so Restore
+// finds the same path (and with it the Claude session, which is keyed by directory).
+func (c *Core) threadWorktreePath(row store.Thread) string {
+	return c.worktreePath(row.RepoPath, git.Slug(row.Title)+"-"+row.ID[:6])
+}
+
+const namingSystem = "You name git branches. Reply with only the branch name: no quotes, no explanation, no code formatting."
+
+// nameBranch names a new worker's branch. With branch rules in Settings, the naming model follows
+// them; otherwise, or when its answer isn't a usable name, the branch is solo/<title>-<id>.
+func (c *Core) nameBranch(ctx context.Context, row store.Thread) string {
+	fallback := "solo/" + git.Slug(row.Title) + "-" + row.ID[:6]
+	s := c.Settings()
+	rules := s.BranchRulesFor(row.RepoPath)
+	if rules == "" {
+		return fallback
+	}
+	prompt := fmt.Sprintf("Name the git branch for this task, following the rules.\n\nRules:\n%s\n\nRepository: %s\nTask title: %s\nTask:\n%s",
+		rules, filepath.Base(row.RepoPath), row.Title, clipText(row.Prompt, 1500))
+	nctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+	text, err := c.agent.Complete(nctx, agent.CompleteParams{Model: s.NamingModel, Effort: s.NamingEffort,
+		System: namingSystem, Prompt: prompt, ClaudePath: agent.FindClaude(s.ClaudePath).Path, TimeoutMs: 40_000})
+	if err != nil {
+		c.addNotice(row.ID, "warning", "Couldn't name the branch by your rules ("+err.Error()+"), so it's "+fallback+".")
+		return fallback
+	}
+	name := cleanBranchName(text)
+	if !git.ValidBranchName(ctx, row.RepoPath, name) {
+		c.addNotice(row.ID, "warning", fmt.Sprintf("The suggested branch name %q isn't valid, so it's %s.", firstLine(text, 80), fallback))
+		return fallback
+	}
+	for i, n := 2, name; ; i++ {
+		if !git.BranchExists(ctx, row.RepoPath, n) {
+			return n
+		}
+		n = fmt.Sprintf("%s-%d", name, i)
+	}
+}
+
+// cleanBranchName takes a branch name from a model's answer: its first line, without quotes or code
+// marks.
+func cleanBranchName(s string) string {
+	s = strings.TrimSpace(s)
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+	s = strings.Trim(s, "`\"' ")
+	if strings.ContainsAny(s, " \t") {
+		return "" // a sentence, not a name
+	}
+	return s
 }
 
 // countChanges counts the files a worker's branch changes, for Done and CanMerge.
@@ -763,4 +830,11 @@ func firstLine(s string, max int) string {
 		s = strings.TrimSpace(string(r[:max])) + "…"
 	}
 	return s
+}
+
+func clipText(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
 }

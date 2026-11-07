@@ -506,3 +506,57 @@ func TestDoneRestoreAndDiscardCleanup(t *testing.T) {
 		t.Fatal("done lost after restart")
 	}
 }
+
+func TestBranchNamingAndLatestBase(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	run := func(dir string, args ...string) string {
+		t.Helper()
+		out, err := git.Run(ctx, dir, args...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	// An origin that has moved on since the local checkout last pulled.
+	origin := filepath.Join(e.root, "origin.git")
+	run(e.root, "clone", "-q", "--bare", e.repo, origin)
+	run(e.repo, "remote", "add", "origin", origin)
+	run(e.repo, "fetch", "-q", "origin")
+	other := filepath.Join(e.root, "other")
+	run(e.root, "clone", "-q", origin, other)
+	run(other, "commit", "-q", "--allow-empty", "-m", "upstream work")
+	run(other, "push", "-q", "origin", "main")
+	latest := run(other, "rev-parse", "HEAD")
+
+	start := func(title, prompt string) ThreadView {
+		t.Helper()
+		v, err := e.c.CreateWorker(ctx, WorkerSpec{Repo: "proj", Title: title, Prompt: prompt})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return waitStatus(t, e.c, v.ID, StatusIdle)
+	}
+
+	// No rules: solo/<title>-<id>, from origin's latest main.
+	v := start("Plain", "just answer")
+	if !strings.HasPrefix(v.Branch, "solo/plain-") || v.BaseBranch != "main" || v.BaseCommit != latest {
+		t.Fatalf("plain: branch %s base %s@%s, want main@%s", v.Branch, v.BaseBranch, v.BaseCommit, latest)
+	}
+
+	// Rules: the naming model names it; a taken name gets a suffix; a repo's rules win.
+	e.c.UpdateSettings(func(s *Settings) { s.BranchRules = "feat/<summary>" })
+	if v = start("Add login", "just answer"); v.Branch != "feat/add-login" {
+		t.Fatalf("named %s", v.Branch)
+	}
+	if v = start("Add login", "just answer"); v.Branch != "feat/add-login-2" {
+		t.Fatalf("second name %s", v.Branch)
+	}
+	if v = start("Odd", "BADNAME please"); !strings.HasPrefix(v.Branch, "solo/odd-") {
+		t.Fatalf("bad answer kept: %s", v.Branch)
+	}
+	e.c.UpdateSettings(func(s *Settings) { s.BranchRules = ""; s.RepoBranchRules = map[string]string{e.repo: "feat/<summary>"} })
+	if v = start("Repo rules", "just answer"); v.Branch != "feat/repo-rules" {
+		t.Fatalf("repo rules: %s", v.Branch)
+	}
+}

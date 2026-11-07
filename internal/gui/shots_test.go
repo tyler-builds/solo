@@ -65,7 +65,14 @@ func TestShots(t *testing.T) {
 			a.lightbox.Set(sampleScreenshot(t.TempDir(), color.RGBA{47, 214, 193, 255}))
 		}},
 		{"done", func(a *App, f *fakeBackend) { a.openThread("a0b1c2d3-audit", "conversation") }},
-		{"history", func(a *App, f *fakeBackend) { a.settings.Set(true) }},
+		{"history", func(a *App, f *fakeBackend) { a.settingsTab = "history"; a.settings.Set(true) }},
+		{"settings-models", func(a *App, f *fakeBackend) { a.settingsTab = "models"; a.settings.Set(true) }},
+		{"settings-git", func(a *App, f *fakeBackend) {
+			f.settings.BranchRules = "feature/<ticket>-<short-summary>, lowercase, under 50 characters. fix/ for bug fixes."
+			f.settings.RepoBranchRules = map[string]string{"/home/dev/code/api": "api-<ticket>-<summary>"}
+			a.settingsTab = "git"
+			a.settings.Set(true)
+		}},
 		{"empty", nil},
 	}
 	for _, theme := range []struct {

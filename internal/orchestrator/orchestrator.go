@@ -118,6 +118,7 @@ func (o *Orchestrator) openParams() agent.OpenParams {
 	return agent.OpenParams{
 		Cwd:                   o.workDir,
 		Model:                 s.OrchestratorModel,
+		Effort:                s.OrchestratorEffort,
 		Title:                 "Solo orchestrator",
 		SystemAppend:          systemPrompt(o.c),
 		AdditionalDirectories: dirs,

@@ -15,6 +15,7 @@ type ClaudeStatus struct {
 	Version string
 	Account string // such as "you@example.com · Max"; "" when unknown
 	Err     string // why Claude Code can't be used; "" when it can
+	Models  []agent.ModelInfo
 }
 
 // CheckClaude finds Claude Code with override as the Settings path ("" to detect it), runs it for its
@@ -42,6 +43,7 @@ func (c *Core) CheckClaude(ctx context.Context, override string) ClaudeStatus {
 		st.Err = "Claude Code didn't start: " + err.Error()
 		return st
 	}
+	st.Models = res.Models
 	acct := res.Account
 	switch {
 	case acct.Email != "":

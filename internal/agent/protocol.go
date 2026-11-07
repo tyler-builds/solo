@@ -106,16 +106,19 @@ type ToolCallResult struct {
 	IsError bool   `json:"isError,omitempty"`
 }
 
+// ModelInfo is a model Claude Code offers.
+type ModelInfo struct {
+	Value        string   `json:"value"`
+	DisplayName  string   `json:"displayName"`
+	Description  string   `json:"description"`
+	EffortLevels []string `json:"effortLevels,omitempty"`
+}
+
 // ProbeResult describes the Claude install: its models and account.
 type ProbeResult struct {
-	ClaudeVersion string `json:"claudeVersion"`
-	Models        []struct {
-		Value        string   `json:"value"`
-		DisplayName  string   `json:"displayName"`
-		Description  string   `json:"description"`
-		EffortLevels []string `json:"effortLevels,omitempty"`
-	} `json:"models"`
-	Account struct {
+	ClaudeVersion string      `json:"claudeVersion"`
+	Models        []ModelInfo `json:"models"`
+	Account       struct {
 		Email            string `json:"email,omitempty"`
 		Organization     string `json:"organization,omitempty"`
 		SubscriptionType string `json:"subscriptionType,omitempty"`

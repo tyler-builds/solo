@@ -96,6 +96,45 @@ peer.handle("probe", async (p: { claudePath?: string; cwd?: string }): Promise<P
   }
 });
 
+// complete asks a model for one short answer: no tools, no session, no project settings. Used for
+// small jobs such as naming a branch.
+peer.handle(
+  "complete",
+  async (p: { model?: string; effort?: string; system: string; prompt: string; claudePath?: string; timeoutMs?: number }) => {
+    const abort = new AbortController();
+    const q = query({
+      prompt: p.prompt,
+      options: {
+        ...claudeExecutable(p.claudePath),
+        ...(p.model ? { model: p.model } : {}),
+        ...(p.effort ? { effort: p.effort as any } : {}),
+        systemPrompt: p.system,
+        tools: [],
+        maxTurns: 1,
+        persistSession: false,
+        settingSources: [],
+        abortController: abort,
+      },
+    });
+    const run = (async () => {
+      let text = "";
+      for await (const m of q) {
+        if (m.type === "result") {
+          if (m.subtype !== "success" || m.is_error) throw new Error((m as any).result || `Claude failed: ${m.subtype}`);
+          text = m.result;
+        }
+      }
+      return text;
+    })();
+    try {
+      return { text: await withTimeout(run, p.timeoutMs ?? 60_000, "Claude did not answer in time") };
+    } finally {
+      abort.abort();
+      q.close();
+    }
+  },
+);
+
 let shuttingDown = false;
 async function shutdown(code = 0) {
   if (shuttingDown) return;

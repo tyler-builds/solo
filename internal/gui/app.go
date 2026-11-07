@@ -39,21 +39,22 @@ type App struct {
 	openTab *ui.Signal[string]
 	cfg     *ui.Signal[core.Settings]
 	// The thread panel's share of the center, which the user can drag, and its open/close animation.
-	panelSize  *ui.Signal[ui.Length]
-	panelAnim  *ui.Signal[float32] // 0 closed … 1 open
-	panelGoal  float32             // the size, in percent, the panel opens to
-	animStop   func()
-	settings   *ui.Signal[bool]
-	confirm    *ui.Signal[*confirmation]
-	palette    *ui.Signal[bool]
-	built      map[string]bool // transcript rows that are built, by scope/key (UI thread only)
-	builtVer   *ui.Signal[int]
-	orchDraft  *ui.Signal[string] // the message being written to Solo
-	orchFocus  *ui.FocusHandle
-	foldedAsks *ui.Signal[map[string]bool] // pinned questions the user folded, by tool-use ID
-	lightbox   *ui.Signal[string]          // the image shown full size, or ""
-	orchImages *ui.Signal[[]string]        // images attached to the message being written to Solo
-	imgs       map[string]*ui.ImageSource  // decoded attachments, by path (UI thread only)
+	panelSize   *ui.Signal[ui.Length]
+	panelAnim   *ui.Signal[float32] // 0 closed … 1 open
+	panelGoal   float32             // the size, in percent, the panel opens to
+	animStop    func()
+	settings    *ui.Signal[bool]
+	confirm     *ui.Signal[*confirmation]
+	palette     *ui.Signal[bool]
+	built       map[string]bool // transcript rows that are built, by scope/key (UI thread only)
+	builtVer    *ui.Signal[int]
+	orchDraft   *ui.Signal[string] // the message being written to Solo
+	orchFocus   *ui.FocusHandle
+	foldedAsks  *ui.Signal[map[string]bool] // pinned questions the user folded, by tool-use ID
+	lightbox    *ui.Signal[string]          // the image shown full size, or ""
+	settingsTab string                      // the tab Settings opens on
+	orchImages  *ui.Signal[[]string]        // images attached to the message being written to Solo
+	imgs        map[string]*ui.ImageSource  // decoded attachments, by path (UI thread only)
 
 	items map[string]*ui.Signal[[]core.Item] // UI thread only
 

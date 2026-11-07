@@ -289,6 +289,29 @@ func (m *Manager) Probe(ctx context.Context, claudePath string) (ProbeResult, er
 	return res, err
 }
 
+// CompleteParams asks a model for one short answer, with no tools or session.
+type CompleteParams struct {
+	Model      string `json:"model,omitempty"`
+	Effort     string `json:"effort,omitempty"`
+	System     string `json:"system"`
+	Prompt     string `json:"prompt"`
+	ClaudePath string `json:"claudePath,omitempty"`
+	TimeoutMs  int    `json:"timeoutMs,omitempty"`
+}
+
+// Complete runs a one-shot prompt, for small jobs such as naming a branch.
+func (m *Manager) Complete(ctx context.Context, p CompleteParams) (string, error) {
+	sc, _, err := m.sidecar(ctx)
+	if err != nil {
+		return "", err
+	}
+	var res struct {
+		Text string `json:"text"`
+	}
+	err = sc.call(ctx, "complete", p, &res)
+	return res.Text, err
+}
+
 // Shutdown closes every session and stops the sidecar.
 func (m *Manager) Shutdown() {
 	m.mu.Lock()
