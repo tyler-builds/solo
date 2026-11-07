@@ -284,8 +284,7 @@ func (a *App) titleBar(ctx *ui.Context) ui.Element {
 		Key("open-settings").OnClick(func() { a.settings.Set(true) }))
 	return ui.TitleBar().Height(ui.Px(40)).
 		Child(ui.Div().Row().Align(ui.Center).Gap(space2).PaddingLeft(space4).
-			Child(brandMark(18)).
-			Child(ui.Text("Solo").FontSize(13).Semibold())).
+			Child(brandMark(18))).
 		Center(find).
 		Trailing(trailing...)
 }
@@ -325,7 +324,7 @@ func (a *App) center(ctx *ui.Context) ui.Element {
 		}
 		thin := ui.Style{Width: ui.Px(space2), Background: t.Panel}
 		main = ui.Split(
-			ui.Pane(orch).Min(ui.Px(360)).Key("orch").Label("Orchestrator"),
+			ui.Pane(orch).Min(ui.Px(360)).Key("orch").Label("Solo"),
 			pane,
 		).Grip(map[bool]ui.SplitGrip{true: ui.SplitGripOnHover, false: ui.SplitGripHidden}[anim >= 1]).
 			Styles(ui.SplitStyle{

@@ -97,7 +97,7 @@ var toolSpecs = []agent.ToolSpec{
 // handleTool runs one orchestrator tool. Errors go back to the model as error results.
 func (o *Orchestrator) handleTool(ctx context.Context, threadID, name string, raw []byte) (string, bool) {
 	if threadID != core.OrchestratorID {
-		return "Only the orchestrator has Solo's tools.", true
+		return "Only Solo itself has these tools.", true
 	}
 	var a struct {
 		ID            string            `json:"id"`

@@ -223,7 +223,7 @@ func (a *App) composerFor(ctx *ui.Context, th core.ThreadView) ui.Element {
 		return caption(ctx, "This thread is starting.")
 	}
 	id := th.ID
-	return a.composer(ctx, th, "draft-"+id, "Message this worker…", func(text string) error {
+	return a.composer(ctx, th, "draft-"+id, "Message this thread…", func(text string) error {
 		return a.b.Send(context.Background(), id, text)
 	})
 }
@@ -238,7 +238,7 @@ func (a *App) changesView(ctx *ui.Context, res ui.QueryResult[changeData]) ui.El
 			Child(ui.Empty("Could not read the changes").Icon(icons.CircleAlert).Description(res.Err.Error()))
 	case len(res.Data.files) == 0:
 		return ui.Div().Column().Center().Grow(1).Padding(space6).
-			Child(ui.Empty("No changes yet").Icon(icons.FileCode).Description("Files the worker changes show up here."))
+			Child(ui.Empty("No changes yet").Icon(icons.FileCode).Description("Files the thread changes show up here."))
 	}
 	files := parseDiff(res.Data.diff)
 	return ui.Component(func(ctx *ui.Context) ui.Element {

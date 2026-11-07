@@ -74,7 +74,7 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 		}
 		body := ui.Div().Column().Gap(space5).Width(ui.Full).
 			Child(field("Repository folders",
-				"Solo finds the git repositories in these folders (up to three levels down) and tells the orchestrator about them.",
+				"Solo finds the git repositories in these folders (up to three levels down) and tells Solo about them.",
 				ui.Div().Column().Gap(space2).
 					Child(list).
 					Child(ui.Div().Row().Gap(space2).
@@ -82,9 +82,9 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 							Key("new-folder").OnSubmit(func(string) { add() })).
 						Child(ui.Button("Add").Icon(icons.Plus).Secondary().Small().OnClick(add))))).
 			Child(ui.Div().Row().Gap(space4).
-				Child(ui.Div().Grow(1).Basis(ui.Px(0)).Child(field("Orchestrator model", "The manager you talk to.",
+				Child(ui.Div().Grow(1).Basis(ui.Px(0)).Child(field("Solo's model", "The one you talk to.",
 					ui.Select(orchModel, modelOptions...).Width(ui.Full)))).
-				Child(ui.Div().Grow(1).Basis(ui.Px(0)).Child(field("Worker model", "The default for new threads.",
+				Child(ui.Div().Grow(1).Basis(ui.Px(0)).Child(field("Thread model", "The default for new threads.",
 					ui.Select(workerModel, modelOptions...).Width(ui.Full))))).
 			Child(field("Costs", "Show what each thread has cost so far, as Claude estimates it.",
 				ui.Switch("Show costs", showCosts)))

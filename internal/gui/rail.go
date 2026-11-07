@@ -73,7 +73,7 @@ func (a *App) rail(ctx *ui.Context) ui.Element {
 	if len(open) == 0 {
 		list = list.Child(ui.Div().Column().Align(ui.Center).Gap(space2).PaddingY(space8).PaddingX(space4).
 			Child(ui.Icon(icons.Layers).Size(22).Color(t.TextSubtle)).
-			Child(caption(ctx, "No open threads. Ask the orchestrator for something and its workers show up here.").Align(ui.Center)))
+			Child(caption(ctx, "No open threads. Ask Solo for something and its threads show up here.").Align(ui.Center)))
 	}
 	var working ui.Element
 	for gi, g := range railGroups {

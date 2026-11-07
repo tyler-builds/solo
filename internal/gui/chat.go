@@ -45,7 +45,7 @@ func (a *App) orchestratorView(ctx *ui.Context) ui.Element {
 			Child(ui.Div().Column().Gap(space2).Width(ui.Full).MaxWidth(ui.Px(chatMaxWidth)).
 				Child(a.questionStrip(ctx)).
 				Child(a.attentionBar(ctx)).
-				Child(a.composer(ctx, v, "orch-draft", "Message the orchestrator…", func(text string) error {
+				Child(a.composer(ctx, v, "orch-draft", "Message Solo…", func(text string) error {
 					return a.b.SendToOrchestrator(context.Background(), text)
 				})))).
 		Background(t.Background)
@@ -66,8 +66,8 @@ func (a *App) orchestratorBar(ctx *ui.Context, v core.ThreadView) ui.Element {
 	}
 	return ui.Div().Row().Align(ui.Center).Gap(space3).PaddingX(space4).Height(ui.Px(52)).Shrink(0).
 		BorderEdges(ui.Edges{Bottom: 1}, t.Border).
-		Child(ui.Icon(icons.Bot).Size(18).Color(ui.Hex(pal(t).brand))).
-		Child(ui.Text("Orchestrator").FontSize(14).Semibold().NoWrap()).
+		Child(brandMark(20)).
+		Child(ui.Text("Solo").FontSize(14).Semibold().NoWrap()).
 		Child(state)
 }
 
@@ -76,7 +76,7 @@ func (a *App) welcome(ctx *ui.Context) ui.Element {
 	col := ui.Div().Column().Align(ui.Center).Gap(space3).MaxWidth(ui.Px(520)).
 		Child(brandMark(48)).
 		Child(title("What should we work on?").MarginTop(space2)).
-		Child(muted(ctx, "Tell the orchestrator what you want done. It plans the work, runs Claude workers in their own branches, and reports back. You review and merge.").
+		Child(muted(ctx, "Tell Solo what you want done. It starts a thread for each task, each one working in its own branch, keeps track of them, and reports back. You review and merge.").
 			Align(ui.Center))
 	if len(repos) == 0 {
 		col = col.Child(ui.Button("Add repository folders").Icon(icons.FolderGit2).Primary().
@@ -234,8 +234,8 @@ func (a *App) rowView(ctx *ui.Context, v core.ThreadView, r row) ui.Element {
 		if d.From == core.FromOrchestrator {
 			return ui.Div().Column().Gap(space1).Align(ui.Start).
 				Child(ui.Div().Row().Align(ui.Center).Gap(6).PaddingLeft(2).
-					Child(ui.Icon(icons.Bot).Size(13).Color(ui.Hex(pal(t).brand))).
-					Child(ui.Text("Orchestrator").FontSize(12).Medium().TextColor(t.TextMuted))).
+					Child(brandMark(14)).
+					Child(ui.Text("Solo").FontSize(12).Medium().TextColor(t.TextMuted))).
 				Child(ui.Div().PaddingX(space3+2).PaddingY(space2+2).Radius(radiusL).MaxWidth(ui.Percent(92)).
 					Background(t.Surface).Border(1, t.Border).
 					Child(ui.Text(d.Text).Selectable()))
