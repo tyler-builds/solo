@@ -289,6 +289,8 @@ func (a *App) activityLine(th core.ThreadView) string {
 func prLine(pr *forge.PR) string {
 	parts := []string{fmt.Sprintf("%s #%d", pr.Kind.Noun(), pr.Number)}
 	switch {
+	case pr.Draft:
+		parts = append(parts, "draft")
 	case pr.Checks == forge.ChecksFailing:
 		parts = append(parts, "checks failed")
 	case pr.Mergeable:

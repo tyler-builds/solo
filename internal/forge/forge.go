@@ -100,6 +100,7 @@ type PR struct {
 	Checks    string  `json:"checks"` // ChecksNone, ChecksPending, ChecksPassing or ChecksFailing
 	Failed    []Check `json:"failed,omitempty"`
 	AutoMerge bool    `json:"autoMerge,omitempty"`
+	Draft     bool    `json:"draft,omitempty"`
 	// Mergeable is true when it can merge now; Blocked says why not ("waiting for review", say).
 	Mergeable bool   `json:"mergeable,omitempty"`
 	Blocked   string `json:"blocked,omitempty"`
@@ -164,16 +165,19 @@ func (c *Client) run(ctx context.Context, dir string, args ...string) (string, e
 
 var urlRE = regexp.MustCompile(`https?://\S+/(?:pull|merge_requests)/(\d+)`)
 
-// Open opens a pull request from head into base, from the worktree dir.
-func (c *Client) Open(ctx context.Context, dir, base, head, title, body string) (PR, error) {
-	var out string
-	var err error
+// Open opens a pull request from head into base, from the worktree dir; draft opens it as a draft.
+func (c *Client) Open(ctx context.Context, dir, base, head, title, body string, draft bool) (PR, error) {
+	var args []string
 	if c.Kind == GitLab {
-		out, err = c.run(ctx, dir, "mr", "create", "--source-branch", head, "--target-branch", base,
-			"--title", title, "--description", body, "--yes")
+		args = []string{"mr", "create", "--source-branch", head, "--target-branch", base,
+			"--title", title, "--description", body, "--yes"}
 	} else {
-		out, err = c.run(ctx, dir, "pr", "create", "--base", base, "--head", head, "--title", title, "--body", body)
+		args = []string{"pr", "create", "--base", base, "--head", head, "--title", title, "--body", body}
 	}
+	if draft {
+		args = append(args, "--draft")
+	}
+	out, err := c.run(ctx, dir, args...)
 	if err != nil {
 		return PR{}, err
 	}
@@ -182,7 +186,7 @@ func (c *Client) Open(ctx context.Context, dir, base, head, title, body string) 
 		return PR{}, fmt.Errorf("couldn't find the %s's address in: %s", c.Kind.Noun(), lastLines(out, 3))
 	}
 	n, _ := strconv.Atoi(m[1])
-	pr := PR{Kind: c.Kind, URL: m[0], Number: n, State: StateOpen, Checks: ChecksPending}
+	pr := PR{Kind: c.Kind, URL: m[0], Number: n, State: StateOpen, Checks: ChecksPending, Draft: draft}
 	if v, err := c.View(ctx, dir, pr); err == nil {
 		pr = v
 	}
@@ -198,6 +202,16 @@ func methodFlag(method string) string {
 		return "--rebase"
 	}
 	return "--squash"
+}
+
+// Ready marks a draft pull request ready for review.
+func (c *Client) Ready(ctx context.Context, dir string, pr PR) error {
+	if c.Kind == GitLab {
+		_, err := c.run(ctx, dir, "mr", "update", strconv.Itoa(pr.Number), "--ready", "--yes")
+		return err
+	}
+	_, err := c.run(ctx, dir, "pr", "ready", pr.URL)
+	return err
 }
 
 // EnableAutoMerge has the forge merge the pull request once its requirements pass.
@@ -241,7 +255,7 @@ func (c *Client) View(ctx context.Context, dir string, pr PR) (PR, error) {
 		return c.viewGitLab(ctx, dir, pr)
 	}
 	out, err := c.run(ctx, dir, "pr", "view", pr.URL, "--json",
-		"number,url,state,statusCheckRollup,autoMergeRequest,mergeStateStatus,reviewDecision")
+		"number,url,state,isDraft,statusCheckRollup,autoMergeRequest,mergeStateStatus,reviewDecision")
 	if err != nil {
 		return pr, err
 	}
@@ -249,6 +263,7 @@ func (c *Client) View(ctx context.Context, dir string, pr PR) (PR, error) {
 		Number           int             `json:"number"`
 		URL              string          `json:"url"`
 		State            string          `json:"state"`
+		IsDraft          bool            `json:"isDraft"`
 		AutoMergeRequest json.RawMessage `json:"autoMergeRequest"`
 		MergeStateStatus string          `json:"mergeStateStatus"`
 		ReviewDecision   string          `json:"reviewDecision"`
@@ -269,6 +284,7 @@ func (c *Client) View(ctx context.Context, dir string, pr PR) (PR, error) {
 	pr.Kind, pr.Number, pr.URL = GitHub, v.Number, v.URL
 	pr.State = map[string]string{"OPEN": StateOpen, "MERGED": StateMerged, "CLOSED": StateClosed}[v.State]
 	pr.AutoMerge = len(v.AutoMergeRequest) > 0 && string(v.AutoMergeRequest) != "null"
+	pr.Draft = v.IsDraft
 	pending, failed := false, []Check(nil)
 	for _, r := range v.Rollup {
 		name, link, state := r.Name, r.DetailsURL, ""
@@ -305,6 +321,8 @@ func (c *Client) View(ctx context.Context, dir string, pr PR) (PR, error) {
 		pr.Blocked = "behind its base branch"
 	case "DIRTY":
 		pr.Blocked = "has conflicts"
+	case "DRAFT":
+		pr.Blocked = "is a draft"
 	case "BLOCKED":
 		switch {
 		case pr.Checks == ChecksFailing:
@@ -331,6 +349,7 @@ func (c *Client) viewGitLab(ctx context.Context, dir string, pr PR) (PR, error) 
 		IID                 int    `json:"iid"`
 		WebURL              string `json:"web_url"`
 		State               string `json:"state"`
+		Draft               bool   `json:"draft"`
 		MergeWhenPipeline   bool   `json:"merge_when_pipeline_succeeds"`
 		DetailedMergeStatus string `json:"detailed_merge_status"`
 		HeadPipeline        *struct {
@@ -344,6 +363,7 @@ func (c *Client) viewGitLab(ctx context.Context, dir string, pr PR) (PR, error) 
 	pr.Kind, pr.Number, pr.URL = GitLab, v.IID, v.WebURL
 	pr.State = map[string]string{"opened": StateOpen, "merged": StateMerged, "closed": StateClosed, "locked": StateOpen}[v.State]
 	pr.AutoMerge = v.MergeWhenPipeline
+	pr.Draft = v.Draft
 	pr.Failed = nil
 	pr.Checks = ChecksNone
 	if p := v.HeadPipeline; p != nil {

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/tyler-builds/solo/internal/agent"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -33,8 +35,9 @@ func (c *Core) forgeFor(repo string) forge.Kind {
 }
 
 // OpenPR pushes a worker's branch and opens a pull request (or merge request) against the branch it
-// started from. With AutoMerge on, it also turns on the forge's auto-merge.
-func (c *Core) OpenPR(ctx context.Context, threadID string) (forge.PR, error) {
+// started from; draft opens it as a draft. With AutoMerge on, a ready pull request also gets the
+// forge's auto-merge (a draft gets it when marked ready).
+func (c *Core) OpenPR(ctx context.Context, threadID string, draft bool) (forge.PR, error) {
 	v, ok := c.Thread(threadID)
 	if !ok {
 		return forge.PR{}, fmt.Errorf("no thread %s", threadID)
@@ -53,46 +56,158 @@ func (c *Core) OpenPR(ctx context.Context, threadID string) (forge.PR, error) {
 		return forge.PR{}, fmt.Errorf("pushing %s: %w", v.Branch, err)
 	}
 	title, body := c.prText(ctx, v)
-	pr, err := client.Open(ctx, v.WorktreePath, v.BaseBranch, v.Branch, title, body)
+	pr, err := client.Open(ctx, v.WorktreePath, v.BaseBranch, v.Branch, title, body, draft)
 	if err != nil {
 		c.addNotice(threadID, "error", fmt.Sprintf("Couldn't open the %s: %v", v.Forge.Noun(), err))
 		return forge.PR{}, err
 	}
-	noun := v.Forge.Noun()
-	c.addNotice(threadID, "info", fmt.Sprintf("Opened %s #%d against %s.", noun, pr.Number, v.BaseBranch))
-	if s := c.Settings(); s.AutoMerge && !pr.AutoMerge {
-		if err := client.EnableAutoMerge(ctx, v.WorktreePath, pr, s.MergeMethod); err != nil {
-			c.addNotice(threadID, "warning", fmt.Sprintf("Couldn't turn on auto-merge (%v). Merge it when its checks pass.", err))
-		} else {
-			pr.AutoMerge = true
-			c.addNotice(threadID, "info", "Auto-merge is on: it merges once its required checks pass.")
-		}
+	what := "Opened"
+	if draft {
+		what = "Opened draft"
+	}
+	c.addNotice(threadID, "info", fmt.Sprintf("%s %s #%d against %s.", what, v.Forge.Noun(), pr.Number, v.BaseBranch))
+	if !draft {
+		pr = c.autoMerge(ctx, threadID, client, v.WorktreePath, pr)
 	}
 	c.applyPR(threadID, pr, PROpened)
 	c.pokePRs()
 	return pr, nil
 }
 
-// prText is a pull request's title and description: the one commit's subject (or the thread's title)
-// and the thread's summary.
+// MarkReady marks a draft pull request ready for review, and turns on auto-merge when Settings asks.
+func (c *Core) MarkReady(ctx context.Context, threadID string) error {
+	v, ok := c.Thread(threadID)
+	if !ok {
+		return fmt.Errorf("no thread %s", threadID)
+	}
+	if v.PR == nil || v.PR.State != forge.StateOpen || !v.PR.Draft {
+		return fmt.Errorf("thread %q has no draft to mark ready", v.Title)
+	}
+	client, err := forge.New(v.PR.Kind)
+	if err != nil {
+		return err
+	}
+	if err := client.Ready(ctx, v.WorktreePath, *v.PR); err != nil {
+		return err
+	}
+	pr := *v.PR
+	pr.Draft = false
+	c.addNotice(threadID, "info", fmt.Sprintf("%s #%d is ready for review.", pr.Kind.Noun(), pr.Number))
+	pr = c.autoMerge(ctx, threadID, client, v.WorktreePath, pr)
+	c.applyPR(threadID, pr, "")
+	c.pokePRs()
+	return nil
+}
+
+// autoMerge turns on the forge's auto-merge when Settings asks for it.
+func (c *Core) autoMerge(ctx context.Context, threadID string, client *forge.Client, dir string, pr forge.PR) forge.PR {
+	s := c.Settings()
+	if !s.AutoMerge || pr.AutoMerge {
+		return pr
+	}
+	if err := client.EnableAutoMerge(ctx, dir, pr, s.MergeMethod); err != nil {
+		c.addNotice(threadID, "warning", fmt.Sprintf("Couldn't turn on auto-merge (%v). Merge it when its checks pass.", err))
+		return pr
+	}
+	pr.AutoMerge = true
+	c.addNotice(threadID, "info", "Auto-merge is on: it merges once its required checks pass.")
+	return pr
+}
+
+const prSystem = `You write pull request titles and descriptions for a code change. Follow the user's rules exactly.
+Reply in this format and nothing else:
+TITLE: <one-line title>
+DESCRIPTION:
+<the description, in Markdown>`
+
+const prSystemTitle = `You write pull request titles for a code change. Follow the user's rules exactly.
+Reply in this format and nothing else:
+TITLE: <one-line title>`
+
+// prText writes a pull request's title and description with the PR text model, following Settings'
+// rules; without a description when Settings says so. If the model fails, the title is the worker's
+// one commit's subject (or the thread's title) and the description its summary.
 func (c *Core) prText(ctx context.Context, v ThreadView) (string, string) {
-	title := v.Title
+	s := c.Settings()
+	var subjects []string // the worker's own commits, not Solo's commit of what it left uncommitted
 	if log, err := git.Run(ctx, v.WorktreePath, "log", "--format=%s", v.BaseCommit+"..HEAD"); err == nil {
-		var subjects []string // the worker's own commits, not Solo's commit of what it left uncommitted
 		for _, l := range strings.Split(strings.TrimSpace(log), "\n") {
 			if l != "" && !strings.HasPrefix(l, uncommittedPrefix) {
 				subjects = append(subjects, l)
 			}
 		}
-		if len(subjects) == 1 {
-			title = subjects[0]
-		}
+	}
+	title := v.Title
+	if len(subjects) == 1 {
+		title = subjects[0]
 	}
 	body := strings.TrimSpace(v.Summary)
 	if body == "" {
 		body = clipText(strings.TrimSpace(v.Prompt), 2000)
 	}
-	return title, body
+	if s.SkipPRDescription {
+		body = ""
+	}
+
+	rules := strings.TrimSpace(s.PRRules)
+	if rules == "" {
+		rules = "A short, specific title in the imperative mood. A brief description: what changed and why, then a short list of the main changes."
+	}
+	var files []string
+	if fc, err := git.Changes(ctx, v.WorktreePath, v.BaseCommit); err == nil {
+		for i, f := range fc {
+			if i == 60 {
+				files = append(files, fmt.Sprintf("… and %d more", len(fc)-60))
+				break
+			}
+			files = append(files, fmt.Sprintf("%s %s (+%d −%d)", f.Status, f.Path, f.Added, f.Removed))
+		}
+	}
+	prompt := fmt.Sprintf("Write the pull request for this change.\n\nRules:\n%s\n\nRepository: %s\nBranch: %s into %s\nTask title: %s\nTask:\n%s\n\nWhat the agent that made the change reported:\n%s\n\nCommits:\n%s\n\nFiles changed:\n%s",
+		rules, filepath.Base(v.RepoPath), v.Branch, v.BaseBranch, v.Title, clipText(v.Prompt, 1500),
+		clipText(strings.TrimSpace(v.Summary), 3000), strings.Join(subjects, "\n"), strings.Join(files, "\n"))
+	system := prSystem
+	if s.SkipPRDescription {
+		system = prSystemTitle
+	}
+	pctx, cancel := context.WithTimeout(ctx, 75*time.Second)
+	defer cancel()
+	text, err := c.agent.Complete(pctx, agent.CompleteParams{Model: s.PRModel, Effort: s.PREffort, System: system,
+		Prompt: prompt, ClaudePath: agent.FindClaude(s.ClaudePath).Path, TimeoutMs: 70_000})
+	if err != nil {
+		c.addNotice(v.ID, "warning", "Couldn't write the PR text ("+err.Error()+"), so it uses the thread's summary.")
+		return title, body
+	}
+	t, d := parsePRText(text)
+	if t == "" {
+		c.addNotice(v.ID, "warning", "The PR text model didn't give a title, so it uses the thread's summary.")
+		return title, body
+	}
+	if s.SkipPRDescription {
+		d = ""
+	} else if d == "" {
+		d = body
+	}
+	return t, d
+}
+
+// parsePRText reads "TITLE: …" and "DESCRIPTION:" from the PR text model's answer.
+func parsePRText(s string) (title, desc string) {
+	s = strings.TrimSpace(strings.Trim(strings.TrimSpace(s), "`"))
+	head, rest, _ := strings.Cut(s, "\n")
+	t, ok := strings.CutPrefix(strings.TrimSpace(head), "TITLE:")
+	if !ok {
+		return "", ""
+	}
+	title = strings.Trim(strings.TrimSpace(t), "\"'`")
+	if len(title) > 200 {
+		title = title[:200]
+	}
+	rest = strings.TrimSpace(rest)
+	if d, ok := strings.CutPrefix(rest, "DESCRIPTION:"); ok {
+		desc = strings.TrimSpace(d)
+	}
+	return title, desc
 }
 
 // mergePR merges an open pull request through the forge.

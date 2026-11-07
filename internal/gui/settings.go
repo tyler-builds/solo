@@ -138,6 +138,10 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 		autoMerge := ui.Local(ctx, "auto-merge", initial.AutoMerge)
 		mergeMethod := ui.Local(ctx, "merge-method", initial.MergeMethod)
 		onFail := ui.Local(ctx, "on-fail", initial.OnChecksFail)
+		prModel := ui.Local(ctx, "pr-model", initial.PRModel)
+		prEffort := ui.Local(ctx, "pr-effort", initial.PREffort)
+		prRules := ui.Local(ctx, "pr-rules", initial.PRRules)
+		prDescribe := ui.Local(ctx, "pr-describe", !initial.SkipPRDescription)
 		showCosts := ui.Local(ctx, "show-costs", initial.ShowCosts)
 		claudePath := ui.Local(ctx, "claude-path", initial.ClaudePath)
 		checked := ui.Local(ctx, "claude-checked", strings.TrimSpace(initial.ClaudePath))
@@ -252,14 +256,26 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 			Child(feature("Solo", "The lead agent you talk to. It plans, follows the threads and reviews their work.", orchModel, orchEffort)).
 			Child(feature("Threads", "The agents that do the work, one per task. Solo can pick another model for a thread when the task calls for it.", workerModel, workerEffort)).
 			Child(feature("Branch names", "Names each thread's branch by your rules (Git tab). Only used when you have rules.", namingModel, namingEffort)).
+			Child(feature("Pull request text", "Writes each pull request's title and description, by your rules (Git tab).", prModel, prEffort)).
 			Child(caption(ctx, "Effort is how long a model thinks before it acts. Default leaves it to Claude. Changes apply to sessions started after you save."))
 
-		gitTab := ui.Div().Column().Gap(space5).Width(ui.Full).
-			Child(field("Branch names",
+		gitTab := ui.Div().Column().Gap(space5).Width(ui.Full).PaddingRight(space3). // clear of the scrollbar
+												Child(field("Branch names",
 				"Rules for naming a thread's branch, in your words: a prefix, a ticket format, a length. A small model applies them. Leave empty for solo/<title>.",
 				ui.TextArea(branchRules).Placeholder("For example: feature/<ticket>-<short-summary>, lowercase, hyphens, under 50 characters. Use fix/ for bug fixes.").
 					Label("Branch naming rules").MinRows(3).MaxHeight(ui.Px(140)).Width(ui.Full).Key("branch-rules"))).
 			Child(a.repoRulesEditor(ctx, repoRules)).
+			Child(ui.Div().Column().Gap(space1 + 2).
+				Child(subhead("Pull request text")).
+				Child(caption(ctx, "How to write a pull request's title and description. A model applies them to the thread's commits, changes and summary.")).
+				Child(ui.Div().Column().Gap(space3).PaddingTop(space2).
+					Child(ui.TextArea(prRules).Placeholder("For example: Conventional Commit title with the ticket, like feat(auth): OW-123 refresh tokens. Description: Summary, Changes, Testing.").
+						Label("Pull request text rules").MinRows(3).MaxHeight(ui.Px(140)).Width(ui.Full).Key("pr-rules")).
+					Child(ui.Div().Row().Align(ui.Center).Gap(space4).
+						Child(ui.Div().Column().Gap(2).Grow(1).MinWidth(ui.Px(0)).
+							Child(ui.Text("Write a description").FontSize(13)).
+							Child(caption(ctx, "Off: pull requests get a title only."))).
+						Child(ui.Switch("Write a description", prDescribe))))).
 			Child(ui.Div().Column().Gap(space1 + 2).
 				Child(subhead("Pull requests")).
 				Child(caption(ctx, "Solo pushes a thread's branch and opens a pull request (GitHub, with gh) or merge request (GitLab, with glab) against the branch it started from. Repositories without a remote merge locally.")).
@@ -307,6 +323,7 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 				s.OrchestratorEffort, s.WorkerEffort, s.NamingEffort = orchEffort.Peek(), workerEffort.Peek(), namingEffort.Peek()
 				s.BranchRules, s.RepoBranchRules = strings.TrimSpace(branchRules.Peek()), repoRules.Peek()
 				s.AutoMerge, s.MergeMethod, s.OnChecksFail = autoMerge.Peek(), mergeMethod.Peek(), onFail.Peek()
+				s.PRModel, s.PREffort, s.PRRules, s.SkipPRDescription = prModel.Peek(), prEffort.Peek(), strings.TrimSpace(prRules.Peek()), !prDescribe.Peek()
 			}
 			a.settings.Set(false)
 			a.run("Saving settings", func(context.Context) error { return a.b.UpdateSettings(apply) })

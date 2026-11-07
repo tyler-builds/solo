@@ -128,7 +128,7 @@ Raw `SDKMessage`s are also appended to a per-session JSONL file for debugging an
 - Branch names: `solo/<title>-<id>`, unless Settings has naming rules (global, or per repository).
   Then a small model (`complete` RPC: one turn, no tools, no session) names it; an unusable answer
   falls back to the default name, and a taken name gets a numeric suffix.
-- Settings › Models shows the model and effort for each feature: Solo, threads and branch names. The worktree is removed
+- Settings › Models shows the model and effort for each feature: Solo, threads, branch names and PR text. The worktree is removed
   after merge or discard; the branch is kept until merged.
 - Session: `cwd` = worktree, `permissionMode: "bypassPermissions"`,
   `allowDangerouslySkipPermissions: true`, default model configurable.
@@ -144,7 +144,11 @@ Raw `SDKMessage`s are also appended to a per-session JSONL file for debugging an
   so the Claude session resumes.
 - Pull requests (`internal/forge`): the forge comes from origin's host, or `git config solo.forge
   github|gitlab` for self-hosted ones. Open PR commits leftovers, pushes the branch and opens the PR
-  against the base branch (title: the worker's one commit, else the thread title; body: its summary).
+  against the base branch. The PR text model (Settings › Models; Haiku by default) writes the title and
+  description from the commits, changed files and summary, following Settings › Git's rules; the
+  description can be turned off. If it fails, the title is the worker's one commit (else the thread
+  title) and the body its summary. Open PR is a split button whose menu opens a draft; a draft gets
+  Ready for review, and auto-merge turns on only once it's ready.
   With Settings › Git › Auto-merge, Solo also runs `gh pr merge --auto` (`glab mr merge --auto-merge`).
   A watcher polls open PRs every 30 s: failed checks (sent to Solo to have the thread fix them, or just
   shown, per the setting), passed checks, closed, merged (the thread closes and its worktree goes).

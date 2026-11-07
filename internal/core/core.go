@@ -51,6 +51,13 @@ type Settings struct {
 	BranchRules     string            `json:"branchRules,omitempty"`
 	RepoBranchRules map[string]string `json:"repoBranchRules,omitempty"`
 
+	// PRModel and PREffort write pull request titles and descriptions, following PRRules. With
+	// SkipPRDescription, pull requests get a title only.
+	PRModel           string `json:"prModel,omitempty"`
+	PREffort          string `json:"prEffort,omitempty"`
+	PRRules           string `json:"prRules,omitempty"`
+	SkipPRDescription bool   `json:"skipPRDescription,omitempty"`
+
 	// AutoMerge turns on the forge's auto-merge when Solo opens a pull request, so it merges once its
 	// required checks pass.
 	AutoMerge bool `json:"autoMerge,omitempty"`
@@ -77,6 +84,9 @@ func DefaultSettings() Settings {
 func (s *Settings) normalize() {
 	if s.NamingModel == "" {
 		s.NamingModel = "haiku"
+	}
+	if s.PRModel == "" {
+		s.PRModel = "haiku"
 	}
 	if s.MergeMethod == "" {
 		s.MergeMethod = "squash"

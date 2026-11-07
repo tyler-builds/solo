@@ -148,3 +148,26 @@ func TestLiveBranchNaming(t *testing.T) {
 		t.Fatalf("branch %q doesn't follow the rules", name)
 	}
 }
+
+func TestLivePRText(t *testing.T) {
+	cmd, err := agent.FindCommand()
+	if err != nil {
+		t.Skip(err)
+	}
+	c, err := New(Config{DataDir: t.TempDir(), Agent: cmd, Log: slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	text, err := c.agent.Complete(context.Background(), agent.CompleteParams{Model: "haiku", System: prSystem,
+		Prompt: "Write the pull request for this change.\n\nRules:\nConventional Commit title with the ticket. Description: Summary, Changes, Testing.\n\nTask title: Fix token refresh\nTask:\nOW-4821: refresh the OAuth token on a 401 and retry once.\n\nWhat the agent that made the change reported:\nAdded a single retry after refreshing on 401 in src/auth/refresh.ts, with a test. Auth tests pass.\n\nCommits:\nfix(auth): retry once after refreshing on 401\n\nFiles changed:\nM src/auth/refresh.ts (+14 −3)\nM src/auth/refresh.test.ts (+38 −0)",
+		ClaudePath: agent.FindClaude("").Path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	title, desc := parsePRText(text)
+	t.Logf("title: %s\ndescription:\n%s", title, desc)
+	if title == "" || desc == "" || !strings.Contains(strings.ToUpper(title), "OW-4821") {
+		t.Fatalf("unusable answer:\n%s", text)
+	}
+}

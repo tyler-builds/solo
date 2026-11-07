@@ -100,6 +100,8 @@ type ThreadView struct {
 	CanOpenPR bool
 	// CanMergeLocal: it has changes and no open pull request, so it can merge in the local checkout.
 	CanMergeLocal bool
+	// CanMarkReady: its pull request is an open draft.
+	CanMarkReady bool
 }
 
 func (t *thread) view() ThreadView {
@@ -129,6 +131,7 @@ func (t *thread) view() ThreadView {
 	hasWork := settled && t.changed != 0
 	v.CanMergeLocal = hasWork && !prOpen
 	v.CanOpenPR = hasWork && !prOpen && t.forge != forge.None
+	v.CanMarkReady = prOpen && t.pr.Draft && !t.inTurn
 	// Merge: the open pull request when it can merge now, or locally when there's no forge.
 	v.CanMerge = hasWork && ((prOpen && t.pr.Mergeable) || (!prOpen && t.forge == forge.None))
 	v.NoChanges = settled && t.changed == 0 && t.row.Status == StatusIdle

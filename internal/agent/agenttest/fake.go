@@ -191,6 +191,10 @@ func run() {
 					title = v
 				}
 			}
+			if strings.HasPrefix(p.Prompt, "Write the pull request") {
+				reply(map[string]any{"text": "TITLE: " + title + "\nDESCRIPTION:\nDid it."})
+				continue
+			}
 			if strings.Contains(p.Prompt, "BADNAME") {
 				reply(map[string]any{"text": "`Here you go: feat/Odd Name~^:`"})
 				continue

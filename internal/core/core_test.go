@@ -593,8 +593,8 @@ func setView(t *testing.T, dir, state, merge string, checks ...string) {
 		}
 		rollup = append(rollup, fmt.Sprintf(`{"__typename":"CheckRun","name":%q,"status":%q,"conclusion":%q,"detailsUrl":"https://ci/%s"}`, name, status, concl, name))
 	}
-	j := fmt.Sprintf(`{"number":7,"url":"https://github.com/acme/proj/pull/7","state":%q,"autoMergeRequest":null,"mergeStateStatus":%q,"reviewDecision":"","statusCheckRollup":[%s]}`,
-		state, merge, strings.Join(rollup, ","))
+	j := fmt.Sprintf(`{"number":7,"url":"https://github.com/acme/proj/pull/7","state":%q,"isDraft":%t,"autoMergeRequest":null,"mergeStateStatus":%q,"reviewDecision":"","statusCheckRollup":[%s]}`,
+		state, merge == "DRAFT", merge, strings.Join(rollup, ","))
 	if err := os.WriteFile(filepath.Join(dir, "view.json"), []byte(j), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -659,7 +659,7 @@ func TestPullRequestFlow(t *testing.T) {
 
 	// Opening pushes the branch, opens the PR against main and turns on auto-merge.
 	setView(t, gh, "OPEN", "BLOCKED", "test=PENDING")
-	pr, err := e.c.OpenPR(ctx, v.ID)
+	pr, err := e.c.OpenPR(ctx, v.ID, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -668,7 +668,7 @@ func TestPullRequestFlow(t *testing.T) {
 		t.Fatalf("pr %+v", pr)
 	}
 	create, _ := os.ReadFile(filepath.Join(gh, "create"))
-	if !strings.Contains(string(create), "--base main --head "+v.Branch) || !strings.Contains(string(create), "--title Add hello") {
+	if !strings.Contains(string(create), "--base main --head "+v.Branch) || !strings.Contains(string(create), "--title Add hello --body Did it.") {
 		t.Fatalf("gh pr create %s", create)
 	}
 	if merge, _ := os.ReadFile(filepath.Join(gh, "merge")); !strings.Contains(string(merge), "--auto --squash") {
@@ -717,5 +717,71 @@ func TestPullRequestFlow(t *testing.T) {
 	}
 	if merge, _ := os.ReadFile(filepath.Join(gh, "merge")); !strings.Contains(string(merge), "pr merge https://github.com/acme/proj/pull/7 --squash") {
 		t.Fatalf("merge log %q", merge)
+	}
+}
+
+func TestDraftPullRequest(t *testing.T) {
+	gh := fakeGH(t)
+	// gh pr ready is logged with the merges.
+	script, _ := os.ReadFile(filepath.Join(gh, "gh"))
+	os.WriteFile(filepath.Join(gh, "gh"), []byte(strings.Replace(string(script), `"pr merge")`, `"pr ready"|"pr merge")`, 1)), 0o755)
+	e := newEnv(t)
+	ctx := context.Background()
+	origin := filepath.Join(e.root, "origin.git")
+	for _, args := range [][]string{{"clone", "-q", "--bare", e.repo, origin}} {
+		if _, err := git.Run(ctx, e.root, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	git.Run(ctx, e.repo, "remote", "add", "origin", origin)
+	git.Run(ctx, e.repo, "config", "solo.forge", "github")
+	e.c.UpdateSettings(func(s *Settings) { s.AutoMerge, s.SkipPRDescription = true, true })
+
+	v, err := e.c.CreateWorker(ctx, WorkerSpec{Repo: "proj", Title: "Add hello", Prompt: "write hello.txt hi"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitStatus(t, e.c, v.ID, StatusIdle)
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		if v, _ = e.c.Thread(v.ID); v.CanOpenPR {
+			break
+		}
+	}
+	setView(t, gh, "OPEN", "DRAFT")
+	pr, err := e.c.OpenPR(ctx, v.ID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	create, _ := os.ReadFile(filepath.Join(gh, "create"))
+	if !strings.HasSuffix(strings.TrimSpace(string(create)), "--title Add hello --body  --draft") {
+		t.Fatalf("draft create without a description: %q", create)
+	}
+	if merge, _ := os.ReadFile(filepath.Join(gh, "merge")); len(merge) > 0 || pr.AutoMerge {
+		t.Fatalf("auto-merge turned on for a draft: %q", merge)
+	}
+	if v, _ = e.c.Thread(v.ID); !v.CanMarkReady || v.CanMerge {
+		t.Fatalf("draft %+v", v)
+	}
+	if err := e.c.MarkReady(ctx, v.ID); err != nil {
+		t.Fatal(err)
+	}
+	merge, _ := os.ReadFile(filepath.Join(gh, "merge"))
+	if !strings.Contains(string(merge), "pr ready https://github.com/acme/proj/pull/7") || !strings.Contains(string(merge), "--auto --squash") {
+		t.Fatalf("ready and auto-merge: %q", merge)
+	}
+	if v, _ = e.c.Thread(v.ID); v.CanMarkReady || v.PR.Draft || !v.PR.AutoMerge {
+		t.Fatalf("after ready %+v", v.PR)
+	}
+}
+
+func TestParsePRText(t *testing.T) {
+	for _, c := range []struct{ in, title, desc string }{
+		{"TITLE: feat: add login\nDESCRIPTION:\nAdds it.\n\n- one", "feat: add login", "Adds it.\n\n- one"},
+		{"```\nTITLE: \"Fix it\"\n```", "Fix it", ""},
+		{"Sure! Here's a title", "", ""},
+	} {
+		if title, desc := parsePRText(c.in); title != c.title || desc != c.desc {
+			t.Errorf("parsePRText(%q) = %q, %q", c.in, title, desc)
+		}
 	}
 }

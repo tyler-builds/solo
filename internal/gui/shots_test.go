@@ -70,6 +70,7 @@ func TestShots(t *testing.T) {
 		{"settings-git", func(a *App, f *fakeBackend) {
 			f.settings.BranchRules = "feature/<ticket>-<short-summary>, lowercase, under 50 characters. fix/ for bug fixes."
 			f.settings.RepoBranchRules = map[string]string{"/home/dev/code/api": "api-<ticket>-<summary>"}
+			f.settings.PRRules = "Conventional Commit title with the ticket. Description: Summary, Changes, Testing."
 			a.settingsTab = "git"
 			a.settings.Set(true)
 		}},

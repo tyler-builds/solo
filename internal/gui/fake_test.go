@@ -89,7 +89,8 @@ func (f *fakeBackend) Merge(_ context.Context, id string) (string, error) {
 func (f *fakeBackend) MergeLocal(ctx context.Context, id string) (string, error) {
 	return f.Merge(ctx, id)
 }
-func (f *fakeBackend) OpenPR(_ context.Context, id string) (forge.PR, error) {
+func (f *fakeBackend) MarkReady(context.Context, string) error { return nil }
+func (f *fakeBackend) OpenPR(_ context.Context, id string, draft bool) (forge.PR, error) {
 	f.mu.Lock()
 	f.opened = append(f.opened, id)
 	f.mu.Unlock()
@@ -246,7 +247,8 @@ func demoBackend() *fakeBackend {
 		items:   map[string][]core.Item{},
 		repos:   repos,
 		settings: core.Settings{Folders: []string{"~/code"}, OrchestratorModel: "opus", WorkerModel: "sonnet", ScanDepth: 3,
-			NamingModel: "haiku", OrchestratorEffort: "high", MergeMethod: "squash", OnChecksFail: core.ChecksFix},
+			NamingModel: "haiku", OrchestratorEffort: "high", MergeMethod: "squash", OnChecksFail: core.ChecksFix,
+			PRModel: "sonnet", PREffort: "low"},
 		pending: map[string][]core.PendingQuestion{limiter.ID: {{ToolUseID: "toolu_q1", Questions: []agent.Question{{
 			Question: "Which store should back the upload rate limiter?", Header: "Limiter",
 			Options: []agent.QuestionOption{

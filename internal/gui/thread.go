@@ -34,14 +34,18 @@ func (a *App) merge(id string) {
 	})
 }
 
-// openPR opens a pull request for a thread.
-func (a *App) openPR(id string) {
+// openPR opens a pull request for a thread, as a draft when draft is set.
+func (a *App) openPR(id string, draft bool) {
 	a.run("Opening the pull request", func(ctx context.Context) error {
-		pr, err := a.b.OpenPR(ctx, id)
+		pr, err := a.b.OpenPR(ctx, id, draft)
 		if err != nil {
 			return err
 		}
-		a.notify(ui.ToastSuccess, fmt.Sprintf("Opened %s #%d", pr.Kind.Noun(), pr.Number), pr.URL)
+		what := "Opened"
+		if draft {
+			what = "Opened draft"
+		}
+		a.notify(ui.ToastSuccess, fmt.Sprintf("%s %s #%d", what, pr.Kind.Noun(), pr.Number), pr.URL)
 		return nil
 	})
 }
@@ -62,8 +66,15 @@ func (a *App) landControl(ctx *ui.Context, th core.ThreadView) ui.Element {
 	switch {
 	case th.CanOpenPR:
 		noun := th.Forge.Noun()
-		return ui.Button("Open " + noun).Icon(icons.GitPullRequestArrow).Primary().Small().
-			Tooltip("Push " + th.Branch + " and open a " + noun + " against " + th.BaseBranch).OnClick(func() { a.openPR(id) })
+		return ui.SplitButton("Open "+noun, func() { a.openPR(id, false) }, func() []ui.MenuItem {
+			return []ui.MenuItem{{Label: "Open as draft", Icon: icons.GitPullRequestDraft, OnClick: func() { a.openPR(id, true) }}}
+		}).Icon(icons.GitPullRequestArrow).Primary().Small().Key("open-pr-" + id)
+	case th.CanMarkReady:
+		return ui.Button("Ready for review").Icon(icons.GitPullRequest).Primary().Small().
+			Tooltip(fmt.Sprintf("Mark %s #%d ready for review", th.PR.Kind.Noun(), th.PR.Number)).
+			OnClick(func() {
+				a.run("Marking it ready", func(ctx context.Context) error { return a.b.MarkReady(ctx, id) })
+			})
 	case th.PR != nil && th.PR.State == forge.StateOpen:
 		if th.CanMerge {
 			return ui.Button("Merge").Icon(icons.GitMerge).Primary().Small().
@@ -145,7 +156,7 @@ func (a *App) threadPanel(ctx *ui.Context) ui.Element {
 	actions := ui.Div().Row().Align(ui.Center).Gap(space1).Shrink(0)
 	actions = actions.Child(a.prLink(ctx, th))
 	switch {
-	case th.CanOpenPR || th.CanMerge || (th.PR != nil && th.PR.State == forge.StateOpen):
+	case th.CanOpenPR || th.CanMerge || th.CanMarkReady || (th.PR != nil && th.PR.State == forge.StateOpen):
 		actions = actions.Child(a.landControl(ctx, th))
 	case th.CanDone:
 		actions = actions.Child(ui.Button("Done").Icon(icons.Check).Primary().Small().

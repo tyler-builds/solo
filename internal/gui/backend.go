@@ -31,7 +31,8 @@ type Backend interface {
 	Diff(ctx context.Context, threadID string) (string, error)
 	Merge(ctx context.Context, threadID string) (string, error)
 	MergeLocal(ctx context.Context, threadID string) (string, error)
-	OpenPR(ctx context.Context, threadID string) (forge.PR, error)
+	OpenPR(ctx context.Context, threadID string, draft bool) (forge.PR, error)
+	MarkReady(ctx context.Context, threadID string) error
 	Discard(ctx context.Context, threadID string) error
 	Done(ctx context.Context, threadID string) error
 	Restore(ctx context.Context, threadID string) error
