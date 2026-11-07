@@ -723,20 +723,28 @@ func (a *App) proposalCard(ctx *ui.Context, d core.ProposalData, steps []*core.I
 			actions = ui.Div().Row().Align(ui.Center).Child(statusPill(ctx, th))
 		default:
 			id, title := d.ThreadID, th.Title
+			requestChanges := func() {
+				a.orchDraft.Set("Changes for “" + title + "”: ")
+				a.orchFocus.Focus()
+			}
+			// A narrow chat column keeps Merge and Review changes on the row and moves the rest to "…".
+			narrow := a.chatWidth(ctx) < 640
 			actions = ui.Div().Row().Align(ui.Center).Gap(space2).
 				Child(ui.Button("Merge").Icon(icons.GitMerge).Primary().Small().Disabled(!th.CanMerge).
 					OnClick(func() { a.merge(id) })).
-				Child(ui.Button("Review changes").Secondary().Small().OnClick(func() { a.openThread(id, "changes") })).
-				Child(ui.Button("Request changes").Ghost().Small().
-					Tooltip("Tell Solo what to change; it passes it on to the thread").
-					OnClick(func() {
-						a.orchDraft.Set("Changes for “" + title + "”: ")
-						a.orchFocus.Focus()
-					})).
-				Child(ui.DropdownMenu(ui.IconButton(icons.Ellipsis).Ghost().Small().Label("More").Tooltip("More"),
-					func() []ui.MenuItem {
-						return []ui.MenuItem{{Label: "Discard thread…", Icon: icons.Trash, OnClick: func() { a.confirmDiscard(th) }}}
-					}))
+				Child(ui.Button("Review changes").Secondary().Small().OnClick(func() { a.openThread(id, "changes") }))
+			if !narrow {
+				actions = actions.Child(ui.Button("Request changes").Ghost().Small().
+					Tooltip("Tell Solo what to change; it passes it on to the thread").OnClick(requestChanges))
+			}
+			actions = actions.Child(ui.DropdownMenu(ui.IconButton(icons.Ellipsis).Ghost().Small().Label("More").Tooltip("More"),
+				func() []ui.MenuItem {
+					var items []ui.MenuItem
+					if narrow {
+						items = append(items, ui.MenuItem{Label: "Request changes", Icon: icons.MessageSquare, OnClick: requestChanges})
+					}
+					return append(items, ui.MenuItem{Label: "Discard thread…", Icon: icons.Trash, OnClick: func() { a.confirmDiscard(th) }})
+				}))
 		}
 		if len(steps) > 0 {
 			label := fmt.Sprintf("%d actions", len(steps))
@@ -746,9 +754,9 @@ func (a *App) proposalCard(ctx *ui.Context, d core.ProposalData, steps []*core.I
 			actions = actions.Child(ui.Div().Grow(1)).
 				Child(ui.Div().Row().Align(ui.Center).Gap(space1).PaddingX(space2).Height(ui.Px(24)).Radius(radiusS).
 					Cursor(ui.CursorPointer).Hover(ui.Style{Background: t.SurfaceHover}).
-					Role(access.RoleButton).Label("Show what Solo did").TabIndex(0).
+					Role(access.RoleButton).Label("Show what Solo did").TabIndex(0).Shrink(0).
 					OnClick(func() { open.Update(func(o bool) bool { return !o }) }).
-					Child(ui.Text(label).FontSize(12).TextColor(t.TextSubtle)).
+					Child(ui.Text(label).FontSize(12).TextColor(t.TextSubtle).NoWrap()).
 					Child(ui.Icon(map[bool]*icons.Icon{true: icons.ChevronDown, false: icons.ChevronRight}[open.Get()]).Size(12).Color(t.TextSubtle)))
 		}
 		card := ui.Div().Column().Gap(space3).Padding(space4).Radius(radiusL).Background(t.Surface).
@@ -1177,12 +1185,11 @@ func (a *App) isAction(r row) bool {
 }
 
 // offscreenPill floats over the top (top=true) or bottom edge of the orchestrator's conversation when
-// cards that need the user have scrolled out of view that way; a click scrolls to the nearest one. It
-// hangs from a zero-height anchor as an overlay, so only the pill itself takes the pointer.
+// cards that need the user have scrolled out of view that way; a click scrolls to the nearest one.
 func (a *App) offscreenPill(ctx *ui.Context, rows []row, h *ui.ListHandle, top bool) ui.Element {
 	t := ctx.Theme()
 	a.builtVer.Get()
-	anchor := ui.Div().Width(ui.Full).Height(ui.Px(0)).Shrink(0)
+	anchor := ui.Div().Width(ui.Full).Height(ui.Px(0)).Shrink(0) // nothing to show
 	first, last := -1, -1
 	for i, r := range rows {
 		if a.built["orch/"+r.key] {
@@ -1204,21 +1211,37 @@ func (a *App) offscreenPill(ctx *ui.Context, rows []row, h *ui.ListHandle, top b
 	if len(hidden) == 0 {
 		return anchor
 	}
-	target, icon, place := hidden[len(hidden)-1], icons.ArrowUp, ui.BelowCenter
+	target, icon := hidden[len(hidden)-1], icons.ArrowUp
 	if !top {
-		target, icon, place = hidden[0], icons.ArrowDown, ui.AboveCenter
+		target, icon = hidden[0], icons.ArrowDown
 	}
 	label := "1 needs you"
 	if len(hidden) > 1 {
 		label = fmt.Sprintf("%d need you", len(hidden))
 	}
 	pill := ui.Div().Row().Align(ui.Center).Gap(6).PaddingX(space3).Height(ui.Px(28)).Radius(14).
-		Background(t.Surface).Border(1, t.Warning.Alpha(0.55)).Shadow(ui.ShadowMd).Cursor(ui.CursorPointer).
+		Background(t.Surface).Border(1, t.Warning.Alpha(0.55)).Cursor(ui.CursorPointer).
 		Hover(ui.Style{Background: t.SurfaceHover}).
 		Role(access.RoleButton).Label(label).TabIndex(0).Key("offscreen-pill").
-		Overlay(place).OverlayGap(space3).
 		OnClick(func() { h.ScrollToItem(target) }).
 		Child(ui.Icon(icon).Size(14).Color(t.Warning)).
 		Child(ui.Text(label).FontSize(12).Medium())
-	return anchor.Child(pill)
+	// Its own strip at the edge of the conversation, so it never sits on top of text.
+	strip := ui.Div().Row().Justify(ui.Center).Align(ui.Center).Height(ui.Px(44)).Shrink(0).Width(ui.Full)
+	if top {
+		strip = strip.BorderEdges(ui.Edges{Bottom: 1}, t.Border)
+	} else {
+		strip = strip.BorderEdges(ui.Edges{Top: 1}, t.Border)
+	}
+	return strip.Child(pill)
+}
+
+// chatWidth estimates the width of Solo's conversation column.
+func (a *App) chatWidth(ctx *ui.Context) float32 {
+	w, _ := ctx.WindowSize()
+	chat := w - railW(ctx) - space2
+	if a.openID.Get() != "" {
+		chat -= a.panelWidth(ctx) + space2
+	}
+	return min(chat, chatMaxWidth+2*space6)
 }

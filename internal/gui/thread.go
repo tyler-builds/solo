@@ -78,20 +78,14 @@ func (a *App) threadPanel(ctx *ui.Context) ui.Element {
 	}
 
 	// A narrow panel moves the change size into the meta line and keeps only Merge's icon.
-	narrow := a.panelWidth(ctx) < 560
 	stat := ui.Div().Row().Gap(6).
 		Child(ui.Text(fmt.Sprintf("+%d", added)).FontSize(12).Medium().TextColor(t.Success)).
 		Child(ui.Text(fmt.Sprintf("−%d", removed)).FontSize(12).Medium().TextColor(t.Danger))
 	actions := ui.Div().Row().Align(ui.Center).Gap(space1).Shrink(0)
 	if th.CanMerge {
 		tip := "Merge " + th.Branch + " into " + th.BaseBranch
-		if narrow {
-			actions = actions.Child(ui.IconButton(icons.GitMerge).Primary().Small().Label("Merge").Tooltip(tip).
-				OnClick(func() { a.merge(id) }))
-		} else {
-			actions = actions.Child(ui.Button("Merge").Icon(icons.GitMerge).Primary().Small().Tooltip(tip).
-				OnClick(func() { a.merge(id) }))
-		}
+		actions = actions.Child(ui.Button("Merge").Icon(icons.GitMerge).Primary().Small().Tooltip(tip).
+			OnClick(func() { a.merge(id) }))
 	}
 	if th.CanDiscard || th.CanInterrupt {
 		actions = actions.Child(ui.DropdownMenu(
@@ -641,7 +635,8 @@ func diffView(ctx *ui.Context, stats []git.FileChange, files []*diffFile, roomy 
 			}
 		}
 		side := func(f *diffFile, i int, left bool) ui.Element {
-			box := ui.Div().Row().Align(ui.Center).Grow(1).Basis(ui.Px(0)).MinWidth(ui.Px(0)).Height(ui.Full).ClipContent()
+			box := ui.Div().Row().Align(ui.Center).Grow(1).Basis(ui.Px(0)).MinWidth(ui.Px(0)).Height(ui.Full).
+				PaddingRight(space2).ClipContent()
 			if i < 0 {
 				return box.Background(t.Surface.Alpha(0.5))
 			}
@@ -668,7 +663,7 @@ func diffView(ctx *ui.Context, stats []git.FileChange, files []*diffFile, roomy 
 			}
 			return ui.Div().Row().Height(ui.Px(diffRow)).
 				Child(side(p.file, p.left, true)).
-				Child(ui.Div().Width(ui.Px(1)).Height(ui.Full).Background(t.Border)).
+				Child(ui.Div().Width(ui.Px(1)).Height(ui.Full).Background(t.BorderStrong).Shrink(0)).
 				Child(side(p.file, p.right, false))
 		}).Handle(h).Style(ui.Style{Grow: 1}).Label("Diff, side by side")
 	}

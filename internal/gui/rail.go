@@ -151,6 +151,9 @@ func (a *App) repoMenu(ctx *ui.Context) ui.Element {
 	}
 	slices.SortFunc(repos, func(x, y string) int { return strings.Compare(filepath.Base(x), filepath.Base(y)) })
 	label := "All repos"
+	if railW(ctx) < railWidth {
+		label = "All"
+	}
 	if filter != "" {
 		label = filepath.Base(filter)
 	}
