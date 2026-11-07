@@ -900,14 +900,15 @@ func (a *App) cardHeader(ctx *ui.Context, icon *icons.Icon, c ui.Color, typ, thr
 	if threadID == "" || !ok {
 		return row
 	}
-	sep := func() ui.Element { return ui.Text("·").FontSize(12).TextColor(t.TextSubtle) }
+	// The repository and thread sit at the right: repo › title.
 	return row.
-		Child(sep()).
-		Child(ui.Text(filepath.Base(th.RepoPath)).FontSize(12).TextColor(t.TextMuted).NoWrap()).
-		Child(sep()).
-		Child(ui.Div().MinWidth(ui.Px(0)).Cursor(ui.CursorPointer).
-			Role(access.RoleButton).Label("Open " + th.Title).TabIndex(0).Tooltip("Open this thread").
-			Hover(ui.Style{TextColor: t.Link}).
-			OnClick(func() { a.openThread(threadID, "conversation") }).
-			Child(ui.Text(th.Title).FontSize(12).Medium().Truncate()))
+		Child(ui.Div().Grow(1)).
+		Child(ui.Div().Row().Align(ui.Center).Gap(space1+2).Shrink(1).MinWidth(ui.Px(0)).
+			Child(ui.Text(filepath.Base(th.RepoPath)).FontSize(12).TextColor(t.TextMuted).NoWrap()).
+			Child(ui.Icon(icons.ChevronRight).Size(12).Color(t.TextSubtle)).
+			Child(ui.Div().MinWidth(ui.Px(0)).Cursor(ui.CursorPointer).
+				Role(access.RoleButton).Label("Open "+th.Title).TabIndex(0).Tooltip("Open this thread").
+				Hover(ui.Style{TextColor: t.Link}).
+				OnClick(func() { a.openThread(threadID, "conversation") }).
+				Child(ui.Text(th.Title).FontSize(12).Medium().Truncate())))
 }
