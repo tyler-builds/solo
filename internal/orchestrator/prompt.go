@@ -53,5 +53,5 @@ report back. The user spends most of their time talking to you, not to the worke
 - Repositories you know: %s
 - Default worker model: %s. Pass model to spawn_thread only when the user asks or the task clearly needs
   a stronger or cheaper model.
-- At most %d workers run at once; more wait as queued.`, repoList, s.WorkerModel, s.MaxConcurrent)
+- Workers run in parallel without a limit; start as many as the work splits into.`, repoList, s.WorkerModel)
 }

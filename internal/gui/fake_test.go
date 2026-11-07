@@ -144,7 +144,7 @@ func demoBackend() *fakeBackend {
 		threads:  []core.ThreadView{orch, oauth, limiter, forms, flaky, readme, bump},
 		items:    map[string][]core.Item{},
 		repos:    repos,
-		settings: core.Settings{Folders: []string{"~/code"}, OrchestratorModel: "opus", WorkerModel: "sonnet", MaxConcurrent: 4, ScanDepth: 3},
+		settings: core.Settings{Folders: []string{"~/code"}, OrchestratorModel: "opus", WorkerModel: "sonnet", ScanDepth: 3},
 		pending: map[string][]core.PendingQuestion{limiter.ID: {{ToolUseID: "toolu_q1", Questions: []agent.Question{{
 			Question: "Which store should back the upload rate limiter?", Header: "Limiter",
 			Options: []agent.QuestionOption{

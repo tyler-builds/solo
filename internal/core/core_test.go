@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -37,7 +38,7 @@ type env struct {
 	repo    string
 }
 
-func newEnv(t *testing.T, maxConcurrent int) *env {
+func newEnv(t *testing.T) *env {
 	t.Helper()
 	root := t.TempDir()
 	repo := filepath.Join(root, "proj")
@@ -50,7 +51,7 @@ func newEnv(t *testing.T, maxConcurrent int) *env {
 	}
 	e := &env{dataDir: t.TempDir(), root: root, repo: repo}
 	e.c = e.open(t)
-	if err := e.c.UpdateSettings(func(s *Settings) { s.Folders = []string{root}; s.MaxConcurrent = maxConcurrent }); err != nil {
+	if err := e.c.UpdateSettings(func(s *Settings) { s.Folders = []string{root} }); err != nil {
 		t.Fatal(err)
 	}
 	return e
@@ -105,7 +106,7 @@ func kinds(items []Item) string {
 }
 
 func TestWorkerLifecycleAndMerge(t *testing.T) {
-	e := newEnv(t, 4)
+	e := newEnv(t)
 	ctx := context.Background()
 	if got := e.c.RepoPaths(); len(got) != 1 || got[0] != e.repo {
 		t.Fatalf("repos %v", got)
@@ -158,34 +159,32 @@ func TestWorkerLifecycleAndMerge(t *testing.T) {
 	}
 }
 
-func TestQueueRespectsMaxConcurrent(t *testing.T) {
-	e := newEnv(t, 1)
+func TestWorkersAllStartAtOnce(t *testing.T) {
+	e := newEnv(t)
 	ctx := context.Background()
-	a, _ := e.c.CreateWorker(ctx, WorkerSpec{Repo: "proj", Title: "A", Prompt: "slow"})
-	b, _ := e.c.CreateWorker(ctx, WorkerSpec{Repo: "proj", Title: "B", Prompt: "hello"})
-	waitStatusAllowTurn(t, e.c, a.ID, StatusRunning)
-	for v, _ := e.c.Thread(a.ID); !v.InTurn; v, _ = e.c.Thread(a.ID) {
-		time.Sleep(10 * time.Millisecond)
+	var ids []string
+	for i := 0; i < 6; i++ {
+		v, err := e.c.CreateWorker(ctx, WorkerSpec{Repo: "proj", Title: fmt.Sprintf("W%d", i), Prompt: "slow"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, v.ID)
 	}
-	time.Sleep(200 * time.Millisecond)
-	if v, _ := e.c.Thread(b.ID); v.Status != StatusQueued {
-		t.Fatalf("B is %s while A runs, want queued", v.Status)
+	for _, id := range ids {
+		waitStatusAllowTurn(t, e.c, id, StatusRunning)
 	}
-	// A turn in progress shows as running.
-	if v, _ := e.c.Thread(a.ID); !v.InTurn || !v.CanInterrupt {
-		t.Fatalf("A %+v", v)
+	for _, id := range ids {
+		if err := e.c.Interrupt(ctx, id); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if err := e.c.Interrupt(ctx, a.ID); err != nil {
-		t.Fatal(err)
-	}
-	waitStatus(t, e.c, a.ID, StatusInterrupted)
-	if v := waitStatus(t, e.c, b.ID, StatusIdle); !strings.HasPrefix(v.Summary, "echo: hello") {
-		t.Fatalf("B summary %q", v.Summary)
+	for _, id := range ids {
+		waitStatus(t, e.c, id, StatusInterrupted)
 	}
 }
 
 func TestQuestionWaitsForAnswer(t *testing.T) {
-	e := newEnv(t, 2)
+	e := newEnv(t)
 	ctx := context.Background()
 	v, _ := e.c.CreateWorker(ctx, WorkerSpec{Repo: "proj", Prompt: "ask"})
 	v = waitStatusAllowTurn(t, e.c, v.ID, StatusWaiting)
@@ -231,7 +230,7 @@ func waitStatusAllowTurn(t *testing.T, c *Core, id, status string) ThreadView {
 }
 
 func TestToolHandler(t *testing.T) {
-	e := newEnv(t, 2)
+	e := newEnv(t)
 	e.c.SetToolHandler(func(ctx context.Context, threadID, name string, args []byte) (string, bool) {
 		return "handled " + name + " " + string(args), false
 	})
@@ -242,7 +241,7 @@ func TestToolHandler(t *testing.T) {
 }
 
 func TestFailedTurn(t *testing.T) {
-	e := newEnv(t, 2)
+	e := newEnv(t)
 	v, _ := e.c.CreateWorker(context.Background(), WorkerSpec{Repo: "proj", Prompt: "fail"})
 	if v := waitStatus(t, e.c, v.ID, StatusFailed); v.Error != "scripted failure" {
 		t.Fatalf("error %q", v.Error)
@@ -250,7 +249,7 @@ func TestFailedTurn(t *testing.T) {
 }
 
 func TestDiscard(t *testing.T) {
-	e := newEnv(t, 2)
+	e := newEnv(t)
 	ctx := context.Background()
 	v, _ := e.c.CreateWorker(ctx, WorkerSpec{Repo: "proj", Prompt: "write x.txt y"})
 	v = waitStatus(t, e.c, v.ID, StatusIdle)
@@ -269,7 +268,7 @@ func TestDiscard(t *testing.T) {
 }
 
 func TestRestartResumesThreads(t *testing.T) {
-	e := newEnv(t, 2)
+	e := newEnv(t)
 	ctx := context.Background()
 	v, _ := e.c.CreateWorker(ctx, WorkerSpec{Repo: "proj", Title: "Keep", Prompt: "hello"})
 	waitStatus(t, e.c, v.ID, StatusIdle)
@@ -289,7 +288,7 @@ func TestRestartResumesThreads(t *testing.T) {
 }
 
 func TestResolveRepo(t *testing.T) {
-	e := newEnv(t, 1)
+	e := newEnv(t)
 	if p, err := e.c.ResolveRepo("proj"); err != nil || p != e.repo {
 		t.Fatalf("%q %v", p, err)
 	}

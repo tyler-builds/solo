@@ -220,7 +220,7 @@ func (a *App) composerFor(ctx *ui.Context, th core.ThreadView) ui.Element {
 		return caption(ctx, "This thread is "+strings.ToLower(statusLabel(th))+".")
 	}
 	if th.Status == core.StatusQueued {
-		return caption(ctx, "This thread starts when a worker slot is free.")
+		return caption(ctx, "This thread is starting.")
 	}
 	id := th.ID
 	return a.composer(ctx, th, "draft-"+id, "Message this worker…", func(text string) error {

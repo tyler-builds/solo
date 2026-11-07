@@ -16,7 +16,7 @@ import (
 
 // Thread statuses.
 const (
-	StatusQueued      = "queued"      // waiting for a free slot (Settings.MaxConcurrent)
+	StatusQueued      = "queued"      // created; about to start
 	StatusStarting    = "starting"    // creating its worktree and session
 	StatusRunning     = "running"     // a turn is in progress
 	StatusWaiting     = "waiting"     // asked the user a question
@@ -27,7 +27,7 @@ const (
 	StatusDiscarded   = "discarded"   // its worktree and branch were deleted
 )
 
-// Active reports whether a thread with the status takes up a worker slot.
+// Active reports whether a thread with the status is starting or working.
 func Active(status string) bool {
 	return status == StatusStarting || status == StatusRunning || status == StatusWaiting
 }
@@ -143,7 +143,7 @@ type WorkerSpec struct {
 	Base   string // branch to start from; empty: the repository's current branch
 }
 
-// CreateWorker creates a worker thread. It starts at once if a slot is free, or waits as queued.
+// CreateWorker creates a worker thread and starts it.
 func (c *Core) CreateWorker(ctx context.Context, spec WorkerSpec) (ThreadView, error) {
 	repo, err := c.ResolveRepo(spec.Repo)
 	if err != nil {
@@ -197,35 +197,20 @@ func (c *Core) CreateWorker(ctx context.Context, spec WorkerSpec) (ThreadView, e
 	return v, nil
 }
 
-// schedule starts queued workers while slots are free, oldest first.
+// schedule starts every queued worker. There is no cap on how many run at once.
 func (c *Core) schedule() {
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()
 		return
 	}
-	active := 0
-	var queued []*thread
-	for _, t := range c.threads {
-		if t.row.Kind != store.KindWorker {
-			continue
-		}
-		if Active(t.row.Status) {
-			active++
-		} else if t.row.Status == StatusQueued {
-			queued = append(queued, t)
-		}
-	}
-	slices.SortFunc(queued, func(a, b *thread) int { return a.row.CreatedAt.Compare(b.row.CreatedAt) })
 	var start []*thread
 	var changes []Change
-	for _, t := range queued {
-		if active >= c.settings.MaxConcurrent {
-			break
+	for _, t := range c.threads {
+		if t.row.Kind == store.KindWorker && t.row.Status == StatusQueued {
+			changes = append(changes, c.setStatusLocked(t, StatusStarting, ""))
+			start = append(start, t)
 		}
-		active++
-		changes = append(changes, c.setStatusLocked(t, StatusStarting, ""))
-		start = append(start, t)
 	}
 	c.mu.Unlock()
 	c.notify(changes...)

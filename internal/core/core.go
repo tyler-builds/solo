@@ -31,16 +31,14 @@ type Settings struct {
 	ScanDepth         int      `json:"scanDepth"`
 	OrchestratorModel string   `json:"orchestratorModel"`
 	WorkerModel       string   `json:"workerModel"`
-	// MaxConcurrent caps how many workers run at once; more wait as queued.
-	MaxConcurrent int    `json:"maxConcurrent"`
-	ClaudePath    string `json:"claudePath,omitempty"`
+	ClaudePath        string   `json:"claudePath,omitempty"`
 	// ShowCosts shows what threads have cost in the UI.
 	ShowCosts bool `json:"showCosts,omitempty"`
 }
 
 // DefaultSettings are used until the user changes them.
 func DefaultSettings() Settings {
-	return Settings{ScanDepth: 3, OrchestratorModel: "opus", WorkerModel: "sonnet", MaxConcurrent: 4}
+	return Settings{ScanDepth: 3, OrchestratorModel: "opus", WorkerModel: "sonnet"}
 }
 
 // Config configures a Core.
@@ -239,9 +237,6 @@ func (c *Core) UpdateSettings(f func(*Settings)) error {
 	s := c.settings
 	s.Folders = slices.Clone(s.Folders)
 	f(&s)
-	if s.MaxConcurrent < 1 {
-		s.MaxConcurrent = 1
-	}
 	if s.ScanDepth < 1 {
 		s.ScanDepth = 1
 	}

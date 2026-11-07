@@ -22,9 +22,9 @@ var railGroups = []struct {
 	{"Questions", []string{core.StatusWaiting}},
 	{"Failed", []string{core.StatusFailed}},
 	{"Ready to merge", []string{core.StatusIdle}},
-	{"Working", []string{core.StatusRunning, core.StatusStarting}},
-	{"Queued", []string{core.StatusQueued}},
 	{"Stopped", []string{core.StatusInterrupted}},
+	// Last, and pinned to the bottom of the rail: work in progress needs nothing from the user.
+	{"Working", []string{core.StatusRunning, core.StatusStarting, core.StatusQueued}},
 }
 
 // rail lists the worker threads, grouped by state and filtered by the sidebar's repository.
@@ -78,7 +78,8 @@ func (a *App) rail(ctx *ui.Context) ui.Element {
 			Child(ui.Icon(icons.Layers).Size(22).Color(t.TextSubtle)).
 			Child(caption(ctx, "No open threads. Ask the orchestrator for something and its workers show up here.").Align(ui.Center)))
 	}
-	for _, g := range railGroups {
+	var working ui.Element
+	for gi, g := range railGroups {
 		var group []core.ThreadView
 		for _, th := range open {
 			if slices.Contains(g.statuses, th.Status) {
@@ -89,6 +90,17 @@ func (a *App) rail(ctx *ui.Context) ui.Element {
 			continue
 		}
 		slices.SortStableFunc(group, func(x, y core.ThreadView) int { return y.UpdatedAt.Compare(x.UpdatedAt) })
+		if gi == len(railGroups)-1 {
+			col := ui.Div().Column().Gap(space1).PaddingX(space2).PaddingBottom(space2).Opacity(0.72).
+				Hover(ui.Style{Opacity: 1}).Transition(150 * time.Millisecond).
+				Child(groupHeader(ctx, g.title, len(group), g.statuses[0]))
+			for _, th := range group {
+				col = col.Child(a.threadRow(ctx, th))
+			}
+			working = ui.Div().Column().Shrink(0).MaxHeight(ui.Percent(45)).ScrollY().
+				BorderEdges(ui.Edges{Top: 1}, t.Border).Child(col)
+			continue
+		}
 		list = list.Child(groupHeader(ctx, g.title, len(group), g.statuses[0]))
 		for _, th := range group {
 			list = list.Child(a.threadRow(ctx, th))
@@ -113,9 +125,13 @@ func (a *App) rail(ctx *ui.Context) ui.Element {
 			return col
 		}))
 	}
-	return ui.Div().Column().Size(ui.Full, ui.Full).Background(t.Panel).
+	rail := ui.Div().Column().Size(ui.Full, ui.Full).Background(t.Panel).
 		Child(head).
 		Child(ui.Div().Column().Grow(1).MinHeight(ui.Px(0)).ScrollY().Child(list))
+	if working != nil {
+		rail = rail.Child(working)
+	}
+	return rail
 }
 
 // needsUser reports whether a thread waits on the user: a question, a failure, or work to review.
@@ -189,7 +205,7 @@ func branchLabel(th core.ThreadView) string {
 func (a *App) activityLine(th core.ThreadView) string {
 	switch th.Status {
 	case core.StatusQueued:
-		return "Waiting for a free worker slot"
+		return "Starting"
 	case core.StatusStarting:
 		return "Creating its worktree"
 	case core.StatusWaiting:

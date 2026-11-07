@@ -56,7 +56,7 @@ var toolSpecs = []agent.ToolSpec{
 	{
 		Name: "spawn_thread",
 		Description: "Start a worker thread: a Claude Code agent in its own git worktree and branch of a repository, with full permissions there. " +
-			"It starts at once, or queues if the maximum number of workers is running. Returns its ID.",
+			"It starts at once; any number can run in parallel. Returns its ID.",
 		InputSchema: schema(`{"type":"object","properties":{
 			"repo":{"type":"string","description":"Repository name or path, from list_repos."},
 			"title":{"type":"string","description":"Short title, a few words, shown to the user."},
@@ -278,7 +278,7 @@ func statusText(t core.ThreadView) string {
 		s += " (waiting on a question)"
 	}
 	if t.Status == core.StatusQueued {
-		s += " (waiting for a free worker slot)"
+		s += " (about to start)"
 	}
 	return s + ", updated " + ago(t.UpdatedAt)
 }
