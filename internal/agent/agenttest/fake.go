@@ -19,6 +19,7 @@
 //	slow                       runs until interrupted (status "interrupted")
 //	crash                      starts a turn and exits the process
 //	fail                       ends the turn with status "failed"
+//	lose                       fails as Claude does when a resumed conversation is missing
 //	anything else              completes with result "echo: <text> resume=<bool>"
 //
 // It does not import package agent, so agent's own tests can use it.
@@ -246,6 +247,8 @@ func turn(s *fakeSession, sid, uuid, text string, event func(string, map[string]
 		}
 	case "fail":
 		status, errText = "failed", "scripted failure"
+	case "lose":
+		status, errText = "failed", "No conversation found with session ID: "+sid
 	default:
 		result = fmt.Sprintf("echo: %s resume=%v", text, s.resumed)
 	}

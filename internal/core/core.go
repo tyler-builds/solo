@@ -87,6 +87,7 @@ type Core struct {
 	nextSub   int
 	tools     ToolHandler
 	orchSpec  func() agent.OpenParams
+	recap     func(ThreadView) string
 	rateLimit agent.Event
 	closed    bool
 }

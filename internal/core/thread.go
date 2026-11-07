@@ -45,8 +45,11 @@ type thread struct {
 	model   string // the model Claude reports
 	retry   string // the latest API retry, while it lasts
 	asks    map[string]chan agent.AskResult
-	tasks   map[string]int64 // task id → item id
-	tools   map[string]int64 // tool_use id → item id
+	askQs   map[string][]agent.Question
+	// recovered is when the thread last moved to a new session after losing its conversation.
+	recovered time.Time
+	tasks     map[string]int64 // task id → item id
+	tools     map[string]int64 // tool_use id → item id
 }
 
 type liveKey struct {
@@ -273,26 +276,30 @@ func (c *Core) startWorker(id string) {
 	}
 }
 
-// openParams builds the session parameters for a thread.
-func (c *Core) openParams(t *thread) agent.OpenParams {
-	if t.row.Kind == store.KindOrchestrator && c.orchSpec != nil {
-		p := c.orchSpec()
-		p.SessionID, p.Resume = t.row.SessionID, t.row.HasTranscript
-		if t.row.Model != "" {
-			p.Model = t.row.Model
+// openParams builds the session parameters for a thread. Call without c.mu held: the orchestrator's
+// spec reads core state.
+func (c *Core) openParams(row store.Thread) agent.OpenParams {
+	c.mu.Lock()
+	spec, claudePath := c.orchSpec, c.settings.ClaudePath
+	c.mu.Unlock()
+	if row.Kind == store.KindOrchestrator && spec != nil {
+		p := spec()
+		p.SessionID, p.Resume = row.SessionID, row.HasTranscript
+		if row.Model != "" {
+			p.Model = row.Model
 		}
 		return p
 	}
 	return agent.OpenParams{
-		SessionID:      t.row.SessionID,
-		Resume:         t.row.HasTranscript,
-		Cwd:            t.row.WorktreePath,
-		Model:          t.row.Model,
-		Title:          t.row.Title,
-		SystemAppend:   workerInstructions(t.row),
+		SessionID:      row.SessionID,
+		Resume:         row.HasTranscript,
+		Cwd:            row.WorktreePath,
+		Model:          row.Model,
+		Title:          row.Title,
+		SystemAppend:   workerInstructions(row),
 		PermissionMode: agent.PermissionBypass,
 		ToolPolicy:     agent.ToolPolicyAllow,
-		ClaudePath:     agent.FindClaude(c.settings.ClaudePath),
+		ClaudePath:     agent.FindClaude(claudePath),
 	}
 }
 
@@ -334,8 +341,9 @@ func (c *Core) send(ctx context.Context, threadID, text string, synthetic bool) 
 		return fmt.Errorf("thread %q has not started yet", t.row.Title)
 	}
 	needOpen := !t.opened
-	params := c.openParams(t)
+	row := t.row
 	c.mu.Unlock()
+	params := c.openParams(row)
 
 	if needOpen {
 		if err := c.agent.Open(ctx, params); err != nil {
@@ -405,6 +413,7 @@ func (c *Core) resolveAsk(threadID, toolUseID string, res agent.AskResult) error
 		return errors.New("that question is no longer waiting for an answer")
 	}
 	delete(t.asks, toolUseID)
+	delete(t.askQs, toolUseID)
 	ch <- res
 	return nil
 }
@@ -506,6 +515,7 @@ func (c *Core) closeSession(ctx context.Context, threadID string) {
 	for id, ch := range t.asks {
 		ch <- agent.AskResult{Cancelled: true}
 		delete(t.asks, id)
+		delete(t.askQs, id)
 	}
 	c.mu.Unlock()
 	if err := c.agent.Close(ctx, sid); err != nil {

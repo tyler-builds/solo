@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/tyler-builds/solo/internal/agent"
 	"github.com/tyler-builds/solo/internal/store"
@@ -192,6 +193,11 @@ func (c *Core) onEvent(e agent.Event) {
 			threadChanged = true
 			break
 		}
+		// Recover at most once per few minutes, so a session that keeps failing this way can't loop.
+		if e.Status == agent.TurnFailed && isLostSession(e.Error) && time.Since(t.recovered) > 5*time.Minute {
+			t.recovered = time.Now()
+			go c.recoverLostSession(id, turnUUID)
+		}
 		status, errText := StatusIdle, ""
 		switch e.Status {
 		case agent.TurnFailed:
@@ -306,6 +312,10 @@ func (c *Core) onAsk(ctx context.Context, p agent.AskParams) (agent.AskResult, e
 		t.asks = map[string]chan agent.AskResult{}
 	}
 	t.asks[key] = ch
+	if t.askQs == nil {
+		t.askQs = map[string][]agent.Question{}
+	}
+	t.askQs[key] = p.Questions
 	statusCh := c.setStatusLocked(t, StatusWaiting, "")
 	c.mu.Unlock()
 	c.notify(Change{Kind: ChangeItems, ThreadID: id}, statusCh)
@@ -319,6 +329,7 @@ func (c *Core) onAsk(ctx context.Context, p agent.AskParams) (agent.AskResult, e
 
 	c.mu.Lock()
 	delete(t.asks, key)
+	delete(t.askQs, key)
 	c.updateItemLocked(itemID, func(raw json.RawMessage) any {
 		var d QuestionData
 		_ = json.Unmarshal(raw, &d)
