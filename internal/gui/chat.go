@@ -160,12 +160,31 @@ func (a *App) transcript(ctx *ui.Context, v core.ThreadView, items []core.Item, 
 		rows = append(rows, row{key: "busy", busy: true})
 	}
 	h := ui.Local(ctx, scope+"-list", ui.NewListHandle()).Peek()
-	return ui.ListOf(rows, func(r row) string { return r.key }, func(_ int, r row) ui.Element {
-		return ui.Div().Column().Align(ui.Center).PaddingX(space6).
-			Child(ui.Div().Column().Width(ui.Full).MaxWidth(ui.Px(chatMaxWidth)).PaddingY(space1 + 2).
-				Child(a.rowView(ctx, v, r)))
+	// Open on the latest message; after that the list follows new ones while it is at the end.
+	if started := ui.Local(ctx, scope+"-started", false); !started.Peek() && len(rows) > 0 {
+		started.Set(true)
+		h.ScrollToEnd()
+	}
+	list := ui.ListOf(rows, func(r row) string { return r.key }, func(_ int, r row) ui.Element {
+		key := r.key
+		// Rows are built only near the viewport; which ones are built tells the pill below what has
+		// scrolled away.
+		return ui.Component(func(rctx *ui.Context) ui.Element {
+			a.markBuilt(rctx, scope, key, true)
+			rctx.OnDispose(func() { a.markBuilt(rctx, scope, key, false) })
+			return ui.Div().Column().Align(ui.Center).PaddingX(space6).
+				Child(ui.Div().Column().Width(ui.Full).MaxWidth(ui.Px(chatMaxWidth)).PaddingY(space1 + 2).
+					Child(a.rowView(rctx, v, r)))
+		})
 	}).Bottom().Handle(h).SelectionContainer().Key(scope + "-transcript").Label("Conversation").
 		Style(ui.Style{Grow: 1, Padding: ui.Edges{Top: space4, Bottom: space2}})
+	if scope != "orch" {
+		return list
+	}
+	return ui.Div().Column().Grow(1).MinHeight(ui.Px(0)).
+		Child(ui.Component(func(ctx *ui.Context) ui.Element { return a.offscreenPill(ctx, rows, h, true) })).
+		Child(list).
+		Child(ui.Component(func(ctx *ui.Context) ui.Element { return a.offscreenPill(ctx, rows, h, false) }))
 }
 
 // visible reports whether an item is shown in the transcript.
@@ -903,12 +922,95 @@ func (a *App) cardHeader(ctx *ui.Context, icon *icons.Icon, c ui.Color, typ, thr
 	// The repository and thread sit at the right: repo › title.
 	return row.
 		Child(ui.Div().Grow(1)).
-		Child(ui.Div().Row().Align(ui.Center).Gap(space1+2).Shrink(1).MinWidth(ui.Px(0)).
+		Child(ui.Div().Row().Align(ui.Center).Gap(space1 + 2).Shrink(1).MinWidth(ui.Px(0)).
 			Child(ui.Text(filepath.Base(th.RepoPath)).FontSize(12).TextColor(t.TextMuted).NoWrap()).
 			Child(ui.Icon(icons.ChevronRight).Size(12).Color(t.TextSubtle)).
 			Child(ui.Div().MinWidth(ui.Px(0)).Cursor(ui.CursorPointer).
-				Role(access.RoleButton).Label("Open "+th.Title).TabIndex(0).Tooltip("Open this thread").
+				Role(access.RoleButton).Label("Open " + th.Title).TabIndex(0).Tooltip("Open this thread").
 				Hover(ui.Style{TextColor: t.Link}).
 				OnClick(func() { a.openThread(threadID, "conversation") }).
 				Child(ui.Text(th.Title).FontSize(12).Medium().Truncate())))
+}
+
+// markBuilt records that a transcript row is built (near the viewport) or not. UI thread only.
+func (a *App) markBuilt(ctx *ui.Context, scope, key string, on bool) {
+	if a.built == nil {
+		a.built = map[string]bool{}
+	}
+	k := scope + "/" + key
+	if a.built[k] == on {
+		return
+	}
+	if on {
+		a.built[k] = true
+	} else {
+		delete(a.built, k)
+	}
+	// Not during this render: tell the pill on the next frame.
+	ctx.Post(func() { a.builtVer.Update(func(n int) int { return n + 1 }) })
+}
+
+// isAction reports whether a transcript row waits on the user: a merge proposal not yet acted on, or
+// a question not yet answered.
+func (a *App) isAction(r row) bool {
+	if r.item == nil {
+		return false
+	}
+	switch r.item.Kind {
+	case core.ItemProposal:
+		th, ok := a.thread(r.item.Ref)
+		return ok && th.CanMerge
+	case core.ItemQuestion:
+		var d core.QuestionData
+		r.item.Decode(&d)
+		return !d.Cancelled && len(d.Answers) == 0
+	}
+	return false
+}
+
+// offscreenPill floats over the top (top=true) or bottom edge of the orchestrator's conversation when
+// cards that need the user have scrolled out of view that way; a click scrolls to the nearest one. It
+// hangs from a zero-height anchor as an overlay, so only the pill itself takes the pointer.
+func (a *App) offscreenPill(ctx *ui.Context, rows []row, h *ui.ListHandle, top bool) ui.Element {
+	t := ctx.Theme()
+	a.builtVer.Get()
+	anchor := ui.Div().Width(ui.Full).Height(ui.Px(0)).Shrink(0)
+	first, last := -1, -1
+	for i, r := range rows {
+		if a.built["orch/"+r.key] {
+			if first < 0 {
+				first = i
+			}
+			last = i
+		}
+	}
+	if first < 0 {
+		return anchor
+	}
+	var hidden []int
+	for i, r := range rows {
+		if a.isAction(r) && ((top && i < first) || (!top && i > last)) {
+			hidden = append(hidden, i)
+		}
+	}
+	if len(hidden) == 0 {
+		return anchor
+	}
+	target, icon, place := hidden[len(hidden)-1], icons.ArrowUp, ui.BelowCenter
+	if !top {
+		target, icon, place = hidden[0], icons.ArrowDown, ui.AboveCenter
+	}
+	label := "1 needs your action"
+	if len(hidden) > 1 {
+		label = fmt.Sprintf("%d need your action", len(hidden))
+	}
+	pill := ui.Div().Row().Align(ui.Center).Gap(6).PaddingX(space3).Height(ui.Px(30)).Radius(15).
+		Background(t.Surface).Border(1, t.Warning.Alpha(0.55)).Shadow(ui.ShadowMd).Cursor(ui.CursorPointer).
+		Hover(ui.Style{Background: t.SurfaceHover}).
+		Role(access.RoleButton).Label(label).TabIndex(0).Key("offscreen-pill").
+		Overlay(place).OverlayGap(space3).
+		OnClick(func() { h.ScrollToItem(target) }).
+		Child(ui.Icon(icon).Size(14).Color(t.Warning)).
+		Child(ui.Text(label).FontSize(12).Medium())
+	return anchor.Child(pill)
 }

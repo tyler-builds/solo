@@ -13,7 +13,7 @@ Claude **worker threads**, each working in its own git worktree.
 | Repos | Settings hold a list of folders; every git repo found under them is known to the orchestrator. |
 | Workers | One git worktree + branch per thread, `bypassPermissions`, no sandbox. |
 | Landing | Orchestrator reports diff and test results; **you** click Merge. |
-| Layout | Title bar (go-to-thread, settings) · orchestrator chat · thread rail; opening a thread grows the rail into its panel. No repository sidebar: the rail filters by repository when threads span several. |
+| Layout | Title bar (go-to-thread, settings) · thread rail on the left · orchestrator chat · a thread panel that slides in from the right (50/50, resizable). The rail filters by repository when threads span several. |
 | Persistence | SQLite (`modernc.org/sqlite`, no cgo), owned by Go. Claude's own transcripts are used only for `resume`. |
 
 ## Process model

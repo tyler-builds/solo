@@ -44,6 +44,8 @@ type App struct {
 	settings  *ui.Signal[bool]
 	confirm   *ui.Signal[*confirmation]
 	palette   *ui.Signal[bool]
+	built     map[string]bool // transcript rows that are built, by scope/key (UI thread only)
+	builtVer  *ui.Signal[int]
 
 	items map[string]*ui.Signal[[]core.Item] // UI thread only
 
@@ -82,6 +84,7 @@ func New(b Backend) *App {
 		settings:  ui.NewSignal(false),
 		confirm:   ui.NewSignal[*confirmation](nil),
 		palette:   ui.NewSignal(false),
+		builtVer:  ui.NewSignal(0),
 		items:     map[string]*ui.Signal[[]core.Item]{},
 		dirty:     map[string]bool{},
 		watched:   map[string]bool{},
@@ -238,7 +241,7 @@ func (a *App) Root(ctx *ui.Context) ui.Element {
 	}
 	return root.
 		Child(a.titleBar(ctx)).
-		Child(ui.Div().Column().Grow(1).MinHeight(ui.Px(0)).PaddingLeft(space2).ClipContent().
+		Child(ui.Div().Column().Grow(1).MinHeight(ui.Px(0)).ClipContent().
 			Child(ui.Component(a.center))).
 		Child(ui.Component(a.settingsDialog)).
 		Child(ui.Component(a.confirmDialog)).
@@ -295,58 +298,52 @@ func inset(ctx *ui.Context, content ui.Element) *ui.DivElement {
 		Child(content)
 }
 
-// center holds the orchestrator and, on its right, the thread rail. Opening a thread grows the rail
-// into the thread's panel (half the space by default, and the user can drag the divider); closing it
-// slides the panel back into the rail.
+// center holds the thread rail on the left, the orchestrator, and, when a thread is open, its panel on
+// the right: it slides in from the right edge to half the space (the user can drag the divider) and
+// slides back out when closed.
 func (a *App) center(ctx *ui.Context) ui.Element {
 	t := ctx.Theme()
 	orch := ui.Div().Column().Size(ui.Full, ui.Full).PaddingBottom(space2).
 		Child(inset(ctx, ui.Component(a.orchestratorView)))
 	anim := a.panelAnim.Get()
-	open := a.openID.Get() != ""
-
-	var right ui.Element
-	if open {
-		right = ui.Div().Row().Size(ui.Full, ui.Full).PaddingBottom(space2).
+	var main ui.Element = orch
+	if anim > 0 && a.openID.Get() != "" {
+		panel := ui.Div().Column().Size(ui.Full, ui.Full).PaddingBottom(space2).PaddingRight(space2).
 			OnKeyDown(func(e *ui.KeyEvent) {
 				if e.Key == input.KeyEscape {
 					e.StopPropagation()
 					a.closeThread()
 				}
 			}).
-			Child(inset(ctx, ui.Component(a.threadPanel))).
-			Child(ui.Component(a.dotStrip))
-	} else {
-		right = ui.Component(a.rail)
-	}
-	pane := ui.Pane(right).Key("right").Label("Threads")
-	switch {
-	case anim >= 1:
-		pane = pane.SizeSignal(a.panelSize).Min(ui.Px(400)).Max(ui.Percent(75))
-	case anim <= 0:
-		pane = pane.Size(ui.Px(railWidth)).Min(ui.Px(railWidth)).Max(ui.Px(railWidth))
-	default:
-		// Between the rail's width and the panel's, in pixels of the space the split has.
-		w, _ := ctx.WindowSize()
-		target := (w - space2) * a.panelGoal / 100
-		px := railWidth + (target-railWidth)*anim
-		pane = pane.Size(ui.Px(px)).Min(ui.Px(px)).Max(ui.Px(px))
-	}
-	thin := ui.Style{Width: ui.Px(space2), Background: t.Panel}
-	return ui.Split(
-		ui.Pane(orch).Min(ui.Px(320)).Key("orch").Label("Orchestrator"),
-		pane,
-	).Grip(map[bool]ui.SplitGrip{true: ui.SplitGripOnHover, false: ui.SplitGripHidden}[anim >= 1]).
-		Styles(ui.SplitStyle{
-			Divider:       thin,
-			DividerHover:  ui.Style{Background: t.Panel},
-			DividerActive: ui.Style{Background: t.Panel},
-			Grip:          ui.Style{Background: t.BorderStrong},
-		}).OnChange(func() {
-		if l := a.panelSize.Peek(); l.Unit == ui.Percent(0).Unit {
-			a.panelGoal = l.Value
+			Child(inset(ctx, ui.Component(a.threadPanel)))
+		pane := ui.Pane(panel).Key("thread").Label("Thread")
+		if anim >= 1 {
+			pane = pane.SizeSignal(a.panelSize).Min(ui.Px(400)).Max(ui.Percent(75))
+		} else {
+			// While it slides, the panel follows the animation, below its usual minimum.
+			pane = pane.Size(ui.Percent(a.panelGoal * anim)).Min(ui.Px(0)).Max(ui.Percent(75))
 		}
-	})
+		thin := ui.Style{Width: ui.Px(space2), Background: t.Panel}
+		main = ui.Split(
+			ui.Pane(orch).Min(ui.Px(360)).Key("orch").Label("Orchestrator"),
+			pane,
+		).Grip(map[bool]ui.SplitGrip{true: ui.SplitGripOnHover, false: ui.SplitGripHidden}[anim >= 1]).
+			Styles(ui.SplitStyle{
+				Divider:       thin,
+				DividerHover:  ui.Style{Background: t.Panel},
+				DividerActive: ui.Style{Background: t.Panel},
+				Grip:          ui.Style{Background: t.BorderStrong},
+			}).OnChange(func() {
+			if l := a.panelSize.Peek(); l.Unit == ui.Percent(0).Unit {
+				a.panelGoal = l.Value
+			}
+		})
+	} else {
+		main = ui.Div().Column().Size(ui.Full, ui.Full).PaddingRight(space2).Child(orch)
+	}
+	return ui.Div().Row().Size(ui.Full, ui.Full).
+		Child(ui.Div().Width(ui.Px(railWidth)).Height(ui.Full).Shrink(0).Child(ui.Component(a.rail))).
+		Child(ui.Div().Column().Grow(1).Basis(ui.Px(0)).MinWidth(ui.Px(0)).Height(ui.Full).Child(main))
 }
 
 // openThread shows a thread beside the orchestrator, on a tab ("conversation" or "changes").
@@ -509,32 +506,4 @@ func (a *App) jumpTo(n int) {
 	if list := a.openThreads(false); n < len(list) {
 		a.openThread(list[n].ID, "conversation")
 	}
-}
-
-// dotStrip keeps the threads in reach while one is open: a mark per thread to switch to it, and a
-// button back to the list.
-func (a *App) dotStrip(ctx *ui.Context) ui.Element {
-	t := ctx.Theme()
-	col := ui.Div().Column().Align(ui.Center).Gap(space1).Width(ui.Px(44)).Shrink(0).PaddingTop(space1).
-		Child(ui.IconButton(icons.PanelRightClose).Ghost().Small().Label("Back to the thread list").
-			Tooltip("Back to the thread list (Esc)").OnClick(a.closeThread)).
-		Child(ui.Div().Width(ui.Px(20)).Height(ui.Px(1)).Background(t.Border).MarginY(space1))
-	open := a.openID.Get()
-	for i, th := range a.openThreads(true) {
-		id := th.ID
-		tip := th.Title + " · " + statusLabel(th)
-		if i < 9 {
-			tip += fmt.Sprintf(" (Ctrl+%d)", i+1)
-		}
-		b := ui.Div().Size(ui.Px(32), ui.Px(32)).Center().Radius(radiusM).Cursor(ui.CursorPointer).
-			Hover(ui.Style{Background: t.SurfaceHover}).
-			Role(access.RoleButton).Label(th.Title).TabIndex(0).Tooltip(tip).Key("dot-" + id).
-			OnClick(func() { a.openThread(id, "conversation") }).
-			Child(statusMark(ctx, th.Status))
-		if id == open {
-			b = b.Background(t.SurfaceActive).BorderEdges(ui.Edges{Left: 2}, ui.Hex(pal(t).brand))
-		}
-		col = col.Child(b)
-	}
-	return col
 }

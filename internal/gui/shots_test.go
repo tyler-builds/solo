@@ -1,6 +1,7 @@
 package gui
 
 import (
+	"fmt"
 	"image/png"
 	"os"
 	"path/filepath"
@@ -40,6 +41,14 @@ func TestShots(t *testing.T) {
 		{"narrow-thread", func(a *App, f *fakeBackend) { a.openThread("c3d4e5f6-forms", "conversation") }},
 		{"settings", func(a *App, f *fakeBackend) { diffSplit.Set(false); a.settings.Set(true) }},
 		{"palette", func(a *App, f *fakeBackend) { a.palette.Set(true) }},
+		{"pill", func(a *App, f *fakeBackend) {
+			// A long exchange after the merge card pushes it out of view.
+			for i := 0; i < 8; i++ {
+				f.add(core.OrchestratorID, core.ItemUser, core.UserData{Text: fmt.Sprintf("How is the OAuth fix going? (%d)", i+1)})
+				f.add(core.OrchestratorID, core.ItemAssistant, core.TextData{Text: "Still running the auth tests. The refresh path now retries once on a 401; the remaining work is the test for an expired refresh token, which the worker is writing now. I'll tell you when it finishes."})
+			}
+			a.items = map[string]*ui.Signal[[]core.Item]{}
+		}},
 		{"empty", nil},
 	}
 	for _, theme := range []struct {
