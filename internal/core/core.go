@@ -166,6 +166,7 @@ type Core struct {
 	threads   map[string]*thread
 	bySession map[string]*thread
 	repos     []string
+	plain     []string // folders searched that aren't repositories (git.ScanAll)
 	subs      map[int]func(Change)
 	nextSub   int
 	tools     ToolHandler
@@ -252,7 +253,7 @@ func New(cfg Config) (*Core, error) {
 		OnToolCall: c.onToolCall,
 		OnAsk:      c.onAsk,
 	}, cfg.Log)
-	c.repos = git.Scan(c.settings.Folders, c.settings.ScanDepth, c.worktreesDir())
+	c.repos, c.plain = git.ScanAll(c.settings.Folders, c.settings.ScanDepth, c.worktreesDir())
 	for id, t := range c.threads {
 		if t.row.Kind == store.KindWorker && t.row.WorktreePath != "" && !Finished(t.row.Status) {
 			go c.countChanges(id)
@@ -357,9 +358,9 @@ func (c *Core) UpdateSettings(f func(*Settings)) error {
 // RescanRepos searches the configured folders for repositories again.
 func (c *Core) RescanRepos() []string {
 	s := c.Settings()
-	repos := git.Scan(s.Folders, s.ScanDepth, c.worktreesDir())
+	repos, plain := git.ScanAll(s.Folders, s.ScanDepth, c.worktreesDir())
 	c.mu.Lock()
-	c.repos = repos
+	c.repos, c.plain = repos, plain
 	c.mu.Unlock()
 	c.notify(Change{Kind: ChangeRepos})
 	return repos
@@ -370,6 +371,45 @@ func (c *Core) RepoPaths() []string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return slices.Clone(c.repos)
+}
+
+// PlainFolders returns the folders Solo searched that aren't git repositories, such as a project never
+// put in git. Threads can't work in one until InitRepo makes it a repository.
+func (c *Core) PlainFolders() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.plain)
+}
+
+// ResolvePlain finds a plain folder by path or name, as ResolveRepo finds a repository.
+func (c *Core) ResolvePlain(nameOrPath string) (string, bool) {
+	clean := filepath.Clean(git.ExpandHome(nameOrPath))
+	var match string
+	n := 0
+	for _, p := range c.PlainFolders() {
+		if p == clean {
+			return p, true
+		}
+		if filepath.Base(p) == nameOrPath {
+			match, n = p, n+1
+		}
+	}
+	return match, n == 1
+}
+
+// InitRepo puts a plain folder in git (git.Init) so threads can work in it, then searches again so it
+// shows up as a repository.
+func (c *Core) InitRepo(ctx context.Context, nameOrPath string) (string, error) {
+	dir, ok := c.ResolvePlain(nameOrPath)
+	if !ok {
+		return "", fmt.Errorf("%q isn't one of the folders Solo found outside git", nameOrPath)
+	}
+	if err := git.Init(ctx, dir); err != nil {
+		return "", err
+	}
+	c.log.Info("core: put a folder in git", "dir", dir)
+	c.RescanRepos()
+	return dir, nil
 }
 
 // Repos reads the state of every known repository.
@@ -398,6 +438,9 @@ func (c *Core) ResolveRepo(nameOrPath string) (string, error) {
 	case 0:
 		if filepath.IsAbs(clean) && git.IsRepo(clean) {
 			return clean, nil
+		}
+		if p, ok := c.ResolvePlain(nameOrPath); ok {
+			return "", fmt.Errorf("%s isn't a git repository yet; ask the user whether to put it in git (init_repo)", p)
 		}
 		return "", fmt.Errorf("no repository named %q; known repositories are listed by list_repos", nameOrPath)
 	default:

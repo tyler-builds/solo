@@ -208,3 +208,20 @@ func TestSettingsPicksFolder(t *testing.T) {
 		t.Fatalf("saved folders %v, want %q among them", got, want)
 	}
 }
+
+// A folder that isn't in git is listed in Settings with a button that puts it in git, after which it
+// is a repository.
+func TestSettingsPutsFolderInGit(t *testing.T) {
+	f := demoBackend()
+	a, u := newUI(t, f)
+	a.settings.Set(true)
+	u.Frame()
+	u.ByRole(access.RoleButton, "Put vfl in git").Click()
+	u.WaitFor("vfl to leave the list", func() bool { return !u.HasRole(access.RoleButton, "Put vfl in git") })
+	f.mu.Lock()
+	inited, repos := f.inited, f.repos
+	f.mu.Unlock()
+	if !slices.Equal(inited, []string{"/home/dev/code/vfl"}) || !slices.Contains(repos, "/home/dev/code/vfl") {
+		t.Fatalf("inited %v, repos %v", inited, repos)
+	}
+}

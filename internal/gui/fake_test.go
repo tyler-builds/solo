@@ -5,19 +5,20 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/tyler-builds/solo/internal/forge"
 	"image"
 	"image/color"
 	"image/draw"
 	"image/png"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/tyler-builds/solo/internal/agent"
 	"github.com/tyler-builds/solo/internal/core"
+	"github.com/tyler-builds/solo/internal/forge"
 	"github.com/tyler-builds/solo/internal/git"
 	"github.com/tyler-builds/solo/internal/store"
 )
@@ -32,6 +33,8 @@ type fakeBackend struct {
 	diffs    map[string]string
 	settings core.Settings
 	repos    []string
+	plain    []string
+	inited   []string
 	sent     []string
 	merged   []string
 	opened   []string
@@ -136,6 +139,19 @@ func (f *fakeBackend) UpdateSettings(fn func(*core.Settings)) error {
 	return nil
 }
 func (f *fakeBackend) RepoPaths() []string    { return f.repos }
+func (f *fakeBackend) PlainFolders() []string { return f.plain }
+func (f *fakeBackend) InitRepo(_ context.Context, folder string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	i := slices.Index(f.plain, folder)
+	if i < 0 {
+		return "", fmt.Errorf("%q isn't a plain folder", folder)
+	}
+	f.plain = slices.Delete(slices.Clone(f.plain), i, i+1)
+	f.repos = append(slices.Clone(f.repos), folder)
+	f.inited = append(f.inited, folder)
+	return folder, nil
+}
 func (f *fakeBackend) RateLimit() agent.Event { return agent.Event{} }
 
 func (f *fakeBackend) Done(_ context.Context, id string) error {
@@ -297,6 +313,7 @@ func demoBackend() *fakeBackend {
 		threads: []core.ThreadView{orch, oauth, limiter, forms, review, ci, export, landing, audit, flaky, readme, bump, old, gone},
 		items:   map[string][]core.Item{},
 		repos:   repos,
+		plain:   []string{"/home/dev/code/vfl"},
 		settings: core.Settings{Folders: []string{"~/code"}, OrchestratorModel: "opus", WorkerModel: "sonnet", ScanDepth: 3,
 			NamingModel: "haiku", OrchestratorEffort: "high", MergeMethod: "squash", OnChecksFail: core.ChecksFix,
 			PRModel: "sonnet", PREffort: "low"},

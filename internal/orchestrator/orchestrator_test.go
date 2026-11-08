@@ -217,3 +217,30 @@ func TestLostSessionRecovers(t *testing.T) {
 		return v.Status == core.StatusIdle && !v.InTurn && strings.Contains(v.Summary, "Your original task:\nlose")
 	})
 }
+
+// A folder that isn't in git shows in list_repos, a thread can't start there, and init_repo puts it in
+// git so one can.
+func TestInitRepo(t *testing.T) {
+	c, o := setup(t)
+	vfl := filepath.Join(c.Settings().Folders[0], "vfl")
+	os.MkdirAll(vfl, 0o755)
+	if err := os.WriteFile(filepath.Join(vfl, "index.html"), []byte("<p>hi</p>\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c.RescanRepos()
+	if out := call(t, o, "list_repos", nil); !strings.Contains(out, "Not in git") || !strings.Contains(out, "- vfl ("+vfl+")") {
+		t.Fatalf("list_repos:\n%s", out)
+	}
+	raw, _ := json.Marshal(map[string]any{"repo": "vfl", "title": "Subs", "prompt": "write a.txt x"})
+	if out, isErr := o.handleTool(context.Background(), core.OrchestratorID, "spawn_thread", raw); !isErr || !strings.Contains(out, "init_repo") {
+		t.Fatalf("spawn_thread in a plain folder: %v %s", isErr, out)
+	}
+	if out := call(t, o, "init_repo", map[string]any{"folder": "vfl"}); !strings.Contains(out, "is a git repository now") {
+		t.Fatalf("init_repo: %s", out)
+	}
+	if out := call(t, o, "list_repos", nil); strings.Contains(out, "Not in git") || !strings.Contains(out, "vfl ("+vfl+")") {
+		t.Fatalf("list_repos after init:\n%s", out)
+	}
+	call(t, o, "spawn_thread", map[string]any{"repo": "vfl", "title": "Subs", "prompt": "write a.txt x"})
+	eventually(t, "the thread to finish", func() bool { return onlyWorker(c).Status == core.StatusIdle })
+}

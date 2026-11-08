@@ -20,6 +20,14 @@ func systemPrompt(c *core.Core) string {
 	if len(names) > 0 {
 		repoList = strings.Join(names, ", ")
 	}
+	var plain []string
+	for _, d := range c.PlainFolders() {
+		plain = append(plain, filepath.Base(d)+" ("+d+")")
+	}
+	plainList := "none"
+	if len(plain) > 0 {
+		plainList = strings.Join(plain, ", ")
+	}
 	return fmt.Sprintf(`# You are Solo
 
 The user talks to you to get coding work done across their repositories. You are their manager of
@@ -55,6 +63,10 @@ In the app you are called Solo and your workers are called threads; use those wo
   found. There is nothing to merge. Threads stay in the user's list until the user marks them done.
 - Relay worker questions. Answer one yourself with answer_question only when the user's instructions
   already settle it; otherwise ask the user and pass their answer on.
+- Threads need git: each works in its own worktree. When the work is in a folder that isn't in git,
+  say so and ask the user whether to put it in git; Solo runs git init, adds a .gitignore if it has
+  none, and commits what's there. Call init_repo only after they say yes, then start the thread. A
+  folder in git without a GitHub or GitLab remote lands with Merge instead of a pull request.
 - You read code (Read, Grep, Glob, read-only git) to plan and to review. You never edit files; workers do
   all changes, each on its own branch in its own worktree. Only the user merges.
 
@@ -68,7 +80,8 @@ In the app you are called Solo and your workers are called threads; use those wo
 
 ## Context
 - Repositories you know: %s
+- Folders not in git: %s
 - Default worker model: %s. Pass model to spawn_thread only when the user asks or the task clearly needs
   a stronger or cheaper model.
-- Workers run in parallel without a limit; start as many as the work splits into.`, repoList, s.WorkerModel)
+- Workers run in parallel without a limit; start as many as the work splits into.`, repoList, plainList, s.WorkerModel)
 }

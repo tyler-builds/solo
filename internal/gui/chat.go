@@ -650,6 +650,8 @@ func (a *App) describeTool(d core.ToolData) (*icons.Icon, string, string) {
 		return icons.ListTodo, "Listed threads", ""
 	case "list_repos":
 		return icons.FolderGit2, "Listed repositories", ""
+	case "init_repo":
+		return icons.GitBranchPlus, "Put in git", filepath.Base(str("folder"))
 	case "interrupt_thread":
 		return icons.CircleStop, "Stopped", threadName()
 	case "answer_question":

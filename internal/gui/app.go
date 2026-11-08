@@ -33,6 +33,7 @@ type App struct {
 
 	threads *ui.Signal[[]core.ThreadView]
 	repos   *ui.Signal[[]string]
+	plain   *ui.Signal[[]string] // searched folders that aren't in git
 	rate    *ui.Signal[agent.Event]
 	pending *ui.Signal[map[string][]core.PendingQuestion] // worker questions, by thread
 	navSel  *ui.Signal[string]                            // sidebar: "orchestrator" or "repo:<path>"
@@ -90,6 +91,7 @@ func New(b Backend) *App {
 		b:          b,
 		threads:    ui.NewSignal(b.Threads()),
 		repos:      ui.NewSignal(b.RepoPaths()),
+		plain:      ui.NewSignal(b.PlainFolders()),
 		rate:       ui.NewSignal(b.RateLimit()),
 		pending:    ui.NewSignal(loadPending(b, b.Threads())),
 		navSel:     ui.NewSignal("orchestrator"),
@@ -169,7 +171,7 @@ func (a *App) refresh() {
 	a.mu.Unlock()
 
 	var threads []core.ThreadView
-	var repos []string
+	var repos, plain []string
 	var rate agent.Event
 	var pending map[string][]core.PendingQuestion
 	var cfg core.Settings
@@ -177,6 +179,7 @@ func (a *App) refresh() {
 		cfg = a.b.Settings()
 		threads = a.b.Threads()
 		repos = a.b.RepoPaths()
+		plain = a.b.PlainFolders()
 		rate = a.b.RateLimit()
 		pending = loadPending(a.b, threads)
 	}
@@ -191,6 +194,9 @@ func (a *App) refresh() {
 			a.threads.Set(threads)
 			if !slices.Equal(repos, a.repos.Peek()) {
 				a.repos.Set(repos)
+			}
+			if !slices.Equal(plain, a.plain.Peek()) {
+				a.plain.Set(plain)
 			}
 			a.rate.Set(rate)
 			a.pending.Set(pending)

@@ -42,44 +42,142 @@ var skipDirs = map[string]bool{"node_modules": true, "vendor": true, "target": t
 // Scan finds the git repositories in folders, searching up to depth levels below each. It doesn't look
 // inside a repository it found, nor in hidden directories or exclude.
 func Scan(folders []string, depth int, exclude string) []string {
+	repos, _ := ScanAll(folders, depth, exclude)
+	return repos
+}
+
+// ScanAll is Scan that also returns the plain folders: a folder Solo searches, or one directly inside
+// it, that isn't a repository and has none inside it, such as a project that was never put in git.
+func ScanAll(folders []string, depth int, exclude string) (repos, plain []string) {
 	seen := map[string]bool{}
-	var repos []string
 	for _, root := range folders {
-		root = filepath.Clean(expandHome(root))
-		var walk func(dir string, level int)
-		walk = func(dir string, level int) {
+		root = filepath.Clean(ExpandHome(root))
+		// walk reports whether dir is or holds a repository.
+		var walk func(dir string, level int) bool
+		walk = func(dir string, level int) bool {
 			if exclude != "" && dir == exclude {
-				return
+				return false
 			}
 			if _, err := os.Lstat(filepath.Join(dir, ".git")); err == nil {
 				if !seen[dir] {
 					seen[dir] = true
 					repos = append(repos, dir)
 				}
-				return
+				return true
 			}
 			if level >= depth {
-				return
+				return false
 			}
 			entries, err := os.ReadDir(dir)
 			if err != nil {
-				return
+				return false
 			}
+			found := false
 			for _, e := range entries {
 				name := e.Name()
 				if !e.IsDir() || strings.HasPrefix(name, ".") || skipDirs[name] {
 					continue
 				}
-				walk(filepath.Join(dir, name), level+1)
+				if walk(filepath.Join(dir, name), level+1) {
+					found = true
+				}
 			}
+			if !found && level <= 1 && len(entries) > 0 && !seen[dir] {
+				seen[dir] = true
+				plain = append(plain, dir)
+			}
+			return found
 		}
 		walk(root, 0)
 	}
 	sort.Strings(repos)
-	return repos
+	sort.Strings(plain)
+	return repos, plain
 }
 
-func expandHome(p string) string {
+// defaultIgnore is the .gitignore Init writes when a folder has none: what shouldn't be committed in
+// most projects.
+const defaultIgnore = `# Written by Solo when it put this folder in git. Edit as you like.
+node_modules/
+vendor/
+dist/
+build/
+target/
+out/
+.venv/
+venv/
+__pycache__/
+*.pyc
+.DS_Store
+Thumbs.db
+*.log
+.env
+.env.*
+`
+
+// maxInitFiles is the most files Init commits; more usually means build output or dependencies a
+// .gitignore should leave out.
+var maxInitFiles = 20000
+
+// Init puts a plain folder in git: a repository on branch main, a .gitignore if it has none, and a
+// first commit of everything else, so worktrees have something to start from. When the folder holds
+// too many files it undoes all of that and says so.
+func Init(ctx context.Context, dir string) (err error) {
+	info, err := os.Stat(dir)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%s isn't a folder", dir)
+	}
+	if top, err := Run(ctx, dir, "rev-parse", "--show-toplevel"); err == nil {
+		return fmt.Errorf("%s is already inside the repository %s", dir, top)
+	}
+	if home, err := os.UserHomeDir(); err == nil && filepath.Clean(dir) == filepath.Clean(home) {
+		return errors.New("Solo won't put your whole home folder in git")
+	}
+	ignore := filepath.Join(dir, ".gitignore")
+	wroteIgnore := false
+	if _, err := os.Stat(ignore); errors.Is(err, os.ErrNotExist) {
+		if err := os.WriteFile(ignore, []byte(defaultIgnore), 0o644); err != nil {
+			return err
+		}
+		wroteIgnore = true
+	}
+	defer func() {
+		if err != nil { // leave the folder as it was
+			os.RemoveAll(filepath.Join(dir, ".git"))
+			if wroteIgnore {
+				os.Remove(ignore)
+			}
+		}
+	}()
+	if _, err := Run(ctx, dir, "init", "--quiet"); err != nil {
+		return err
+	}
+	if _, err := Run(ctx, dir, "symbolic-ref", "HEAD", "refs/heads/main"); err != nil {
+		return err
+	}
+	if _, err := Run(ctx, dir, "add", "--all"); err != nil {
+		return err
+	}
+	staged, err := Run(ctx, dir, "diff", "--cached", "--name-only", "-z")
+	if err != nil {
+		return err
+	}
+	if n := strings.Count(staged, "\x00"); n > maxInitFiles {
+		return fmt.Errorf("%s has %d files, which usually means build output or dependencies; add a .gitignore that leaves them out, then try again", filepath.Base(dir), n)
+	}
+	args := []string{"commit", "--quiet", "--allow-empty", "--no-verify", "-m", "chore: initial commit"}
+	if email, _ := Run(ctx, dir, "config", "user.email"); email == "" { // git refuses to commit without one
+		args = append([]string{"-c", "user.name=Solo", "-c", "user.email=solo@localhost"}, args...)
+	}
+	_, err = Run(ctx, dir, args...)
+	return err
+}
+
+// ExpandHome replaces a leading ~ in p with the home folder.
+func ExpandHome(p string) string {
 	if p == "~" || strings.HasPrefix(p, "~/") || strings.HasPrefix(p, `~\`) {
 		if home, err := os.UserHomeDir(); err == nil {
 			return filepath.Join(home, p[1:])

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -162,6 +163,81 @@ func TestSlug(t *testing.T) {
 	} {
 		if got := Slug(in); got != want {
 			t.Errorf("Slug(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// ScanAll also finds the folders that aren't repositories and hold none: the searched folder itself
+// when it has no repositories, and the ones directly inside it.
+func TestScanAllPlain(t *testing.T) {
+	root := t.TempDir()
+	newRepo(t, filepath.Join(root, "alpha"))
+	write(t, filepath.Join(root, "vfl", "index.html"), "<p>hi</p>\n")
+	write(t, filepath.Join(root, "group", "notes", "a.txt"), "a\n") // too deep to offer
+	newRepo(t, filepath.Join(root, "group", "beta"))
+	if err := os.MkdirAll(filepath.Join(root, "empty"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(root, ".hidden", "x.txt"), "x\n")
+	lone := filepath.Join(t.TempDir(), "lone")
+	write(t, filepath.Join(lone, "main.go"), "package main\n")
+
+	repos, plain := ScanAll([]string{root, lone}, 3, "")
+	if want := []string{filepath.Join(root, "alpha"), filepath.Join(root, "group", "beta")}; !slices.Equal(repos, want) {
+		t.Fatalf("repos %v, want %v", repos, want)
+	}
+	want := []string{lone, filepath.Join(root, "vfl")}
+	slices.Sort(want)
+	if !slices.Equal(plain, want) {
+		t.Fatalf("plain %v, want %v", plain, want)
+	}
+}
+
+// Init makes a plain folder a repository with a first commit that leaves out what .gitignore says, so
+// a worktree can start from main.
+func TestInit(t *testing.T) {
+	ctx := context.Background()
+	dir := filepath.Join(t.TempDir(), "vfl")
+	write(t, filepath.Join(dir, "index.html"), "<p>hi</p>\n")
+	write(t, filepath.Join(dir, "node_modules", "dep", "x.js"), "x\n")
+	write(t, filepath.Join(dir, ".env"), "SECRET=1\n")
+	if err := Init(ctx, dir); err != nil {
+		t.Fatal(err)
+	}
+	files, err := Run(ctx, dir, "ls-files")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if files != ".gitignore\nindex.html" {
+		t.Fatalf("committed %q", files)
+	}
+	if err := Init(ctx, dir); err == nil {
+		t.Fatal("a second Init worked")
+	}
+	base, err := LatestBase(ctx, dir, "")
+	if err != nil || base.Branch != "main" {
+		t.Fatalf("base %+v, %v", base, err)
+	}
+	if _, err := AddWorktree(ctx, dir, filepath.Join(t.TempDir(), "wt"), "solo/x", base.Ref); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Init with too many files leaves the folder as it was.
+func TestInitTooMany(t *testing.T) {
+	defer func(n int) { maxInitFiles = n }(maxInitFiles)
+	maxInitFiles = 2
+	dir := filepath.Join(t.TempDir(), "big")
+	for _, f := range []string{"a", "b", "c"} {
+		write(t, filepath.Join(dir, f), f+"\n")
+	}
+	err := Init(context.Background(), dir)
+	if err == nil || !strings.Contains(err.Error(), "4 files") {
+		t.Fatalf("err %v", err)
+	}
+	for _, f := range []string{".git", ".gitignore"} {
+		if _, err := os.Stat(filepath.Join(dir, f)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("%s left behind: %v", f, err)
 		}
 	}
 }

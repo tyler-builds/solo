@@ -10,7 +10,7 @@ Claude **worker threads**, each working in its own git worktree.
 | UI | Go + [jamb](https://github.com/tyler-builds/jamb). Windows is the primary target; Linux (Wayland) is experimental and has no IME; macOS waits on jamb. |
 | Claude | Official `@anthropic-ai/claude-agent-sdk` in one **Bun sidecar** (`bun build --compile`). The SDK isn't open source and wraps a closed `claude` binary over an undocumented protocol, so it isn't reimplemented in Go. |
 | Orchestrator | One **global** session, resumed across restarts. Knowledge of live state comes from tools, not its transcript. |
-| Repos | Settings hold a list of folders; every git repo found under them is known to the orchestrator. |
+| Repos | Settings hold a list of folders; every git repo found under them is known to the orchestrator. A folder there that isn't in git (and holds no repo) is listed too: Settings or Solo's `init_repo` tool runs `git init` on main, adds a default `.gitignore` if it has none and commits what's there, so worktrees can start from it. |
 | Workers | One git worktree + branch per thread, `bypassPermissions`, no sandbox. |
 | Landing | Solo proposes; **you** click Open PR (GitHub via `gh`, GitLab via `glab`), then Merge once checks pass, or the forge auto-merges. Repos without a remote merge locally. |
 | Layout | Title bar (go-to-thread, settings) · thread rail on the left · orchestrator chat · a thread panel that slides in from the right (50/50, resizable). The rail filters by repository when threads span several. |

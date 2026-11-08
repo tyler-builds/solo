@@ -268,6 +268,9 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 				Child(ui.Icon(icons.FolderGit2).Size(13).Color(t.TextSubtle)).
 				Child(caption(ctx, fmt.Sprintf("Found %d repositories: %s", len(found), strings.Join(names, ", "))).Grow(1)))
 		}
+		if plain := a.plain.Get(); len(plain) > 0 {
+			list = list.Child(a.plainFolders(ctx, plain))
+		}
 		field := func(label, help string, control ui.Element) ui.Element {
 			return ui.Div().Column().Gap(space1 + 2).
 				Child(subhead(label)).
@@ -516,4 +519,50 @@ func tildePath(p string) string {
 		return "~" + string(filepath.Separator) + rest
 	}
 	return p
+}
+
+// plainFolders lists the folders Solo found that aren't in git, each with a button that puts it in
+// git so threads can work there.
+func (a *App) plainFolders(ctx *ui.Context, plain []string) ui.Element {
+	t := ctx.Theme()
+	busy := ui.Local(ctx, "init-busy", "")
+	rows := ui.Div().Column().Gap(space1).
+		Child(ui.Div().Row().Gap(space1 + 2).PaddingTop(space1).
+			Child(ui.Icon(icons.FolderX).Size(13).Color(t.TextSubtle)).
+			Child(caption(ctx, "Not in git, so threads can't work in these yet. Putting a folder in git adds a .gitignore if it has none and commits what's there.").Grow(1)))
+	for _, p := range plain {
+		dir := p
+		name := filepath.Base(dir)
+		btn := ui.Button("Put in git").Icon(icons.GitBranchPlus).Secondary().Small().Label("Put " + name + " in git").
+			Tooltip("Runs git init in " + tildePath(dir))
+		if busy.Get() == dir {
+			btn = btn.Loading(true)
+		} else if busy.Get() != "" {
+			btn = btn.Disabled(true)
+		} else {
+			btn = btn.OnClick(func() {
+				busy.Set(dir)
+				go func() {
+					_, err := a.b.InitRepo(context.Background(), dir)
+					a.onUI(func() {
+						busy.Set("")
+						if err != nil {
+							a.notify(ui.ToastError, "Couldn't put "+name+" in git", err.Error())
+							return
+						}
+						a.notify(ui.ToastSuccess, name+" is in git now", "Threads can work in it.")
+						a.plain.Set(a.b.PlainFolders())
+						a.repos.Set(a.b.RepoPaths())
+					})
+				}()
+			})
+		}
+		rows = rows.Child(ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space3).Height(ui.Px(34)).
+			Radius(radiusM).Border(1, t.Border).
+			Child(ui.Icon(icons.Folder).Size(14).Color(t.TextMuted)).
+			Child(ui.Text(name).FontSize(13).Truncate().MinWidth(ui.Px(0))).
+			Child(caption(ctx, tildePath(filepath.Dir(dir))).TruncateHead().Grow(1).MinWidth(ui.Px(0))).
+			Child(btn))
+	}
+	return rows
 }

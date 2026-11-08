@@ -44,6 +44,8 @@ type Backend interface {
 	Settings() core.Settings
 	UpdateSettings(f func(*core.Settings)) error
 	RepoPaths() []string
+	PlainFolders() []string
+	InitRepo(ctx context.Context, folder string) (string, error)
 	RateLimit() agent.Event
 	CheckClaude(ctx context.Context, override string) core.ClaudeStatus
 }

@@ -25,6 +25,13 @@ var toolSpecs = []agent.ToolSpec{
 		ReadOnly:    true,
 	},
 	{
+		Name: "init_repo",
+		Description: "Put a folder that isn't a git repository in git, so threads can work in it: Solo runs git init on branch main, writes a .gitignore if there is none, and commits what's there. " +
+			"Only for the folders list_repos names as not in git, and only after the user says yes.",
+		InputSchema: schema(`{"type":"object","properties":{
+			"folder":{"type":"string","description":"The folder's name or path, as list_repos shows it."}},"required":["folder"]}`),
+	},
+	{
 		Name:        "list_threads",
 		Description: "List worker threads with their short ID, title, repository, status and a one-line summary. By default lists open threads (not merged or discarded).",
 		InputSchema: schema(`{"type":"object","properties":{
@@ -120,6 +127,7 @@ func (o *Orchestrator) handleTool(ctx context.Context, threadID, name string, ra
 		Images        []string          `json:"images"`
 		Repos         []string          `json:"repos"`
 		Effort        string            `json:"effort"`
+		Folder        string            `json:"folder"`
 	}
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &a); err != nil {
@@ -145,6 +153,11 @@ func (o *Orchestrator) handleTool(ctx context.Context, threadID, name string, ra
 	switch name {
 	case "list_repos":
 		out = o.listRepos(ctx)
+	case "init_repo":
+		var dir string
+		if dir, err = o.c.InitRepo(ctx, a.Folder); err == nil {
+			out = fmt.Sprintf("%s is a git repository now, on branch main with a first commit of its files. Threads can work in it as %q.", dir, filepath.Base(dir))
+		}
 	case "list_threads":
 		out, err = o.listThreads(a.Repo, a.IncludeClosed)
 	case "get_thread":
@@ -224,7 +237,11 @@ func (o *Orchestrator) handleTool(ctx context.Context, threadID, name string, ra
 
 func (o *Orchestrator) listRepos(ctx context.Context) string {
 	repos := o.c.Repos(ctx)
+	plain := plainList(o.c.PlainFolders())
 	if len(repos) == 0 {
+		if plain != "" {
+			return "No repositories." + plain
+		}
 		return "No repositories. The user adds folders to search in Settings."
 	}
 	counts := map[string]int{}
@@ -249,6 +266,19 @@ func (o *Orchestrator) listRepos(ctx context.Context) string {
 			fmt.Fprintf(&b, " [error: %s]", clip(r.Err, 120))
 		}
 		b.WriteByte('\n')
+	}
+	return b.String() + plain
+}
+
+// plainList names the folders that aren't in git for list_repos.
+func plainList(dirs []string) string {
+	if len(dirs) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\nNot in git (threads can't work here until init_repo, with the user's yes):\n")
+	for _, d := range dirs {
+		fmt.Fprintf(&b, "- %s (%s)\n", filepath.Base(d), d)
 	}
 	return b.String()
 }
