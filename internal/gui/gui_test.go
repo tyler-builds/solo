@@ -225,3 +225,26 @@ func TestSettingsPutsFolderInGit(t *testing.T) {
 		t.Fatalf("inited %v, repos %v", inited, repos)
 	}
 }
+
+// Coming to the front clears Solo's notifications, once each time; losing focus doesn't.
+func TestFocusClearsNotifications(t *testing.T) {
+	a, _ := newUI(t, demoBackend())
+	cleared := make(chan struct{}, 4)
+	a.ClearNotifications = func() { cleared <- struct{}{} }
+	a.wasFocused = false
+	for _, f := range []bool{true, true, false, false, true} {
+		a.windowFocus(f)
+	}
+	for i := 0; i < 2; i++ {
+		select {
+		case <-cleared:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("cleared %d times, want 2", i)
+		}
+	}
+	select {
+	case <-cleared:
+		t.Fatal("cleared a third time")
+	case <-time.After(50 * time.Millisecond):
+	}
+}

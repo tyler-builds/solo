@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/tyler-builds/jamb/ui"
+
 	"github.com/tyler-builds/solo/internal/core"
 	"github.com/tyler-builds/solo/internal/forge"
 )
@@ -60,6 +62,24 @@ func (a *App) notifyChange(ch core.Change) {
 		}
 		a.Notify(*n)
 	})
+}
+
+// focusWatch follows the window's focus (reading it re-runs this when it changes) and draws nothing.
+func (a *App) focusWatch(ctx *ui.Context) ui.Element {
+	a.windowFocus(ctx.Window().Focused())
+	return ui.Div()
+}
+
+// windowFocus clears Solo's notifications, and with them the badge on its icon, when the window comes
+// to the front: the user is looking at what they were about.
+func (a *App) windowFocus(focused bool) {
+	if focused == a.wasFocused {
+		return
+	}
+	a.wasFocused = focused
+	if focused && a.ClearNotifications != nil {
+		go a.ClearNotifications()
+	}
 }
 
 // prBody names a thread's pull request in a notification: "PR #142 in api".

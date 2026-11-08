@@ -62,21 +62,24 @@ type App struct {
 	items map[string]*ui.Signal[[]core.Item] // UI thread only
 
 	// Changes arrive on core goroutines; refresh collects them and applies them on the UI thread.
-	mu        sync.Mutex
-	post      func(func())
-	toast     func(variant ui.ToastVariant, title, msg string)
-	focused   func() bool       // whether Solo's window is in front (UI thread only)
-	raise     func()            // brings Solo's window to the front (UI thread only)
-	clipboard func(text string) // copies text (UI thread only)
+	mu         sync.Mutex
+	post       func(func())
+	toast      func(variant ui.ToastVariant, title, msg string)
+	focused    func() bool       // whether Solo's window is in front (UI thread only)
+	wasFocused bool              // the window's focus at the last check (focusWatch)
+	raise      func()            // brings Solo's window to the front (UI thread only)
+	clipboard  func(text string) // copies text (UI thread only)
 
 	// Notify shows a desktop notification; nil shows none. Set it before Run.
-	Notify    func(Notification)
-	undoToast func(msg string, undo func())
-	dirtyAll  bool
-	dirty     map[string]bool
-	watched   map[string]bool
-	scheduled bool
-	unsub     func()
+	Notify func(Notification)
+	// ClearNotifications removes the notifications Solo has shown. It runs off the UI thread.
+	ClearNotifications func()
+	undoToast          func(msg string, undo func())
+	dirtyAll           bool
+	dirty              map[string]bool
+	watched            map[string]bool
+	scheduled          bool
+	unsub              func()
 }
 
 // confirmation is a question to confirm before a destructive action.
@@ -371,6 +374,7 @@ func (a *App) Root(ctx *ui.Context) ui.Element {
 		Child(ui.Component(a.settingsDialog)).
 		Child(ui.Component(a.confirmDialog)).
 		Child(ui.Component(a.lightboxDialog)).
+		Child(ui.Component(a.focusWatch)).
 		Child(ui.CommandPalette(a.palette).ItemsOnly().Placeholder("Search threads and messages").MaxRows(12).Items(a.paletteItems)).
 		Child(ui.Toaster().Key("toaster"))
 }

@@ -69,6 +69,11 @@ func run() error {
 			log.Debug("notification", "err", err)
 		}
 	}
+	g.ClearNotifications = func() {
+		if err := app.ClearNotifications(); err != nil {
+			log.Debug("clearing notifications", "err", err)
+		}
+	}
 	for _, f := range gui.Fonts() {
 		a = a.Font("", f.Weight, f.Data)
 	}
