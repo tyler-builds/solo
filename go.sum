@@ -22,8 +22,8 @@ github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec h1:W09IVJc94
 github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec/go.mod h1:qqbHyh8v60DhA7CoWK5oRCqLrMHRGoxYCSS9EjAz6Eo=
 github.com/tetratelabs/wazero v1.12.0 h1:DuWcpNu/FzgEXgGBDp8J1Spc+CWOvvtvVyjKlaZopYU=
 github.com/tetratelabs/wazero v1.12.0/go.mod h1:LvKtzl2RqO4gyF27BiXU+nKAjcV8f38U+kP/q2vgxh0=
-github.com/tyler-builds/jamb v0.6.4 h1:9qTzUdm3FbVog68bKqNBy5CReRH2460p85Gh+4dtPV0=
-github.com/tyler-builds/jamb v0.6.4/go.mod h1:7UE6puOA4wE0/LYLfcIgL6VJRiA3rYI5ZrED0gb6nlk=
+github.com/tyler-builds/jamb v0.7.0 h1:QIbBbQF6om73uTgrMHpRITK0QYOGraps2/fv4w9oIfQ=
+github.com/tyler-builds/jamb v0.7.0/go.mod h1:7UE6puOA4wE0/LYLfcIgL6VJRiA3rYI5ZrED0gb6nlk=
 github.com/yuin/goldmark v1.8.7 h1:XT/tNqCIbabh0ln675w4x3dv04kQBKi8NwYqi9IJaxI=
 github.com/yuin/goldmark v1.8.7/go.mod h1:ip/1k0VRfGynBgxOz0yCqHrbZXhcjxyuS66Brc7iBKg=
 golang.org/x/image v0.47.0 h1:za/8gVz++PPZqmZJBNSISICN5Rrj5zixP/8K++fgmqo=

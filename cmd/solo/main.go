@@ -89,6 +89,7 @@ func run() error {
 		Root:       g.Root,
 		Bindings:   gui.Bindings(),
 		Chrome:     app.ChromeCustom, // Solo draws its own title bar
+		Corners:    app.CornersRound,
 	})
 	return nil
 }
