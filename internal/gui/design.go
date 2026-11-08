@@ -1,7 +1,8 @@
 package gui
 
 // Solo's design system, after uas (~/code/uas/internal/gui/design.go): neutral near-black or white
-// surfaces with hairline borders, and teal kept for the brand, primary actions and small status marks.
+// surfaces with hairline borders, and crimson kept for the brand, primary actions and small status marks.
+// Danger is a deeper, pure red, so failures stay apart from the pinker brand.
 // Pages use these tokens and components rather than raw sizes and colors.
 
 import (
@@ -58,9 +59,9 @@ var darkPalette = palette{
 	background: "#0e0e10", panel: "#08080a", surface: "#19191d", surfaceHover: "#202025", surfaceActive: "#2a2a30",
 	border: "#222227", borderStrong: "#313137",
 	text: "#f2f2f4", textMuted: "#a9a9b3", textSubtle: "#75757f",
-	accent: "#14897e", accentHover: "#18978b", accentActive: "#117469", accentText: "#ffffff", link: "#7cc8bf",
-	brand:   "#2dd4bf",
-	success: "#3ecf8e", warning: "#f5b544", danger: "#f87171", info: "#7aa7ff",
+	accent: "#d42a52", accentHover: "#dc3860", accentActive: "#b82145", accentText: "#ffffff", link: "#ff94aa",
+	brand:   "#ff5a80",
+	success: "#3ecf8e", warning: "#f5b544", danger: "#e03e3e", info: "#7aa7ff",
 	scrollbar: "#2e2e34", scrim: "#000000b3",
 }
 
@@ -68,9 +69,9 @@ var lightPalette = palette{
 	background: "#ffffff", panel: "#f5f5f6", surface: "#ffffff", surfaceHover: "#f6f6f8", surfaceActive: "#ececef",
 	border: "#e8e8ec", borderStrong: "#d8d8de",
 	text: "#0c0c0e", textMuted: "#5d5d66", textSubtle: "#9a9aa3",
-	accent: "#0f766e", accentHover: "#115e59", accentActive: "#134e4a", accentText: "#ffffff", link: "#0f766e",
-	brand:   "#0d9488",
-	success: "#15803d", warning: "#b45309", danger: "#dc2626", info: "#2459c7",
+	accent: "#c41d47", accentHover: "#a8183c", accentActive: "#8d1432", accentText: "#ffffff", link: "#bb1a43",
+	brand:   "#d6214f",
+	success: "#15803d", warning: "#b45309", danger: "#b91c1c", info: "#2459c7",
 	scrollbar: "#d0d0d6", scrim: "#0c0c0e59",
 }
 
@@ -315,8 +316,11 @@ func chip(ctx *ui.Context, label string) *ui.DivElement {
 		Child(ui.Text(label).FontSize(12).TextColor(t.TextMuted).NoWrap())
 }
 
-// The Solo logo: an orchestrator node and three workers on a teal tile. brand/solo.svg is also the
-// desktop icon, which keeps a margin around the tile; in the app the tile fills the box.
+// The Solo logo: an open ring with one bead in its gap (one agent keeping the work in orbit) on a
+// crimson tile. brand/solo.svg is also the desktop icon, which keeps a margin around the tile; in the
+// app the tile fills the box. Regenerate cmd/solo/icon.png after changing it:
+//
+//	magick -background none -density 576 internal/gui/brand/solo.svg -resize 256x256 PNG32:cmd/solo/icon.png
 //
 //go:embed brand/solo.svg
 var logoSVG []byte
@@ -361,7 +365,7 @@ func Fonts() []Font {
 	return out
 }
 
-// statusMark is a thread status's mark: a pulsing teal dot while it works, a check when it is ready,
+// statusMark is a thread status's mark: a pulsing crimson dot while it works, a check when it is ready,
 // and a plain dot otherwise (amber, red, or grey), so no two states look alike.
 func statusMark(ctx *ui.Context, status string) ui.Element {
 	t := ctx.Theme()

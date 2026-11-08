@@ -379,8 +379,8 @@ func (a *App) Root(ctx *ui.Context) ui.Element {
 		Child(ui.Toaster().Key("toaster"))
 }
 
-// titleBar is the window's own title bar: the Solo mark, a "go to a thread" box in the middle, and the
-// window's buttons.
+// titleBar is the window's own title bar: a "go to a thread" box in the middle, and the window's buttons.
+// It carries no Solo mark: the orchestrator's header just below already shows the mark and the name.
 func (a *App) titleBar(ctx *ui.Context) ui.Element {
 	t := ctx.Theme()
 	find := ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space3).Height(ui.Px(26)).Width(ui.Px(320)).
@@ -413,8 +413,6 @@ func (a *App) titleBar(ctx *ui.Context) ui.Element {
 	trailing = append(trailing, ui.IconButton(icons.Settings).Ghost().Small().Label("Settings").Tooltip("Settings").
 		Key("open-settings").OnClick(func() { a.settings.Set(true) }))
 	return ui.TitleBar().Height(ui.Px(40)).
-		Child(ui.Div().Row().Align(ui.Center).Gap(space2).PaddingLeft(space4).
-			Child(brandMark(18))).
 		Center(find).
 		Trailing(trailing...)
 }
