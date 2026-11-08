@@ -1,4 +1,4 @@
-# Builds Solo for Linux (AppImage) and Windows (zip) and publishes them as a GitHub release.
+# Builds Solo for Linux (AppImage) and Windows (installer and zip) and publishes them as a GitHub release.
 # Push a tag such as v0.2.0 to release that version; run it by hand to build without releasing.
 name: Release
 
@@ -25,7 +25,7 @@ jobs:
           bun-version: 1.4.4
 
       - name: Install packaging tools
-        run: sudo apt-get update && sudo apt-get install -y squashfs-tools zip
+        run: sudo apt-get update && sudo apt-get install -y squashfs-tools nsis
 
       - name: Version
         id: version
@@ -41,7 +41,7 @@ jobs:
       - name: Linux AppImage
         run: VERSION=${{ steps.version.outputs.version }} ./scripts/appimage.sh
 
-      - name: Windows zip
+      - name: Windows installer and zip
         run: VERSION=${{ steps.version.outputs.version }} ./scripts/windows.sh
 
       - uses: actions/upload-artifact@v4
@@ -49,6 +49,7 @@ jobs:
           name: solo-${{ steps.version.outputs.version }}
           path: |
             dist/*.AppImage
+            dist/*-setup.exe
             dist/*.zip
           if-no-files-found: error
 
@@ -58,6 +59,7 @@ jobs:
         with:
           files: |
             dist/*.AppImage
+            dist/*-setup.exe
             dist/*.zip
           generate_release_notes: true
           prerelease: ${{ contains(github.ref_name, '-') }}

@@ -25,11 +25,12 @@ Open Settings and add the folders that hold your repositories. Data lives in `~/
 
 ```
 ./scripts/appimage.sh                 # dist/Solo-x86_64.AppImage (Linux)
-VERSION=0.2.0 ./scripts/windows.sh    # dist/Solo-0.2.0-windows-amd64.zip (builds from Linux too)
+VERSION=0.2.0 ./scripts/windows.sh    # dist/Solo-0.2.0-windows-amd64-setup.exe and .zip (builds from Linux too)
 uas add dist/Solo-x86_64.AppImage     # optional: install the AppImage with uas
 ```
 
-Both need Go and Bun; the AppImage also needs `mksquashfs`, and the Windows zip `zip`. The app needs
+Both need Go and Bun; the AppImage also needs `mksquashfs`, and the Windows installer NSIS
+(`makensis`; without it only the zip is built). The app needs
 only Claude Code installed and signed in: the sidecar is a compiled binary with Bun inside, and Solo
 finds `claude` on PATH or where its installer puts it (Settings shows what it found and takes a path
 to use instead).
