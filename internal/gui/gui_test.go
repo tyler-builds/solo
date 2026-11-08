@@ -96,6 +96,8 @@ func TestQuestionOptionAnswers(t *testing.T) {
 func TestRailDoneButtonMarksDone(t *testing.T) {
 	f := demoBackend()
 	a, u := newUI(t, f)
+	a.railQuery.Set("uploads are logged") // keep its row on screen
+	u.Frame()
 	u.ByRole(access.RoleButton, "Mark “Find where uploads are logged” done").Click()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
