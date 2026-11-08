@@ -334,6 +334,16 @@ func (c *Core) onAsk(ctx context.Context, p agent.AskParams) (agent.AskResult, e
 		return agent.AskResult{Cancelled: true}, nil
 	}
 	id := t.row.ID
+	if id == OrchestratorID {
+		for _, w := range c.threads {
+			if w != t && len(w.askQs) > 0 {
+				c.mu.Unlock()
+				return agent.AskResult{Cancelled: true, Message: "Not shown: the user already sees the question " +
+					"\"" + w.row.Title + "\" is waiting on, pinned above your composer, and answers it there. Don't ask it " +
+					"again. Anything else for the user, ask in your reply."}, nil
+			}
+		}
+	}
 	key := p.ToolUseID
 	if key == "" {
 		key = agent.NewUUID()

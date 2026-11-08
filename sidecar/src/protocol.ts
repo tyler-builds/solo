@@ -88,6 +88,8 @@ export interface AskParams {
 export interface AskResult {
   answers?: Record<string, string>;
   cancelled?: boolean;
+  /** What the agent hears when cancelled; absent means the user dismissed it. */
+  message?: string;
 }
 
 /** Sidecar → Go request `tool.call`. */

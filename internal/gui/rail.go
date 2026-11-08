@@ -400,7 +400,7 @@ var presentTense = map[string]string{
 	"Updated the plan": "Planning", "Started thread": "Starting thread", "Messaged": "Messaging",
 	"Checked": "Checking", "Read transcript": "Reading", "Reviewed changes": "Reviewing changes of",
 	"Listed threads": "Listing threads", "Listed repositories": "Listing repositories",
-	"Stopped": "Stopping", "Answered": "Answering", "Proposed merge": "Proposing a merge of",
+	"Stopped": "Stopping", "Asked you": "Asking you", "Answered": "Answering", "Proposed merge": "Proposing a merge of",
 	"Loaded tools": "Loading tools", "Subagent": "Running subagent",
 }
 

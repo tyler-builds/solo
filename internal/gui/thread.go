@@ -430,6 +430,12 @@ func (a *App) workingLine(ctx *ui.Context, th core.ThreadView) ui.Element {
 		return ui.Div()
 	}
 	t := ctx.Theme()
+	if th.Status == core.StatusWaiting {
+		return ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space3).Height(ui.Px(30)).Radius(radiusM).
+			Background(t.Warning.Alpha(0.08)).
+			Child(statusMark(ctx, core.StatusWaiting)).
+			Child(ui.Text("Waiting for your answer").FontSize(12).Semibold().TextColor(t.Warning).NoWrap())
+	}
 	brand := ui.Hex(pal(t).brand)
 	text := "Working"
 	if !th.TurnStarted.IsZero() {

@@ -407,7 +407,7 @@ export class Session {
         signal,
       );
       if (res.cancelled || !res.answers) {
-        return { behavior: "deny", message: "The user dismissed the question.", toolUseID } satisfies PermissionResult;
+        return { behavior: "deny", message: res.message || "The user dismissed the question.", toolUseID } satisfies PermissionResult;
       }
       return {
         behavior: "allow",

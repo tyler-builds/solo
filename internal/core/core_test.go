@@ -1156,3 +1156,27 @@ func TestSteerCarriesOnTheTurn(t *testing.T) {
 		t.Fatalf("want one turn and a steered message; got %d turns, steered=%v (%s)", turns, steered, kinds(items))
 	}
 }
+
+// Solo's own AskUserQuestion is refused while a worker's question is pinned, so the user isn't asked
+// the same thing twice.
+func TestOrchestratorAskRefusedWhileWorkerAsks(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	w, _ := e.c.CreateWorker(ctx, WorkerSpec{Repo: "proj", Prompt: "ask"})
+	waitStatusAllowTurn(t, e.c, w.ID, StatusWaiting)
+	if _, err := e.c.EnsureOrchestrator(); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.c.Send(ctx, OrchestratorID, "ask"); err != nil {
+		t.Fatal(err)
+	}
+	if v := waitStatus(t, e.c, OrchestratorID, StatusIdle); v.Summary != "cancelled" {
+		t.Fatalf("orchestrator summary %q, want its ask refused", v.Summary)
+	}
+	items, _ := e.c.Items(ctx, OrchestratorID, 0)
+	for _, it := range items {
+		if it.Kind == ItemQuestion {
+			t.Fatal("the refused question was shown")
+		}
+	}
+}

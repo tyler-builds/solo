@@ -57,7 +57,10 @@ func (a *App) orchestratorView(ctx *ui.Context) ui.Element {
 func (a *App) orchestratorBar(ctx *ui.Context, v core.ThreadView) ui.Element {
 	t := ctx.Theme()
 	state := ui.Div().Row().Align(ui.Center).Gap(6).MinWidth(ui.Px(0))
-	if v.InTurn {
+	if v.Status == core.StatusWaiting {
+		state = state.Child(statusMark(ctx, core.StatusWaiting)).
+			Child(ui.Text("Waiting for your answer").FontSize(12).TextColor(t.Warning).Truncate().MinWidth(ui.Px(0)))
+	} else if v.InTurn {
 		label := "Thinking…"
 		if v.Step != nil {
 			label = a.stepLabel(*v.Step) + "…"
@@ -161,7 +164,7 @@ func (a *App) transcript(ctx *ui.Context, v core.ThreadView, items []core.Item, 
 		rows = append(rows, row{key: fmt.Sprintf("live%d", i), live: &v.Live[i]})
 	}
 	// A thread's panel pins its working line above the composer; only Solo's transcript says it in line.
-	if v.InTurn && !v.IsWorker && (len(v.Live) == 0 || v.Live[len(v.Live)-1].Thinking) {
+	if v.InTurn && !v.IsWorker && v.Status != core.StatusWaiting && (len(v.Live) == 0 || v.Live[len(v.Live)-1].Thinking) {
 		rows = append(rows, row{key: "busy", busy: true})
 	}
 	h := ui.Local(ctx, scope+"-list", ui.NewListHandle()).Peek()
@@ -695,6 +698,8 @@ func (a *App) describeTool(d core.ToolData) (*icons.Icon, string, string) {
 		return icons.Globe, "Fetched", str("url")
 	case "WebSearch":
 		return icons.Globe, "Searched the web", str("query")
+	case "AskUserQuestion":
+		return icons.MessageCircleQuestionMark, "Asked you", ""
 	case "TodoWrite":
 		return icons.ListTodo, "Updated the plan", ""
 	case "Agent", "Task":

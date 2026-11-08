@@ -93,6 +93,8 @@ type AskParams struct {
 type AskResult struct {
 	Answers   map[string]string `json:"answers,omitempty"`
 	Cancelled bool              `json:"cancelled,omitempty"`
+	// Message is what the agent hears when Cancelled; empty means the user dismissed it.
+	Message string `json:"message,omitempty"`
 }
 
 // ToolCallParams is the sidecar's tool.call request.
