@@ -171,6 +171,10 @@ func (c *Core) onEvent(e agent.Event) {
 
 	case agent.EventTurnEnd:
 		t.inTurn = false
+		if t.reopen && e.QueuedTurns == 0 {
+			t.reopen = false
+			go c.closeSession(context.Background(), id) // takes the new effort on its next message
+		}
 		t.step = nil
 		t.retry = ""
 		t.live, t.liveTxt = nil, nil

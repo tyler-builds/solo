@@ -5,7 +5,9 @@ package gui
 import (
 	"context"
 	"fmt"
+	"github.com/tyler-builds/solo/internal/launch"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -53,6 +55,7 @@ type App struct {
 	lightbox    *ui.Signal[string]          // the image shown full size, or ""
 	settingsTab string                      // the tab Settings opens on
 	orchImages  *ui.Signal[[]string]        // images attached to the message being written to Solo
+	railQuery   *ui.Signal[string]          // the rail's filter
 	imgs        map[string]*ui.ImageSource  // decoded attachments, by path (UI thread only)
 
 	items map[string]*ui.Signal[[]core.Item] // UI thread only
@@ -61,6 +64,12 @@ type App struct {
 	mu        sync.Mutex
 	post      func(func())
 	toast     func(variant ui.ToastVariant, title, msg string)
+	focused   func() bool       // whether Solo's window is in front (UI thread only)
+	raise     func()            // brings Solo's window to the front (UI thread only)
+	clipboard func(text string) // copies text (UI thread only)
+
+	// Notify shows a desktop notification; nil shows none. Set it before Run.
+	Notify    func(Notification)
 	undoToast func(msg string, undo func())
 	dirtyAll  bool
 	dirty     map[string]bool
@@ -99,6 +108,7 @@ func New(b Backend) *App {
 		foldedAsks: ui.NewSignal(map[string]bool{}),
 		lightbox:   ui.NewSignal(""),
 		orchImages: ui.NewSignal([]string(nil)),
+		railQuery:  ui.NewSignal(""),
 		imgs:       map[string]*ui.ImageSource{},
 		items:      map[string]*ui.Signal[[]core.Item]{},
 		dirty:      map[string]bool{},
@@ -124,6 +134,9 @@ func loadPending(b Backend, threads []core.ThreadView) map[string][]core.Pending
 }
 
 func (a *App) onChange(ch core.Change) {
+	if ch.Kind == core.ChangeThread {
+		go a.notifyChange(ch)
+	}
 	a.mu.Lock()
 	switch ch.Kind {
 	case core.ChangeItems:
@@ -250,6 +263,59 @@ func (a *App) restore(id string) {
 	a.run("Restoring", func(ctx context.Context) error { return a.b.Restore(ctx, id) })
 }
 
+// openEditor opens a folder in the user's editor.
+func (a *App) openEditor(dir string) {
+	cmd := a.cfg.Peek().EditorCommand
+	if err := launch.Editor(cmd, dir); err != nil {
+		a.notify(ui.ToastError, "Couldn't open the editor", err.Error())
+	}
+}
+
+// openTerminal opens a terminal in a folder.
+func (a *App) openTerminal(dir string) {
+	cmd := a.cfg.Peek().TerminalCommand
+	if err := launch.Terminal(cmd, dir); err != nil {
+		a.notify(ui.ToastError, "Couldn't open a terminal", err.Error())
+	}
+}
+
+// copyText copies text to the clipboard and says so.
+func (a *App) copyText(what, text string) {
+	if a.clipboard != nil {
+		a.clipboard(text)
+		a.notify(ui.ToastSuccess, "Copied "+what, text)
+	}
+}
+
+// folderMenu is what a right click on a thread offers: open its folder, and copy its paths and branch.
+func (a *App) folderMenu(th core.ThreadView) []ui.MenuItem {
+	if th.Dir == "" {
+		return nil
+	}
+	dir := th.Dir
+	items := []ui.MenuItem{
+		{Label: "Open in editor", Icon: icons.SquareCode, OnClick: func() { a.openEditor(dir) }},
+		{Label: "Open terminal", Icon: icons.SquareTerminal, OnClick: func() { a.openTerminal(dir) }},
+		ui.MenuSeparator(),
+		{Label: "Copy folder path", Icon: icons.Copy, OnClick: func() { a.copyText("the folder path", dir) }},
+	}
+	if th.MultiRepo() {
+		for _, p := range th.Parts {
+			if p.Worktree == "" {
+				continue
+			}
+			path := p.Worktree
+			items = append(items, ui.MenuItem{Label: "Copy " + p.Name + " worktree path", Icon: icons.Copy,
+				OnClick: func() { a.copyText(p.Name+"'s worktree path", path) }})
+		}
+	}
+	if th.Branch != "" {
+		branch := th.Branch
+		items = append(items, ui.MenuItem{Label: "Copy branch name", Icon: icons.GitBranch, OnClick: func() { a.copyText("the branch name", branch) }})
+	}
+	return items
+}
+
 // onUI runs fn on the UI thread.
 func (a *App) onUI(fn func()) {
 	a.mu.Lock()
@@ -276,6 +342,9 @@ func (a *App) Root(ctx *ui.Context) ui.Element {
 		a.post = ctx.Post
 		a.toast = func(v ui.ToastVariant, title, msg string) { ctx.Toast(v, msg).Title(title) }
 		a.undoToast = func(msg string, undo func()) { ctx.Toast(ui.ToastSuccess, msg).Action("Undo", undo) }
+		a.focused = ctx.Window().Focused
+		a.raise = ctx.Window().Focus
+		a.clipboard = ctx.SetClipboard
 		// Pick up what changed before the window existed.
 		a.scheduled = true
 		go a.refresh()
@@ -296,7 +365,7 @@ func (a *App) Root(ctx *ui.Context) ui.Element {
 		Child(ui.Component(a.settingsDialog)).
 		Child(ui.Component(a.confirmDialog)).
 		Child(ui.Component(a.lightboxDialog)).
-		Child(ui.CommandPalette(a.palette).ItemsOnly().Placeholder("Go to a thread").Items(a.paletteItems)).
+		Child(ui.CommandPalette(a.palette).ItemsOnly().Placeholder("Search threads and messages").MaxRows(12).Items(a.paletteItems)).
 		Child(ui.Toaster().Key("toaster"))
 }
 
@@ -307,10 +376,10 @@ func (a *App) titleBar(ctx *ui.Context) ui.Element {
 	find := ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space3).Height(ui.Px(26)).Width(ui.Px(320)).
 		Radius(radiusS).Border(1, t.Border).Background(t.Background).Cursor(ui.CursorPointer).
 		Hover(ui.Style{BorderColor: t.BorderStrong}).
-		Role(access.RoleButton).Label("Go to a thread").TabIndex(0).
+		Role(access.RoleButton).Label("Search").TabIndex(0).
 		OnClick(func() { a.palette.Set(true) }).
 		Child(ui.Icon(icons.Search).Size(13).Color(t.TextSubtle)).
-		Child(ui.Text("Go to a thread").FontSize(12).TextColor(t.TextSubtle).Grow(1)).
+		Child(ui.Text("Search").FontSize(12).TextColor(t.TextSubtle).Grow(1)).
 		Child(ui.Kbd("Ctrl+K"))
 	var trailing []ui.Element
 	// Claude's usage shows only when it matters.
@@ -468,7 +537,7 @@ func (a *App) repoFilter() string {
 
 var (
 	nextAction    = ui.NewAction("solo.next", "Go to the next thread that needs you")
-	paletteAction = ui.NewAction("solo.palette", "Go to a thread").Hide()
+	paletteAction = ui.NewAction("solo.palette", "Search").Hide()
 )
 
 // Bindings are the app's keyboard shortcuts.
@@ -523,10 +592,58 @@ func (a *App) paletteItems(query string) []ui.PaletteItem {
 			Run:      func() { a.openThread(id, "conversation") },
 		}
 	}
+	// Threads: the rail's, then the rest (merged, in History) when something is typed.
 	for _, th := range a.openThreads(false) {
 		out = append(out, item(th))
 	}
+	words := strings.Fields(query)
+	if len(words) > 0 {
+		for _, th := range a.threads.Peek() {
+			if th.IsWorker && !inRail(th) {
+				it := item(th)
+				if !th.DoneAt.IsZero() {
+					it.Detail += " · in History"
+				}
+				it.Keywords = append(it.Keywords, th.Summary, th.Branch)
+				out = append(out, it)
+			}
+		}
+	}
 	out = append(out, ui.PaletteItem{Key: "settings", Label: "Settings", Icon: icons.Settings, Run: func() { a.settings.Set(true) }})
+	// Messages, once the query is long enough to mean something.
+	if len(strings.Join(words, "")) >= 3 {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		hits, err := a.b.SearchMessages(ctx, query, 30)
+		cancel()
+		if err == nil {
+			for _, h := range hits {
+				th, ok := a.thread(h.ThreadID)
+				if !ok {
+					continue
+				}
+				where := th.Title
+				if !th.IsWorker {
+					where = "Solo"
+				}
+				if h.Kind == core.ItemUser {
+					where = "You, to " + where
+				}
+				id, worker := h.ThreadID, th.IsWorker
+				out = append(out, ui.PaletteItem{
+					Key: fmt.Sprintf("msg-%d", h.ItemID), Label: h.Snippet, Icon: icons.MessageSquare,
+					Detail:   where + " · " + shortAgo(h.At),
+					Keywords: words, // the text matched; the snippet may hold only part of it
+					Run: func() {
+						if worker {
+							a.openThread(id, "conversation")
+						} else {
+							a.closeThread()
+						}
+					},
+				})
+			}
+		}
+	}
 	return out
 }
 
@@ -549,7 +666,7 @@ func (a *App) openThreads(track bool) []core.ThreadView {
 	for _, g := range railGroups {
 		var group []core.ThreadView
 		for _, th := range threads {
-			if inRail(th) && slices.Contains(g.statuses, shownStatus(th)) && inRepo(th, filter) {
+			if inRail(th) && slices.Contains(g.statuses, shownStatus(th)) && inRepo(th, filter) && matchesQuery(th, a.railQuery.Peek()) {
 				group = append(group, th)
 			}
 		}

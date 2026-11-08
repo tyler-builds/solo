@@ -2,6 +2,7 @@ package gui
 
 import (
 	"fmt"
+	"github.com/tyler-builds/jamb/input"
 	"github.com/tyler-builds/solo/internal/forge"
 	"path/filepath"
 	"slices"
@@ -31,6 +32,39 @@ var railGroups = []struct {
 	{"Working", []string{core.StatusRunning, core.StatusStarting, core.StatusQueued}},
 }
 
+func emptyRailText(query string) string {
+	if strings.TrimSpace(query) != "" {
+		return "No threads match “" + strings.TrimSpace(query) + "”. Ctrl+K searches their messages too."
+	}
+	return "No open threads. Ask Solo for something and its threads show up here."
+}
+
+// matchesQuery reports whether a thread's title or one of its repositories contains every word of the
+// rail's filter, ignoring case.
+func matchesQuery(th core.ThreadView, query string) bool {
+	hay := strings.ToLower(th.Title + " " + repoLabel(th))
+	for _, w := range strings.Fields(strings.ToLower(query)) {
+		if !strings.Contains(hay, w) {
+			return false
+		}
+	}
+	return true
+}
+
+// railFilterInput narrows the rail by thread title and repository.
+func (a *App) railFilterInput(ctx *ui.Context) ui.Element {
+	return ui.Div().PaddingX(space3).PaddingBottom(space2).Shrink(0).
+		Child(ui.TextInput(a.railQuery).Placeholder("Filter threads").Label("Filter threads").Small().Width(ui.Full).
+			Icon(icons.Search).Clearable().
+			Key("rail-filter").
+			OnKeyDown(func(e *ui.KeyEvent) {
+				if e.Key == input.KeyEscape && a.railQuery.Peek() != "" {
+					e.StopPropagation()
+					a.railQuery.Set("")
+				}
+			}))
+}
+
 // inRail reports whether a thread shows in the rail: a worker the user hasn't marked done.
 func inRail(th core.ThreadView) bool { return th.IsWorker && th.DoneAt.IsZero() }
 
@@ -40,8 +74,9 @@ func (a *App) rail(ctx *ui.Context) ui.Element {
 	filter := a.repoFilter()
 	var open []core.ThreadView
 	running := false
+	query := a.railQuery.Get()
 	for _, th := range a.threads.Get() {
-		if !inRail(th) || !inRepo(th, filter) {
+		if !inRail(th) || !inRepo(th, filter) || !matchesQuery(th, query) {
 			continue
 		}
 		open = append(open, th)
@@ -76,7 +111,7 @@ func (a *App) rail(ctx *ui.Context) ui.Element {
 	if len(open) == 0 {
 		list = list.Child(ui.Div().Column().Align(ui.Center).Gap(space2).PaddingY(space8).PaddingX(space4).
 			Child(ui.Icon(icons.Layers).Size(22).Color(t.TextSubtle)).
-			Child(caption(ctx, "No open threads. Ask Solo for something and its threads show up here.").Align(ui.Center)))
+			Child(caption(ctx, emptyRailText(query)).Align(ui.Center)))
 	}
 	var working ui.Element
 	for gi, g := range railGroups {
@@ -108,6 +143,7 @@ func (a *App) rail(ctx *ui.Context) ui.Element {
 	}
 	rail := ui.Div().Column().Size(ui.Full, ui.Full).Background(t.Panel).
 		Child(head).
+		Child(a.railFilterInput(ctx)).
 		Child(ui.Div().Column().Grow(1).MinHeight(ui.Px(0)).ScrollY().Child(list))
 	if working != nil {
 		rail = rail.Child(working)
@@ -193,6 +229,7 @@ func (a *App) threadRow(ctx *ui.Context, th core.ThreadView) ui.Element {
 	row := ui.Div().Column().Gap(3).PaddingX(space2 + 2).PaddingY(space2).Radius(radiusM).
 		Cursor(ui.CursorPointer).Hover(ui.Style{Background: t.SurfaceHover}).
 		Role(access.RoleButton).Label(th.Title).TabIndex(0).Key("card-" + th.ID).
+		ContextMenu(func() []ui.MenuItem { return a.folderMenu(th) }).
 		OnClick(func() {
 			if a.openID.Peek() == th.ID {
 				a.closeThread()

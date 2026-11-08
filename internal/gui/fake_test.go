@@ -12,6 +12,7 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -90,6 +91,31 @@ func (f *fakeBackend) MergeLocal(ctx context.Context, id string) (string, error)
 	return f.Merge(ctx, id)
 }
 func (f *fakeBackend) MarkReady(context.Context, string) error { return nil }
+func (f *fakeBackend) SearchMessages(_ context.Context, query string, limit int) ([]core.SearchHit, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []core.SearchHit
+	for id, items := range f.items {
+		for _, it := range items {
+			var d core.TextData
+			it.Decode(&d)
+			if (it.Kind == core.ItemUser || it.Kind == core.ItemAssistant) && strings.Contains(strings.ToLower(d.Text), strings.ToLower(query)) {
+				out = append(out, core.SearchHit{ThreadID: id, ItemID: it.ID, Kind: it.Kind, Snippet: d.Text, At: it.CreatedAt})
+			}
+		}
+	}
+	return out, nil
+}
+func (f *fakeBackend) SetThreadModel(_ context.Context, id, model, effort string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := range f.threads {
+		if f.threads[i].ID == id {
+			f.threads[i].Model, f.threads[i].Effort = model, effort
+		}
+	}
+	return nil
+}
 func (f *fakeBackend) OpenPRFor(ctx context.Context, id, repo string, draft bool) ([]forge.PR, error) {
 	pr, err := f.OpenPR(ctx, id, draft)
 	return []forge.PR{pr}, err
@@ -207,7 +233,7 @@ func demoBackend() *fakeBackend {
 		v := core.ThreadView{Thread: store.Thread{ID: id, Kind: store.KindWorker, Title: title, RepoPath: repo,
 			Branch: "solo/" + id[:8], BaseBranch: "main", BaseCommit: "abc123", WorktreePath: "/tmp/wt/" + id,
 			Status: status, Model: "sonnet", CostUSD: cost, CreatedAt: ago(updated + time.Hour), UpdatedAt: ago(updated)},
-			IsWorker: true, HasWorktree: true, ActualModel: "claude-sonnet-5"}
+			IsWorker: true, HasWorktree: true, Dir: "/tmp/wt/" + id, ActualModel: "claude-sonnet-5"}
 		v.CanDiscard = true
 		v.CanMerge = status == core.StatusIdle || status == core.StatusFailed || status == core.StatusInterrupted
 		return v

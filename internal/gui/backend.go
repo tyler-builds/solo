@@ -35,6 +35,8 @@ type Backend interface {
 	MarkReady(ctx context.Context, threadID string) error
 	OpenPRFor(ctx context.Context, threadID, repo string, draft bool) ([]forge.PR, error)
 	MergeRepo(ctx context.Context, threadID, repo string) (string, error)
+	SetThreadModel(ctx context.Context, threadID, model, effort string) error
+	SearchMessages(ctx context.Context, query string, limit int) ([]core.SearchHit, error)
 	Discard(ctx context.Context, threadID string) error
 	Done(ctx context.Context, threadID string) error
 	Restore(ctx context.Context, threadID string) error

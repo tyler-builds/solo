@@ -1080,7 +1080,11 @@ func (a *App) composer(ctx *ui.Context, v core.ThreadView, key, placeholder stri
 		} else {
 			sendBtn = sendBtn.Primary()
 		}
-		actions := ui.Div().Row().Align(ui.Center).Gap(space1).Shrink(0).
+		actions := ui.Div().Row().Align(ui.Center).Gap(space1).Shrink(0)
+		if v.IsWorker && !core.Finished(v.Status) {
+			actions = actions.Child(a.modelPicker(ctx, v))
+		}
+		actions = actions.
 			Child(ui.IconButton(icons.ImagePlus).Ghost().Small().Label("Attach images").
 				Tooltip("Attach images · you can also paste or drop them").
 				OnClick(func() {

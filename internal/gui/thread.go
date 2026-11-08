@@ -322,6 +322,14 @@ func (a *App) threadPanel(ctx *ui.Context) ui.Element {
 		Child(ui.Text(fmt.Sprintf("+%d", added)).FontSize(12).Medium().TextColor(t.Success)).
 		Child(ui.Text(fmt.Sprintf("−%d", removed)).FontSize(12).Medium().TextColor(t.Danger))
 	actions := ui.Div().Row().Align(ui.Center).Gap(space1).Shrink(0)
+	if th.Dir != "" {
+		dir := th.Dir
+		actions = actions.
+			Child(ui.IconButton(icons.SquareCode).Ghost().Small().Label("Open in editor").Tooltip("Open in editor").
+				OnClick(func() { a.openEditor(dir) })).
+			Child(ui.IconButton(icons.SquareTerminal).Ghost().Small().Label("Open terminal").Tooltip("Open terminal").
+				OnClick(func() { a.openTerminal(dir) }))
+	}
 	actions = actions.Child(a.prLink(ctx, th))
 	switch {
 	case th.CanOpenPR || th.CanMerge || th.CanMarkReady || len(openPRs(th)) > 0:
@@ -331,7 +339,7 @@ func (a *App) threadPanel(ctx *ui.Context) ui.Element {
 			Tooltip("Take it out of your list. Settings › History can restore it.").
 			OnClick(func() { a.markDone(th) }))
 	}
-	if th.CanDiscard || th.CanInterrupt || th.CanMergeLocal {
+	if th.CanDiscard || th.CanInterrupt || th.CanMergeLocal || th.Dir != "" {
 		actions = actions.Child(ui.DropdownMenu(
 			ui.IconButton(icons.Ellipsis).Ghost().Small().Label("More actions").Tooltip("More"),
 			func() []ui.MenuItem {
@@ -346,6 +354,10 @@ func (a *App) threadPanel(ctx *ui.Context) ui.Element {
 				}
 				if th.CanDone && (th.CanOpenPR || th.CanMerge || th.PR != nil) {
 					items = append(items, ui.MenuItem{Label: "Done", Icon: icons.Check, OnClick: func() { a.markDone(th) }})
+				}
+				if th.Dir != "" {
+					dir := th.Dir
+					items = append(items, ui.MenuItem{Label: "Copy folder path", Icon: icons.Copy, OnClick: func() { a.copyText("the folder path", dir) }})
 				}
 				if th.CanDiscard {
 					items = append(items, ui.MenuItem{Label: "Discard thread…", Icon: icons.Trash, OnClick: func() { a.confirmDiscard(th) }})
@@ -375,7 +387,7 @@ func (a *App) threadPanel(ctx *ui.Context) ui.Element {
 		Child(ui.Div().Column().Gap(space1).Grow(1).MinWidth(ui.Px(0)).
 			Child(ui.Div().Row().Align(ui.Center).Gap(space2).MinWidth(ui.Px(0)).
 				Child(ui.Div().Shrink(0).Tooltip(statusLabel(th)).Child(statusMark(ctx, shownStatus(th)))).
-				Child(ui.Div().MinWidth(ui.Px(0)).Tooltip(th.Title).
+				Child(ui.Div().MinWidth(ui.Px(0)).Tooltip(th.Title).ContextMenu(func() []ui.MenuItem { return a.folderMenu(th) }).
 					Child(ui.Text(th.Title).FontSize(14).Semibold().Truncate()))).
 			Child(ui.Div().PaddingLeft(space5 + 2).Child(meta))).
 		Child(actions)

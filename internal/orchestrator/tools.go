@@ -64,6 +64,7 @@ var toolSpecs = []agent.ToolSpec{
 			"title":{"type":"string","description":"Short title, a few words, shown to the user."},
 			"prompt":{"type":"string","description":"The complete, self-contained task for the worker."},
 			"model":{"type":"string","description":"Optional model alias (opus, sonnet, haiku) or ID."},
+			"effort":{"type":"string","description":"Optional effort level (low, medium, high, xhigh, max); default from Settings."},
 			"base":{"type":"string","description":"Optional branch to start from; default is the repository's current branch."},
 			"images":{"type":"array","items":{"type":"string"},"description":"Optional paths of image files to send with it, such as the attached images the user gave you."}},
 			"required":["repo","title","prompt"]}`),
@@ -118,6 +119,7 @@ func (o *Orchestrator) handleTool(ctx context.Context, threadID, name string, ra
 		Answers       map[string]string `json:"answers"`
 		Images        []string          `json:"images"`
 		Repos         []string          `json:"repos"`
+		Effort        string            `json:"effort"`
 	}
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &a); err != nil {
@@ -172,7 +174,7 @@ func (o *Orchestrator) handleTool(ctx context.Context, threadID, name string, ra
 		}
 	case "spawn_thread":
 		var v core.ThreadView
-		if v, err = o.c.CreateWorker(ctx, core.WorkerSpec{Repo: a.Repo, Repos: a.Repos, Title: a.Title, Prompt: a.Prompt, Model: a.Model, Base: a.Base, Images: a.Images}); err == nil {
+		if v, err = o.c.CreateWorker(ctx, core.WorkerSpec{Repo: a.Repo, Repos: a.Repos, Title: a.Title, Prompt: a.Prompt, Model: a.Model, Effort: a.Effort, Base: a.Base, Images: a.Images}); err == nil {
 			out = fmt.Sprintf("Started thread %s %q in %s (status: %s). You'll get a thread update when it finishes or needs input.",
 				short(v.ID), v.Title, repoList(v), v.Status)
 		}

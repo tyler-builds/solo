@@ -1,11 +1,14 @@
 package gui
 
 import (
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/tyler-builds/jamb/access"
 	"github.com/tyler-builds/jamb/ui/uitest"
+
+	"github.com/tyler-builds/solo/internal/core"
 )
 
 func newUI(t *testing.T, f *fakeBackend) (*App, *uitest.UI) {
@@ -100,4 +103,64 @@ func TestRailDoneButtonMarksDone(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("not marked done")
+}
+
+func TestNotifiesWhenAThreadNeedsYou(t *testing.T) {
+	f := demoBackend()
+	a, u := newUI(t, f)
+	got := make(chan Notification, 4)
+	a.Notify = func(n Notification) { got <- n }
+	a.focused = func() bool { return false }
+	a.notifyChange(core.Change{Kind: core.ChangeThread, ThreadID: "b7e21a90-limit", PrevStatus: core.StatusRunning, Status: core.StatusWaiting})
+	u.Frame()
+	select {
+	case n := <-got:
+		if n.Thread != "b7e21a90-limit" || n.Body != "Which store should back the upload rate limiter?" {
+			t.Fatalf("notification %+v", n)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("no notification")
+	}
+
+	// Not while Solo is in front, and not when Settings turns them off.
+	a.focused = func() bool { return true }
+	a.notifyChange(core.Change{Kind: core.ChangeThread, ThreadID: "d9a8b7c6-flaky", PrevStatus: core.StatusRunning, Status: core.StatusFailed})
+	u.Frame() // the check runs on the UI thread
+	a.focused = func() bool { return false }
+	f.settings.NoNotifications = true
+	a.notifyChange(core.Change{Kind: core.ChangeThread, ThreadID: "d9a8b7c6-flaky", PrevStatus: core.StatusRunning, Status: core.StatusFailed})
+	u.Frame()
+	select {
+	case n := <-got:
+		t.Fatalf("unexpected notification %+v", n)
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+func TestRailFilter(t *testing.T) {
+	f := demoBackend()
+	a, u := newUI(t, f)
+	a.railQuery.Set("api rate")
+	u.Frame()
+	if got := a.openThreads(false); len(got) != 1 || got[0].ID != "b7e21a90-limit" {
+		var titles []string
+		for _, th := range got {
+			titles = append(titles, th.Title)
+		}
+		t.Fatalf("filtered to %v", titles)
+	}
+}
+
+func TestSearchFindsMessages(t *testing.T) {
+	f := demoBackend()
+	a, _ := newUI(t, f)
+	var found bool
+	for _, it := range a.paletteItems("retry once") {
+		if strings.HasPrefix(it.Key, "msg-") && strings.Contains(it.Label, "Retry once") && strings.Contains(it.Detail, "Fix OAuth token refresh") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("no message result")
+	}
 }

@@ -947,3 +947,27 @@ func TestMultiRepoThread(t *testing.T) {
 		t.Fatalf("restored %+v", v)
 	}
 }
+
+func TestSearchMessages(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	v, err := e.c.CreateWorker(ctx, WorkerSpec{Repo: "proj", Title: "Tokens", Prompt: "refresh the OAuth Token on a 401"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitStatus(t, e.c, v.ID, StatusIdle)
+	hits, err := e.c.SearchMessages(ctx, "oauth 401", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The prompt and the fake's echo of it both match.
+	if len(hits) != 2 || hits[0].ThreadID != v.ID || hits[0].Kind != ItemAssistant || !strings.Contains(hits[0].Snippet, "OAuth Token") {
+		t.Fatalf("hits %+v", hits)
+	}
+	if hits, _ := e.c.SearchMessages(ctx, "oauth nowhere", 10); len(hits) != 0 {
+		t.Fatalf("all words must match: %+v", hits)
+	}
+	if got := snippet(strings.Repeat("a", 100)+" needle "+strings.Repeat("b", 200), 101, 6); !strings.HasPrefix(got, "…") || !strings.HasSuffix(got, "…") || !strings.Contains(got, "needle") {
+		t.Errorf("snippet %q", got)
+	}
+}

@@ -173,6 +173,17 @@ Raw `SDKMessage`s are also appended to a per-session JSONL file for debugging an
   `<data>/attachments` (scaled to at most 2000 px and 3.5 MB) and sent as image blocks before the text.
   Messages to Solo also list the saved paths, so Solo can pass them on with `spawn_thread` or
   `message_thread`'s `images`.
+- **Search:** the rail's filter matches thread titles and repositories. Ctrl+K (the title bar's
+  Search) lists threads, including merged ones and History, and, from three letters, messages (yours,
+  Solo's and the threads'), found with `core.SearchMessages`.
+- **Model and effort per thread:** the thread's message box shows them; a new model applies at once,
+  a new effort restarts the session (with resume) between turns.
+- **Folders:** each thread's header opens its folder (the worktree, or the multi-repository folder) in
+  an editor or a terminal (`internal/launch`: detected, or Settings' commands); a right click on a
+  thread copies its paths and branch.
+- **Notifications:** desktop notifications (jamb's `app.Notify`) while Solo isn't in front, when a
+  thread asks, fails or finishes, a PR's checks fail or it merges, and when Solo replies. A click
+  opens the thread. Solo is a single instance; on Windows its AppID is the installer's identity.
 - Text deltas are coalesced (~30 ms) before signals update, to keep re-renders cheap.
 
 ## Repo layout

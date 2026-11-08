@@ -37,6 +37,12 @@ type Settings struct {
 	ClaudePath        string   `json:"claudePath,omitempty"`
 	// ShowCosts shows what threads have cost in the UI.
 	ShowCosts bool `json:"showCosts,omitempty"`
+	// EditorCommand and TerminalCommand open a thread's folder ({path} marks where it goes); empty
+	// finds one.
+	EditorCommand   string `json:"editorCommand,omitempty"`
+	TerminalCommand string `json:"terminalCommand,omitempty"`
+	// NoNotifications turns off desktop notifications.
+	NoNotifications bool `json:"noNotifications,omitempty"`
 
 	// Effort for each model; "" leaves it to Claude.
 	OrchestratorEffort string `json:"orchestratorEffort,omitempty"`

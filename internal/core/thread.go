@@ -1,6 +1,7 @@
 package core
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -61,6 +62,8 @@ type thread struct {
 	tools     map[string]int64 // tool_use id → item id
 	// parts are the repositories it works in; the first is the one most of the app shows.
 	parts []*part
+	// reopen asks for the session to restart at the end of the turn, to take a new effort level.
+	reopen bool
 }
 
 type liveKey struct {
@@ -100,6 +103,9 @@ type ThreadView struct {
 	CanMergeLocal bool
 	// CanMarkReady: its pull request is an open draft.
 	CanMarkReady bool
+	// Dir is the folder it works in: its worktree, or for several repositories the folder that holds
+	// theirs. "" without a worktree.
+	Dir string
 	// Parts are the repositories it works in, each with its branch and pull request. The fields above
 	// sum them up: Changed adds them, the Can flags hold when any part can, and Forge and PR are the
 	// first part's, set only when there is one part.
@@ -176,7 +182,7 @@ func (c *Core) Threads() []ThreadView {
 	defer c.mu.Unlock()
 	out := make([]ThreadView, 0, len(c.threads))
 	for _, t := range c.threads {
-		out = append(out, t.view())
+		out = append(out, c.viewLocked(t))
 	}
 	slices.SortFunc(out, func(a, b ThreadView) int { return a.CreatedAt.Compare(b.CreatedAt) })
 	return out
@@ -190,7 +196,19 @@ func (c *Core) Thread(id string) (ThreadView, bool) {
 	if t == nil {
 		return ThreadView{}, false
 	}
-	return t.view(), true
+	return c.viewLocked(t), true
+}
+
+// viewLocked is a thread's view with what only Core knows. Call with c.mu held.
+func (c *Core) viewLocked(t *thread) ThreadView {
+	v := t.view()
+	if v.HasWorktree {
+		v.Dir = v.Parts[0].Worktree
+		if len(t.parts) > 1 {
+			v.Dir = c.threadDir(t.row)
+		}
+	}
+	return v
 }
 
 // Items returns up to limit of the thread's newest transcript items (all when limit <= 0).
@@ -213,6 +231,7 @@ type WorkerSpec struct {
 	Title  string
 	Prompt string
 	Model  string   // empty: Settings.WorkerModel
+	Effort string   // empty: Settings.WorkerEffort
 	Base   string   // branch to start from; empty: the repository's current branch
 	Images []string // image files to send with the prompt
 }
@@ -255,6 +274,7 @@ func (c *Core) CreateWorker(ctx context.Context, spec WorkerSpec) (ThreadView, e
 		SessionID:    agent.NewUUID(),
 		Title:        title,
 		Model:        spec.Model,
+		Effort:       spec.Effort,
 		Status:       StatusQueued,
 		Prompt:       spec.Prompt,
 		PromptImages: images,
@@ -414,7 +434,7 @@ func (c *Core) openParams(row store.Thread) agent.OpenParams {
 		Resume:         row.HasTranscript,
 		Cwd:            c.sessionDir(row),
 		Model:          row.Model,
-		Effort:         effort,
+		Effort:         cmp.Or(row.Effort, effort),
 		Title:          row.Title,
 		SystemAppend:   workerInstructions(row),
 		PermissionMode: agent.PermissionBypass,
@@ -538,6 +558,48 @@ func (c *Core) send(ctx context.Context, threadID, text string, images []string,
 	if err := c.agent.SendUUID(ctx, params.SessionID, uuid, sent, blocks, synthetic); err != nil {
 		return fail(err)
 	}
+	return nil
+}
+
+// SetThreadModel changes a thread's model and effort ("" effort: the default in Settings). A new model
+// applies at once, even mid-turn; a new effort needs the session to restart, which happens now when
+// the thread is between turns, or at the end of the turn (it resumes, keeping its context).
+func (c *Core) SetThreadModel(ctx context.Context, threadID, model, effort string) error {
+	c.mu.Lock()
+	t := c.threads[threadID]
+	if t == nil {
+		c.mu.Unlock()
+		return fmt.Errorf("no thread %s", threadID)
+	}
+	if model == "" {
+		model = t.row.Model
+	}
+	modelChanged, effortChanged := model != t.row.Model, effort != t.row.Effort
+	if !modelChanged && !effortChanged {
+		c.mu.Unlock()
+		return nil
+	}
+	t.row.Model, t.row.Effort = model, effort
+	t.row.UpdatedAt = now()
+	err := c.saveLocked(t)
+	opened, inTurn, sid := t.opened, t.inTurn, t.row.SessionID
+	if opened && inTurn && effortChanged {
+		t.reopen = true
+	}
+	status := t.row.Status
+	c.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	switch {
+	case opened && !inTurn:
+		c.closeSession(ctx, threadID) // the next message reopens it with the new settings
+	case opened && modelChanged:
+		if err := c.agent.SetModel(ctx, sid, model); err != nil {
+			c.log.Warn("core: changing the model", "thread", threadID, "err", err)
+		}
+	}
+	c.notify(Change{Kind: ChangeThread, ThreadID: threadID, PrevStatus: status, Status: status})
 	return nil
 }
 

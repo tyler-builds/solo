@@ -78,6 +78,7 @@ func TestShots(t *testing.T) {
 		{"multi-open", func(a *App, f *fakeBackend) { a.openThread("d1d2d3d4-export", "conversation") }},
 		{"multi-prs", func(a *App, f *fakeBackend) { a.openThread("e5e6e7e8-landing", "conversation") }},
 		{"multi-changes", func(a *App, f *fakeBackend) { diffSplit.Set(false); a.openThread("d1d2d3d4-export", "changes") }},
+		{"filter", func(a *App, f *fakeBackend) { a.railQuery.Set("audit"); a.openThread("c3d4e5f6-forms", "conversation") }},
 		{"empty", nil},
 	}
 	for _, theme := range []struct {

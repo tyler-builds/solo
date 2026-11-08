@@ -3,7 +3,9 @@ package gui
 import (
 	"context"
 	"fmt"
+	"github.com/tyler-builds/jamb/access"
 	"github.com/tyler-builds/solo/internal/agent"
+	"github.com/tyler-builds/solo/internal/launch"
 	"maps"
 	"path/filepath"
 	"slices"
@@ -15,6 +17,69 @@ import (
 
 	"github.com/tyler-builds/solo/internal/core"
 )
+
+// modelPicker shows a thread's model and effort in its message box, and changes them.
+func (a *App) modelPicker(ctx *ui.Context, v core.ThreadView) ui.Element {
+	t := ctx.Theme()
+	cfg := a.cfg.Get()
+	// Shares Settings' check of Claude Code, which lists the models.
+	claude := ui.Query(ctx, "claude:"+strings.TrimSpace(cfg.ClaudePath), func(c context.Context) (core.ClaudeStatus, error) {
+		return a.b.CheckClaude(c, strings.TrimSpace(cfg.ClaudePath)), nil
+	}, ui.QueryStaleTime(10*time.Minute))
+	models := claude.Data.Models
+	model := v.Model
+	if model == "" {
+		model = cfg.WorkerModel
+	}
+	label := model
+	for _, o := range modelChoices(models, model) {
+		if o.Value == model {
+			label = o.Label
+		}
+	}
+	effortLabel := "Default effort"
+	if v.Effort != "" {
+		effortLabel = strings.ToUpper(v.Effort[:1]) + v.Effort[1:]
+	} else if cfg.WorkerEffort != "" {
+		effortLabel = strings.ToUpper(cfg.WorkerEffort[:1]) + cfg.WorkerEffort[1:]
+	}
+	id, effort := v.ID, v.Effort
+	set := func(m, e string) {
+		a.run("Changing the model", func(ctx context.Context) error { return a.b.SetThreadModel(ctx, id, m, e) })
+	}
+	trigger := ui.Div().Row().Align(ui.Center).Gap(4).PaddingX(space2).Height(ui.Px(26)).Radius(radiusS).
+		Cursor(ui.CursorPointer).Hover(ui.Style{Background: t.SurfaceHover}).
+		Role(access.RoleButton).Label("Model and effort").Tooltip("Model and effort for this thread").
+		Child(ui.Text(label + " · " + effortLabel).FontSize(12).TextColor(t.TextMuted).NoWrap()).
+		Child(ui.Icon(icons.ChevronDown).Size(12).Color(t.TextSubtle))
+	return ui.DropdownMenu(trigger, func() []ui.MenuItem {
+		items := []ui.MenuItem{ui.MenuSection("Model")}
+		for _, o := range modelChoices(models, model) {
+			m := o.Value
+			items = append(items, ui.MenuItem{Label: o.Label, Check: ui.MenuCheckRadio, Checked: m == model,
+				OnClick: func() { set(m, effort) }})
+		}
+		items = append(items, ui.MenuSeparator(), ui.MenuSection("Effort"))
+		for _, o := range effortChoices(models, model, effort) {
+			e := o.Value
+			l := o.Label
+			if e == "" {
+				l = "Default (Settings)"
+			}
+			items = append(items, ui.MenuItem{Label: l, Check: ui.MenuCheckRadio, Checked: e == effort,
+				OnClick: func() { set(model, e) }})
+		}
+		return items
+	}).Key("model-" + v.ID)
+}
+
+// placeholderFor says what Solo uses when a command is left empty.
+func placeholderFor(detected, what string) string {
+	if detected == "" {
+		return "None found; enter " + what + " command"
+	}
+	return "Detected: " + detected
+}
 
 // fallbackModels are offered until Claude Code reports its own list.
 var fallbackModels = []ui.Option[string]{
@@ -142,6 +207,10 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 		prEffort := ui.Local(ctx, "pr-effort", initial.PREffort)
 		prRules := ui.Local(ctx, "pr-rules", initial.PRRules)
 		prDescribe := ui.Local(ctx, "pr-describe", !initial.SkipPRDescription)
+		editorCmd := ui.Local(ctx, "editor-cmd", initial.EditorCommand)
+		terminalCmd := ui.Local(ctx, "terminal-cmd", initial.TerminalCommand)
+		notifications := ui.Local(ctx, "notifications", !initial.NoNotifications)
+		detected := ui.Local(ctx, "detected", [2]string{launch.Detect("editor"), launch.Detect("terminal")}).Peek()
 		showCosts := ui.Local(ctx, "show-costs", initial.ShowCosts)
 		claudePath := ui.Local(ctx, "claude-path", initial.ClaudePath)
 		checked := ui.Local(ctx, "claude-checked", strings.TrimSpace(initial.ClaudePath))
@@ -237,6 +306,16 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 						Child(ui.TextInput(newFolder).Placeholder("Add a folder, such as ~/projects").Label("Folder to add").Small().Width(ui.Full).
 							Key("new-folder").OnSubmit(func(string) { add() })).
 						Child(ui.Button("Add").Icon(icons.Plus).Secondary().Small().OnClick(add))))).
+			Child(ui.Div().Row().Gap(space4).
+				Child(ui.Div().Grow(1).Basis(ui.Px(0)).Child(field("Editor", "Opens a thread's folder. {path} marks where the folder goes.",
+					ui.TextInput(editorCmd).Placeholder(placeholderFor(detected[0], "code")).Label("Editor command").Small().Width(ui.Full)))).
+				Child(ui.Div().Grow(1).Basis(ui.Px(0)).Child(field("Terminal", "Opens a terminal in a thread's folder.",
+					ui.TextInput(terminalCmd).Placeholder(placeholderFor(detected[1], "a terminal")).Label("Terminal command").Small().Width(ui.Full))))).
+			Child(ui.Div().Row().Align(ui.Center).Gap(space4).
+				Child(ui.Div().Column().Gap(space1).Grow(1).MinWidth(ui.Px(0)).
+					Child(subhead("Notifications")).
+					Child(caption(ctx, "When a thread asks something, fails or finishes, its checks fail or it merges, and when Solo replies, while Solo isn't in front."))).
+				Child(ui.Switch("Notifications", notifications))).
 			Child(ui.Div().Row().Align(ui.Center).Gap(space4).
 				Child(ui.Div().Column().Gap(space1).Grow(1).MinWidth(ui.Px(0)).
 					Child(subhead("Costs")).
@@ -319,6 +398,8 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 		save := ui.Button("Save").Primary().Key("settings-save").OnClick(func() {
 			apply := func(s *core.Settings) {
 				s.Folders, s.ShowCosts, s.ClaudePath = folders.Peek(), showCosts.Peek(), strings.TrimSpace(claudePath.Peek())
+				s.EditorCommand, s.TerminalCommand = strings.TrimSpace(editorCmd.Peek()), strings.TrimSpace(terminalCmd.Peek())
+				s.NoNotifications = !notifications.Peek()
 				s.OrchestratorModel, s.WorkerModel, s.NamingModel = orchModel.Peek(), workerModel.Peek(), namingModel.Peek()
 				s.OrchestratorEffort, s.WorkerEffort, s.NamingEffort = orchEffort.Peek(), workerEffort.Peek(), namingEffort.Peek()
 				s.BranchRules, s.RepoBranchRules = strings.TrimSpace(branchRules.Peek()), repoRules.Peek()

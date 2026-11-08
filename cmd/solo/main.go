@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 
 	"github.com/tyler-builds/jamb/app"
 
@@ -59,7 +60,15 @@ func run() error {
 	defer g.Close()
 
 	light, dark := gui.Themes()
-	a := app.New().AppID("io.github.tyler_builds.solo")
+	a := app.New().AppID(appID()).
+		// One Solo at a time: they would share the database. A second launch brings the first to the front.
+		SingleInstance(nil).
+		OnNotification(func(n app.NotificationActivation) { g.OpenFromNotification(n.Args) })
+	g.Notify = func(n gui.Notification) {
+		if err := app.Notify(app.Notification{Title: n.Title, Body: n.Body, Tag: "solo-" + shortTag(n.Thread), Args: n.Thread}); err != nil {
+			log.Debug("notification", "err", err)
+		}
+	}
 	for _, f := range gui.Fonts() {
 		a = a.Font("", f.Weight, f.Data)
 	}
@@ -76,4 +85,26 @@ func run() error {
 		Chrome:     app.ChromeCustom, // Solo draws its own title bar
 	})
 	return nil
+}
+
+// appID names Solo to the desktop. Windows ties it to the installer's Start menu shortcut, whose ID is
+// jamb.json's identityName, which can't hold "_"; Linux uses it as the Wayland app ID and the desktop
+// file's name.
+func appID() string {
+	if runtime.GOOS == "windows" {
+		return "Solo.TylerBuilds"
+	}
+	return "io.github.tyler_builds.solo"
+}
+
+// shortTag keeps a notification tag within Windows's 64 characters: one per thread, so a newer
+// notification replaces the thread's last.
+func shortTag(threadID string) string {
+	if threadID == "" {
+		return "solo"
+	}
+	if len(threadID) > 36 {
+		return threadID[:36]
+	}
+	return threadID
 }
