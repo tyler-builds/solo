@@ -90,6 +90,13 @@ func (f *fakeBackend) MergeLocal(ctx context.Context, id string) (string, error)
 	return f.Merge(ctx, id)
 }
 func (f *fakeBackend) MarkReady(context.Context, string) error { return nil }
+func (f *fakeBackend) OpenPRFor(ctx context.Context, id, repo string, draft bool) ([]forge.PR, error) {
+	pr, err := f.OpenPR(ctx, id, draft)
+	return []forge.PR{pr}, err
+}
+func (f *fakeBackend) MergeRepo(ctx context.Context, id, repo string) (string, error) {
+	return f.Merge(ctx, id)
+}
 func (f *fakeBackend) OpenPR(_ context.Context, id string, draft bool) (forge.PR, error) {
 	f.mu.Lock()
 	f.opened = append(f.opened, id)
@@ -229,6 +236,24 @@ func demoBackend() *fakeBackend {
 	ci.Forge, ci.CanMerge, ci.CanMergeLocal = forge.GitHub, false, false
 	ci.PR = &forge.PR{Kind: forge.GitHub, Number: 88, URL: "https://github.com/acme/web/pull/88", State: forge.StateOpen,
 		Checks: forge.ChecksFailing, Failed: []forge.Check{{Name: "test (web)"}}, Blocked: "checks failed"}
+	// A task across the client, its API and its database: before its PRs, and with them open.
+	part := func(name string, changed int, pr *forge.PR) core.PartView {
+		p := core.PartView{Part: core.Part{Repo: "/home/dev/code/" + name, Branch: "feat/OW-512-audit-export", BaseBranch: "main", PR: pr},
+			Name: name, Changed: changed, Forge: forge.GitHub}
+		p.CanOpenPR = changed > 0 && pr == nil
+		p.CanMerge = pr != nil && pr.Mergeable
+		return p
+	}
+	export := worker("d1d2d3d4-export", "Add audit log export", "/home/dev/code/client", core.StatusIdle, 12*time.Minute, 1.4)
+	export.Parts = []core.PartView{part("client", 3, nil), part("api", 5, nil), part("db", 1, nil)}
+	export.Forge, export.CanOpenPR, export.CanMerge, export.CanMergeLocal = "", true, false, true
+	landing := worker("e5e6e7e8-landing", "Add tenant usage report", "/home/dev/code/client", core.StatusIdle, 48*time.Minute, 2.1)
+	landing.Parts = []core.PartView{
+		part("client", 2, &forge.PR{Kind: forge.GitHub, Number: 88, URL: "https://github.com/acme/client/pull/88", State: forge.StateOpen, Checks: forge.ChecksFailing, Failed: []forge.Check{{Name: "test (web)"}}, Blocked: "checks failed"}),
+		part("api", 4, &forge.PR{Kind: forge.GitHub, Number: 142, URL: "https://github.com/acme/api/pull/142", State: forge.StateOpen, Checks: forge.ChecksPending, Blocked: "waiting for checks"}),
+		part("db", 1, &forge.PR{Kind: forge.GitHub, Number: 31, URL: "https://github.com/acme/db/pull/31", State: forge.StateOpen, Checks: forge.ChecksPassing, Mergeable: true}),
+	}
+	landing.Forge, landing.PR, landing.CanOpenPR, landing.CanMerge, landing.CanMergeLocal = "", nil, false, true, false
 	audit := worker("a0b1c2d3-audit", "Find where uploads are logged", repos[1], core.StatusIdle, 25*time.Minute, 0.09)
 	audit.Summary = "Uploads are logged in `internal/upload/handler.go:142` through the request logger; nothing writes file names. No changes needed."
 	audit.NoChanges, audit.CanMerge, audit.CanDone, audit.Changed = true, false, true, 0
@@ -243,7 +268,7 @@ func demoBackend() *fakeBackend {
 		ActualModel: "claude-opus-5-5"}
 
 	f := &fakeBackend{
-		threads: []core.ThreadView{orch, oauth, limiter, forms, review, ci, audit, flaky, readme, bump, old, gone},
+		threads: []core.ThreadView{orch, oauth, limiter, forms, review, ci, export, landing, audit, flaky, readme, bump, old, gone},
 		items:   map[string][]core.Item{},
 		repos:   repos,
 		settings: core.Settings{Folders: []string{"~/code"}, OrchestratorModel: "opus", WorkerModel: "sonnet", ScanDepth: 3,
@@ -255,7 +280,12 @@ func demoBackend() *fakeBackend {
 				{Label: "Redis", Description: "Shared across instances; the API already uses Redis for sessions."},
 				{Label: "In-memory", Description: "Simplest, but limits are per instance."},
 			}}}}}},
-		changes: map[string][]git.FileChange{forms.ID: {
+		changes: map[string][]git.FileChange{export.ID: {
+			{Path: "client/src/audit/ExportButton.tsx", Status: "A", Added: 3, Removed: 0},
+			{Path: "api/internal/audit/export.go", Status: "A", Added: 4, Removed: 0},
+			{Path: "api/internal/audit/routes.go", Status: "M", Added: 1, Removed: 1},
+			{Path: "db/migrations/0042_audit_export.sql", Status: "A", Added: 2, Removed: 0},
+		}, forms.ID: {
 			// These match demoDiff for the two files it shows.
 			{Path: "src/settings/SettingsPage.tsx", Status: "M", Added: 9, Removed: 10},
 			{Path: "src/settings/ProfileSection.tsx", Status: "M", Added: 22, Removed: 31},
@@ -264,7 +294,7 @@ func demoBackend() *fakeBackend {
 			{Path: "src/components/legacy/LegacyField.tsx", Status: "D", Added: 0, Removed: 64},
 			{Path: "src/settings/settings.test.tsx", Status: "M", Added: 12, Removed: 4},
 		}},
-		diffs: map[string]string{forms.ID: demoDiff},
+		diffs: map[string]string{forms.ID: demoDiff, export.ID: exportDiff},
 	}
 
 	o := core.OrchestratorID
@@ -353,4 +383,38 @@ new file mode 100644
 +    </label>
 +  );
 +}
+`
+
+const exportDiff = `diff --git a/client/src/audit/ExportButton.tsx b/client/src/audit/ExportButton.tsx
+new file mode 100644
+--- /dev/null
++++ b/client/src/audit/ExportButton.tsx
+@@ -0,0 +1,3 @@
++export function ExportButton({ onExport }: { onExport: () => void }) {
++  return <Button onClick={onExport}>Export CSV</Button>;
++}
+diff --git a/api/internal/audit/export.go b/api/internal/audit/export.go
+new file mode 100644
+--- /dev/null
++++ b/api/internal/audit/export.go
+@@ -0,0 +1,4 @@
++package audit
++
++// Export writes the tenant's audit log as CSV.
++func Export(w io.Writer, tenant string) error { return writeCSV(w, tenant) }
+diff --git a/api/internal/audit/routes.go b/api/internal/audit/routes.go
+--- a/api/internal/audit/routes.go
++++ b/api/internal/audit/routes.go
+@@ -10,3 +10,3 @@ func Routes(r chi.Router) {
+ 	r.Get("/audit", list)
+-	r.Get("/audit/{id}", show)
++	r.Get("/audit/export", export)
+ }
+diff --git a/db/migrations/0042_audit_export.sql b/db/migrations/0042_audit_export.sql
+new file mode 100644
+--- /dev/null
++++ b/db/migrations/0042_audit_export.sql
+@@ -0,0 +1,2 @@
++CREATE INDEX audit_tenant_created ON audit_log (tenant_id, created_at);
++-- for the export's ordered scan
 `

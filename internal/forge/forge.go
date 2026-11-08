@@ -204,6 +204,16 @@ func methodFlag(method string) string {
 	return "--squash"
 }
 
+// EditBody replaces a pull request's description.
+func (c *Client) EditBody(ctx context.Context, dir string, pr PR, body string) error {
+	if c.Kind == GitLab {
+		_, err := c.run(ctx, dir, "mr", "update", strconv.Itoa(pr.Number), "--description", body, "--yes")
+		return err
+	}
+	_, err := c.run(ctx, dir, "pr", "edit", pr.URL, "--body", body)
+	return err
+}
+
 // Ready marks a draft pull request ready for review.
 func (c *Client) Ready(ctx context.Context, dir string, pr PR) error {
 	if c.Kind == GitLab {

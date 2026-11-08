@@ -52,7 +52,7 @@ func (c *Core) EnsureOrchestrator() (ThreadView, error) {
 		return v, nil
 	}
 	ts := now()
-	t := &thread{changed: -1, row: store.Thread{
+	t := &thread{row: store.Thread{
 		ID:        OrchestratorID,
 		Kind:      store.KindOrchestrator,
 		SessionID: agent.NewUUID(),

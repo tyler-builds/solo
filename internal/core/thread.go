@@ -59,10 +59,8 @@ type thread struct {
 	recovered time.Time
 	tasks     map[string]int64 // task id → item id
 	tools     map[string]int64 // tool_use id → item id
-	// changed is how many files its branch changes from where it started; -1 until counted.
-	changed int
-	forge   forge.Kind // where its repository's pull requests go; found with the change count
-	pr      *forge.PR  // its pull request, once opened
+	// parts are the repositories it works in; the first is the one most of the app shows.
+	parts []*part
 }
 
 type liveKey struct {
@@ -102,7 +100,14 @@ type ThreadView struct {
 	CanMergeLocal bool
 	// CanMarkReady: its pull request is an open draft.
 	CanMarkReady bool
+	// Parts are the repositories it works in, each with its branch and pull request. The fields above
+	// sum them up: Changed adds them, the Can flags hold when any part can, and Forge and PR are the
+	// first part's, set only when there is one part.
+	Parts []PartView
 }
+
+// MultiRepo reports whether the thread works in more than one repository.
+func (v ThreadView) MultiRepo() bool { return len(v.Parts) > 1 }
 
 func (t *thread) view() ThreadView {
 	v := ThreadView{
@@ -114,29 +119,53 @@ func (t *thread) view() ThreadView {
 		Retry:       t.retry,
 		PendingAsk:  len(t.asks) > 0,
 		IsWorker:    t.row.Kind == store.KindWorker,
-		HasWorktree: t.row.WorktreePath != "",
-		Changed:     t.changed,
 	}
 	for _, k := range t.live {
 		v.Live = append(v.Live, *t.liveTxt[k])
 	}
 	v.CanInterrupt = t.inTurn
-	settled := v.IsWorker && v.HasWorktree && !Finished(t.row.Status) && !Active(t.row.Status) && t.row.Status != StatusQueued
-	v.Forge = t.forge
-	if t.pr != nil {
-		pr := *t.pr
-		v.PR = &pr
+	for _, p := range t.parts {
+		v.HasWorktree = v.HasWorktree || p.Worktree != ""
 	}
-	prOpen := t.pr != nil && t.pr.State == forge.StateOpen
-	hasWork := settled && t.changed != 0
-	v.CanMergeLocal = hasWork && !prOpen
-	v.CanOpenPR = hasWork && !prOpen && t.forge != forge.None
-	v.CanMarkReady = prOpen && t.pr.Draft && !t.inTurn
-	// Merge: the open pull request when it can merge now, or locally when there's no forge.
-	v.CanMerge = hasWork && ((prOpen && t.pr.Mergeable) || (!prOpen && t.forge == forge.None))
-	v.NoChanges = settled && t.changed == 0 && t.row.Status == StatusIdle
+	settled := v.IsWorker && v.HasWorktree && !Finished(t.row.Status) && !Active(t.row.Status) && t.row.Status != StatusQueued
+	allLanded := len(t.parts) > 0 // every part with changes has a merged or closed pull request
+	for _, p := range t.parts {
+		pv := PartView{Part: p.Part, Name: filepath.Base(p.Repo), Changed: p.changed, Forge: p.forge}
+		if p.PR != nil {
+			pr := *p.PR
+			pv.PR = &pr
+		}
+		prOpen := p.prOpen()
+		hasWork := settled && p.changed != 0
+		pv.CanMergeLocal = hasWork && !prOpen
+		pv.CanOpenPR = hasWork && !prOpen && p.forge != forge.None
+		pv.CanMarkReady = prOpen && p.PR.Draft && !t.inTurn
+		// Merge: the open pull request when it can merge now, or locally when there's no forge.
+		pv.CanMerge = hasWork && ((prOpen && p.PR.Mergeable) || (!prOpen && p.forge == forge.None))
+		v.CanMergeLocal = v.CanMergeLocal || pv.CanMergeLocal
+		v.CanOpenPR = v.CanOpenPR || pv.CanOpenPR
+		v.CanMarkReady = v.CanMarkReady || pv.CanMarkReady
+		v.CanMerge = v.CanMerge || pv.CanMerge
+		switch {
+		case p.changed < 0 || v.Changed < 0:
+			v.Changed = -1
+		default:
+			v.Changed += p.changed
+		}
+		if p.changed != 0 && (p.PR == nil || p.PR.State == forge.StateOpen) {
+			allLanded = false
+		}
+		v.Parts = append(v.Parts, pv)
+	}
+	if len(t.parts) == 0 {
+		v.Changed = -1
+	}
+	if len(t.parts) == 1 {
+		v.Forge, v.PR = v.Parts[0].Forge, v.Parts[0].PR
+	}
+	v.NoChanges = settled && v.Changed == 0 && t.row.Status == StatusIdle
 	v.CanDone = v.IsWorker && t.row.DoneAt.IsZero() && !t.inTurn &&
-		(t.row.Status == StatusMerged || (settled && t.changed == 0) || (t.pr != nil && t.pr.State == forge.StateClosed))
+		(t.row.Status == StatusMerged || (settled && v.Changed == 0) || (allLanded && v.Changed > 0))
 	v.CanDiscard = v.IsWorker && !Finished(t.row.Status)
 	return v
 }
@@ -179,7 +208,8 @@ func (c *Core) Items(ctx context.Context, threadID string, limit int) ([]Item, e
 
 // WorkerSpec describes a new worker thread.
 type WorkerSpec struct {
-	Repo   string // path or name of a known repository
+	Repo   string   // path or name of a known repository
+	Repos  []string // more repositories, for a task that spans them (Repo, if set, comes first)
 	Title  string
 	Prompt string
 	Model  string   // empty: Settings.WorkerModel
@@ -189,9 +219,21 @@ type WorkerSpec struct {
 
 // CreateWorker creates a worker thread and starts it.
 func (c *Core) CreateWorker(ctx context.Context, spec WorkerSpec) (ThreadView, error) {
-	repo, err := c.ResolveRepo(spec.Repo)
-	if err != nil {
-		return ThreadView{}, err
+	var repos []string
+	for _, name := range append([]string{spec.Repo}, spec.Repos...) {
+		if strings.TrimSpace(name) == "" {
+			continue
+		}
+		repo, err := c.ResolveRepo(name)
+		if err != nil {
+			return ThreadView{}, err
+		}
+		if !slices.Contains(repos, repo) {
+			repos = append(repos, repo)
+		}
+	}
+	if len(repos) == 0 {
+		return ThreadView{}, errors.New("a worker needs a repository")
 	}
 	if strings.TrimSpace(spec.Prompt) == "" {
 		return ThreadView{}, errors.New("a worker needs a prompt")
@@ -207,14 +249,11 @@ func (c *Core) CreateWorker(ctx context.Context, spec WorkerSpec) (ThreadView, e
 	id := agent.NewUUID()
 	slug := git.Slug(title) + "-" + id[:6]
 	ts := now()
-	t := &thread{changed: -1, row: store.Thread{
+	t := &thread{row: store.Thread{
 		ID:           id,
 		Kind:         store.KindWorker,
 		SessionID:    agent.NewUUID(),
 		Title:        title,
-		RepoPath:     repo,
-		Branch:       "solo/" + slug,
-		BaseBranch:   spec.Base,
 		Model:        spec.Model,
 		Status:       StatusQueued,
 		Prompt:       spec.Prompt,
@@ -222,6 +261,9 @@ func (c *Core) CreateWorker(ctx context.Context, spec WorkerSpec) (ThreadView, e
 		CreatedAt:    ts,
 		UpdatedAt:    ts,
 	}}
+	for _, r := range repos {
+		t.parts = append(t.parts, &part{Part: Part{Repo: r, Branch: "solo/" + slug, BaseBranch: spec.Base}, changed: -1})
+	}
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()
@@ -230,7 +272,7 @@ func (c *Core) CreateWorker(ctx context.Context, spec WorkerSpec) (ThreadView, e
 	if t.row.Model == "" {
 		t.row.Model = c.settings.WorkerModel
 	}
-	if err := c.db.SaveThread(&t.row); err != nil {
+	if err := c.saveLocked(t); err != nil {
 		c.mu.Unlock()
 		return ThreadView{}, err
 	}
@@ -292,34 +334,60 @@ func (c *Core) startWorker(id string) {
 		return
 	}
 	row := t.row
+	repos := t.repos()
+	started := len(t.parts) > 0 && t.parts[0].Worktree != ""
+	parts := make([]Part, len(t.parts))
+	for i, p := range t.parts {
+		parts[i] = p.Part
+	}
 	c.mu.Unlock()
 
-	if row.WorktreePath == "" {
-		// Start from the latest commit of the default branch (or the one Solo named), fetched now.
-		base, err := git.LatestBase(ctx, row.RepoPath, row.BaseBranch)
-		if err != nil {
-			fail(err)
-			return
+	if !started {
+		// One branch name for every repository, from the latest commit of each one's default branch (or
+		// the one Solo named), fetched now.
+		branch := c.nameBranch(ctx, row, repos)
+		var made []git.Worktree
+		undo := func() {
+			for i, wt := range made {
+				_ = git.RemoveWorktree(ctx, repos[i], wt.Path, wt.Branch, true)
+			}
 		}
-		if base.FetchErr != nil {
-			c.addNotice(id, "warning", fmt.Sprintf("Couldn't fetch %s from origin, so this starts from the last copy fetched.", base.Branch))
-		}
-		branch := c.nameBranch(ctx, row)
-		wt, err := git.AddWorktree(ctx, row.RepoPath, c.threadWorktreePath(row), branch, base.Ref)
-		if err != nil {
-			fail(err)
-			return
+		for i := range parts {
+			base, err := git.LatestBase(ctx, repos[i], parts[i].BaseBranch)
+			if err != nil {
+				undo()
+				fail(fmt.Errorf("%s: %w", filepath.Base(repos[i]), err))
+				return
+			}
+			if base.FetchErr != nil {
+				c.addNotice(id, "warning", fmt.Sprintf("Couldn't fetch %s of %s from origin, so it starts from the last copy fetched.", base.Branch, filepath.Base(repos[i])))
+			}
+			wt, err := git.AddWorktree(ctx, repos[i], c.partWorktreePath(row, repos, i), branch, base.Ref)
+			if err != nil {
+				undo()
+				fail(fmt.Errorf("%s: %w", filepath.Base(repos[i]), err))
+				return
+			}
+			made = append(made, wt)
+			parts[i].Worktree, parts[i].Branch, parts[i].BaseBranch, parts[i].BaseCommit = wt.Path, wt.Branch, base.Branch, wt.BaseCommit
+			where := base.Ref
+			if len(repos) > 1 {
+				where += " in " + filepath.Base(repos[i])
+			}
+			c.addNotice(id, "info", fmt.Sprintf("Working on branch %s from %s.", wt.Branch, where))
 		}
 		c.mu.Lock()
-		t.row.WorktreePath, t.row.Branch, t.row.BaseBranch, t.row.BaseCommit = wt.Path, wt.Branch, base.Branch, wt.BaseCommit
+		for i, p := range t.parts {
+			p.Part = parts[i]
+		}
 		t.row.UpdatedAt = now()
-		err = c.db.SaveThread(&t.row)
+		err := c.saveLocked(t)
+		row = t.row
 		c.mu.Unlock()
 		if err != nil {
 			fail(err)
 			return
 		}
-		c.addNotice(id, "info", fmt.Sprintf("Working on branch %s from %s.", wt.Branch, base.Ref))
 	}
 	// Workers are started by the orchestrator, which wrote the prompt.
 	if err := c.send(ctx, id, row.Prompt, row.PromptImages, false, FromOrchestrator); err != nil {
@@ -344,7 +412,7 @@ func (c *Core) openParams(row store.Thread) agent.OpenParams {
 	return agent.OpenParams{
 		SessionID:      row.SessionID,
 		Resume:         row.HasTranscript,
-		Cwd:            row.WorktreePath,
+		Cwd:            c.sessionDir(row),
 		Model:          row.Model,
 		Effort:         effort,
 		Title:          row.Title,
@@ -356,9 +424,25 @@ func (c *Core) openParams(row store.Thread) agent.OpenParams {
 }
 
 func workerInstructions(r store.Thread) string {
-	return fmt.Sprintf(`You are a thread in Solo. Solo is the lead agent the user talks to; it gave you this task.
-You work alone in a git worktree of %s on branch %s, created from %s. Other workers may be changing
-other branches of the same repository at the same time; stay on your branch and in this worktree.
+	ps := loadParts(r)
+	where := fmt.Sprintf(`You work alone in a git worktree of %s on branch %s, created from %s. Other workers may be changing
+other branches of the same repository at the same time; stay on your branch and in this worktree.`, r.RepoPath, r.Branch, r.BaseBranch)
+	if len(ps) > 1 {
+		var b strings.Builder
+		b.WriteString("This task spans several repositories. Your working directory holds a git worktree of each, all on\nbranch " + r.Branch + ":\n")
+		repos := make([]string, len(ps))
+		for i, p := range ps {
+			repos[i] = p.Repo
+		}
+		for i, dir := range partDirs(repos) {
+			fmt.Fprintf(&b, "- %s/: %s, created from %s\n", dir, ps[i].Repo, ps[i].BaseBranch)
+		}
+		b.WriteString(`Other workers may be changing other branches of these repositories at the same time; stay on your
+branch and in these worktrees. Change only the repositories the task needs; commit in each one you change.`)
+		where = b.String()
+	}
+	return `You are a thread in Solo. Solo is the lead agent the user talks to; it gave you this task.
+` + where + `
 
 - Do the task you were given completely, verifying your work (build, tests) where the project allows.
 - You own the whole task. When parts of it are independent and large, run them in parallel with
@@ -366,7 +450,7 @@ other branches of the same repository at the same time; stay on your branch and 
 - When you are done, commit your changes on this branch with a Conventional Commit message. Don't push,
   merge, rebase onto other branches, or switch branches; the user reviews and merges your branch.
 - End with a short summary of what you changed and anything left undone, for the user and Solo.
-- If you need a decision only the user can make, ask with AskUserQuestion.`, r.RepoPath, r.Branch, r.BaseBranch)
+- If you need a decision only the user can make, ask with AskUserQuestion.`
 }
 
 // Send sends the user's message, with any images (see ImportImage), to a thread, starting its session
@@ -505,41 +589,122 @@ func (c *Core) resolveAsk(threadID, toolUseID string, res agent.AskResult) error
 	return nil
 }
 
-// Changes lists the files a worker changed.
+// Changes lists the files a worker changed. With several repositories, each path starts with its
+// repository's folder ("api/internal/x.go").
 func (c *Core) Changes(ctx context.Context, threadID string) ([]git.FileChange, error) {
-	t, ok := c.Thread(threadID)
-	if !ok || t.WorktreePath == "" || t.BaseCommit == "" {
+	v, ok := c.Thread(threadID)
+	if !ok || !v.HasWorktree {
 		return nil, errors.New("this thread has no worktree")
 	}
-	return git.Changes(ctx, t.WorktreePath, t.BaseCommit)
+	var out []git.FileChange
+	dirs := partDirs(partRepos(v.Parts))
+	for i, p := range v.Parts {
+		if p.Worktree == "" || p.BaseCommit == "" {
+			continue
+		}
+		fc, err := git.Changes(ctx, p.Worktree, p.BaseCommit)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", p.Name, err)
+		}
+		if v.MultiRepo() {
+			for j := range fc {
+				fc[j].Path = dirs[i] + "/" + fc[j].Path
+			}
+		}
+		out = append(out, fc...)
+	}
+	return out, nil
 }
 
-// Diff returns a worker's diff against where it started.
+// Diff returns a worker's diff against where it started, every repository's in one, with paths as
+// Changes gives them.
 func (c *Core) Diff(ctx context.Context, threadID string) (string, error) {
-	t, ok := c.Thread(threadID)
-	if !ok || t.WorktreePath == "" || t.BaseCommit == "" {
+	v, ok := c.Thread(threadID)
+	if !ok || !v.HasWorktree {
 		return "", errors.New("this thread has no worktree")
 	}
-	return git.Diff(ctx, t.WorktreePath, t.BaseCommit)
+	var b strings.Builder
+	dirs := partDirs(partRepos(v.Parts))
+	for i, p := range v.Parts {
+		if p.Worktree == "" || p.BaseCommit == "" {
+			continue
+		}
+		prefix := ""
+		if v.MultiRepo() {
+			prefix = dirs[i]
+		}
+		d, err := git.DiffPrefixed(ctx, p.Worktree, p.BaseCommit, prefix)
+		if err != nil {
+			return "", fmt.Errorf("%s: %w", p.Name, err)
+		}
+		if b.Len() > 0 && d != "" && !strings.HasSuffix(b.String(), "\n") {
+			b.WriteByte('\n')
+		}
+		b.WriteString(d)
+	}
+	return b.String(), nil
 }
 
-// Merge merges a worker's branch into its base branch in the repository's main checkout, committing any
-// uncommitted work first, then removes its worktree and branch. It returns the merge commit.
+func partRepos(ps []PartView) []string {
+	out := make([]string, len(ps))
+	for i, p := range ps {
+		out[i] = p.Repo
+	}
+	return out
+}
+
+// Merge lands every repository of a worker that can land now: its pull request when it can merge,
+// or, for a repository without a forge, its branch merged locally. It returns the last local merge
+// commit, if any.
 func (c *Core) Merge(ctx context.Context, threadID string) (string, error) {
+	return c.MergeRepo(ctx, threadID, "")
+}
+
+// MergeRepo is Merge for one of the worker's repositories (by path or folder name; "" for all).
+func (c *Core) MergeRepo(ctx context.Context, threadID, repo string) (string, error) {
 	v, ok := c.Thread(threadID)
 	if !ok {
 		return "", fmt.Errorf("no thread %s", threadID)
 	}
-	if v.PR != nil && v.PR.State == forge.StateOpen {
-		return "", c.mergePR(ctx, v)
+	var todo []PartView
+	for _, p := range v.Parts {
+		if repo != "" && p.Repo != repo && p.Name != repo {
+			continue
+		}
+		if p.CanMerge {
+			todo = append(todo, p)
+		}
 	}
-	if v.Forge != forge.None {
-		return "", fmt.Errorf("open a %s for %q first, or merge it locally", v.Forge.Noun(), v.Title)
+	if len(todo) == 0 {
+		for _, p := range v.Parts {
+			if (repo == "" || p.Repo == repo || p.Name == repo) && p.Forge != forge.None && p.PR == nil && p.Changed != 0 {
+				return "", fmt.Errorf("open a %s for %q first, or merge it locally", p.Forge.Noun(), v.Title)
+			}
+		}
+		return "", fmt.Errorf("thread %q has nothing that can merge now", v.Title)
 	}
-	return c.MergeLocal(ctx, threadID)
+	var commit string
+	var local []PartView
+	for _, p := range todo {
+		if p.PR != nil && p.PR.State == forge.StateOpen {
+			if err := c.mergePR(ctx, v, p); err != nil {
+				return "", err
+			}
+			continue
+		}
+		local = append(local, p)
+	}
+	if len(local) > 0 {
+		var err error
+		if commit, err = c.mergeLocalParts(ctx, v, local); err != nil {
+			return "", err
+		}
+	}
+	return commit, nil
 }
 
-// MergeLocal merges a worker's branch into its base branch in the repository's own checkout.
+// MergeLocal merges each of a worker's branches into its base branch in the repository's own
+// checkout, skipping pull requests.
 func (c *Core) MergeLocal(ctx context.Context, threadID string) (string, error) {
 	v, ok := c.Thread(threadID)
 	if !ok {
@@ -548,36 +713,119 @@ func (c *Core) MergeLocal(ctx context.Context, threadID string) (string, error) 
 	if !v.CanMergeLocal {
 		return "", fmt.Errorf("thread %q can't be merged while it is %s", v.Title, v.Status)
 	}
-	if _, err := git.CommitAll(ctx, v.WorktreePath, "chore: uncommitted work from "+v.Title); err != nil {
-		return "", fmt.Errorf("committing the worktree's changes: %w", err)
+	var todo []PartView
+	for _, p := range v.Parts {
+		if p.CanMergeLocal {
+			todo = append(todo, p)
+		}
 	}
-	commit, err := git.Merge(ctx, v.RepoPath, v.Branch, v.BaseBranch, fmt.Sprintf("Merge %s: %s", v.Branch, v.Title))
-	if err != nil {
-		c.addNotice(threadID, "error", "Merge failed: "+err.Error())
-		return "", err
+	return c.mergeLocalParts(ctx, v, todo)
+}
+
+// mergeLocalParts merges the parts' branches locally; when nothing is left to land, the thread is
+// merged and its worktrees go.
+func (c *Core) mergeLocalParts(ctx context.Context, v ThreadView, todo []PartView) (string, error) {
+	var commit string
+	for _, p := range todo {
+		if _, err := git.CommitAll(ctx, p.Worktree, uncommittedPrefix+v.Title); err != nil {
+			return "", fmt.Errorf("committing %s's changes: %w", p.Name, err)
+		}
+		var err error
+		commit, err = git.Merge(ctx, p.Repo, p.Branch, p.BaseBranch, fmt.Sprintf("Merge %s: %s", p.Branch, v.Title))
+		if err != nil {
+			c.addNotice(v.ID, "error", "Merge failed in "+p.Name+": "+err.Error())
+			return "", err
+		}
+		short := commit
+		if len(short) > 8 {
+			short = short[:8]
+		}
+		where := p.BaseBranch
+		if v.MultiRepo() {
+			where += " in " + p.Name
+		}
+		c.addNotice(v.ID, "info", fmt.Sprintf("Merged into %s (%s).", where, short))
+		c.mu.Lock()
+		if t := c.threads[v.ID]; t != nil {
+			if tp := t.part(p.Repo); tp != nil {
+				tp.changed = 0 // landed: nothing left to merge here
+			}
+		}
+		c.mu.Unlock()
 	}
-	c.closeSession(ctx, threadID)
-	if err := git.RemoveWorktree(ctx, v.RepoPath, v.WorktreePath, v.Branch, true); err != nil {
-		c.log.Warn("core: removing merged worktree", "err", err)
-	}
-	c.mu.Lock()
-	var ch Change
-	if t := c.threads[threadID]; t != nil {
-		t.row.WorktreePath = ""
-		ch = c.setStatusLocked(t, StatusMerged, "")
-	}
-	c.mu.Unlock()
-	short := commit
-	if len(short) > 8 {
-		short = short[:8]
-	}
-	c.addNotice(threadID, "info", fmt.Sprintf("Merged into %s (%s).", v.BaseBranch, short))
-	c.notify(ch)
-	c.schedule()
+	c.finishIfLanded(v.ID)
 	return commit, nil
 }
 
-// Discard stops a worker and deletes its worktree and branch.
+// finishIfLanded closes a thread once each of its repositories with changes has landed (merged
+// locally, or its pull request merged): the session ends, the worktrees and local branches go, and
+// the thread is merged.
+func (c *Core) finishIfLanded(id string) {
+	c.mu.Lock()
+	t := c.threads[id]
+	if t == nil || Finished(t.row.Status) {
+		c.mu.Unlock()
+		return
+	}
+	for _, p := range t.parts {
+		merged := p.PR != nil && p.PR.State == forge.StateMerged
+		if p.changed != 0 && !merged {
+			c.mu.Unlock()
+			return
+		}
+	}
+	c.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	c.closeSession(ctx, id)
+	c.removeWorktrees(ctx, id)
+	c.mu.Lock()
+	var ch Change
+	if t := c.threads[id]; t != nil {
+		ch = c.setStatusLocked(t, StatusMerged, "")
+	}
+	c.mu.Unlock()
+	c.notify(ch)
+	c.schedule()
+}
+
+// removeWorktrees removes a worker's worktrees and their local branches.
+func (c *Core) removeWorktrees(ctx context.Context, id string) {
+	c.mu.Lock()
+	t := c.threads[id]
+	if t == nil {
+		c.mu.Unlock()
+		return
+	}
+	var ps []Part
+	for _, p := range t.parts {
+		ps = append(ps, p.Part)
+	}
+	multi := len(t.parts) > 1
+	dir := c.threadDir(t.row)
+	c.mu.Unlock()
+	for _, p := range ps {
+		if p.Worktree == "" && p.Branch == "" {
+			continue
+		}
+		if err := git.RemoveWorktree(ctx, p.Repo, p.Worktree, p.Branch, true); err != nil {
+			c.log.Warn("core: removing a worktree", "repo", p.Repo, "err", err)
+		}
+	}
+	if multi {
+		_ = os.Remove(dir) // empty now
+	}
+	c.mu.Lock()
+	if t := c.threads[id]; t != nil {
+		for _, p := range t.parts {
+			p.Worktree = ""
+		}
+		_ = c.saveLocked(t)
+	}
+	c.mu.Unlock()
+}
+
+// Discard stops a worker and deletes its worktrees and branches.
 func (c *Core) Discard(ctx context.Context, threadID string) error {
 	v, ok := c.Thread(threadID)
 	if !ok {
@@ -587,15 +835,10 @@ func (c *Core) Discard(ctx context.Context, threadID string) error {
 		return fmt.Errorf("thread %q is already %s", v.Title, v.Status)
 	}
 	c.closeSession(ctx, threadID)
-	if v.WorktreePath != "" || v.Branch != "" {
-		if err := git.RemoveWorktree(ctx, v.RepoPath, v.WorktreePath, v.Branch, v.WorktreePath != ""); err != nil {
-			c.log.Warn("core: discarding worktree", "err", err)
-		}
-	}
+	c.removeWorktrees(ctx, threadID)
 	c.mu.Lock()
 	var ch Change
 	if t := c.threads[threadID]; t != nil {
-		t.row.WorktreePath = ""
 		t.row.DoneAt = now() // a discarded thread leaves the rail at once
 		ch = c.setStatusLocked(t, StatusDiscarded, "")
 	}
@@ -608,7 +851,7 @@ func (c *Core) Discard(ctx context.Context, threadID string) error {
 }
 
 // Done marks a thread done: it leaves the rail for History. A thread that finished without changes
-// also loses its worktree and branch (Restore brings them back). Only threads with nothing to merge
+// also loses its worktrees and branches (Restore brings them back). Only threads with nothing to merge
 // can be done; others are merged or discarded first.
 func (c *Core) Done(ctx context.Context, threadID string) error {
 	v, ok := c.Thread(threadID)
@@ -621,11 +864,9 @@ func (c *Core) Done(ctx context.Context, threadID string) error {
 		}
 		return fmt.Errorf("thread %q can't be marked done while it is %s", v.Title, v.Status)
 	}
-	if v.WorktreePath != "" {
+	if v.HasWorktree {
 		c.closeSession(ctx, threadID)
-		if err := git.RemoveWorktree(ctx, v.RepoPath, v.WorktreePath, v.Branch, true); err != nil {
-			c.log.Warn("core: removing a done thread's worktree", "err", err)
-		}
+		c.removeWorktrees(ctx, threadID)
 	}
 	c.mu.Lock()
 	t := c.threads[threadID]
@@ -634,11 +875,10 @@ func (c *Core) Done(ctx context.Context, threadID string) error {
 		return fmt.Errorf("no thread %s", threadID)
 	}
 	var ch Change
-	t.row.WorktreePath = ""
 	t.row.DoneAt = now()
 	if Finished(t.row.Status) {
 		t.row.UpdatedAt = now()
-		err := c.db.SaveThread(&t.row)
+		err := c.saveLocked(t)
 		c.mu.Unlock()
 		if err != nil {
 			return err
@@ -652,7 +892,7 @@ func (c *Core) Done(ctx context.Context, threadID string) error {
 	return nil
 }
 
-// Restore brings a done thread back to the rail. Its worktree is recreated at the same path, so its
+// Restore brings a done thread back to the rail. Its worktrees are recreated at the same paths, so its
 // Claude session resumes: on its branch if that still exists, or on a new branch of the same name
 // from the current head of the branch it started from.
 func (c *Core) Restore(ctx context.Context, threadID string) error {
@@ -663,21 +903,26 @@ func (c *Core) Restore(ctx context.Context, threadID string) error {
 	if !v.IsWorker || v.DoneAt.IsZero() {
 		return fmt.Errorf("thread %q isn't in History", v.Title)
 	}
-	if _, err := os.Stat(v.RepoPath); err != nil {
-		return fmt.Errorf("%s is gone: %w", v.RepoPath, err)
-	}
-	path := v.WorktreePath
-	if path == "" {
-		path = c.threadWorktreePath(v.Thread)
-	}
-	wt := git.Worktree{Path: path}
-	if _, err := os.Stat(path); err != nil {
-		base, err := git.LatestBase(ctx, v.RepoPath, v.BaseBranch)
+	repos := partRepos(v.Parts)
+	made := make([]git.Worktree, len(v.Parts))
+	for i, p := range v.Parts {
+		if _, err := os.Stat(p.Repo); err != nil {
+			return fmt.Errorf("%s is gone: %w", p.Repo, err)
+		}
+		path := p.Worktree
+		if path == "" {
+			path = c.partWorktreePath(v.Thread, repos, i)
+		}
+		made[i] = git.Worktree{Path: path}
+		if _, err := os.Stat(path); err == nil {
+			continue
+		}
+		base, err := git.LatestBase(ctx, p.Repo, p.BaseBranch)
 		if err != nil {
 			return err
 		}
-		if wt, err = git.RestoreWorktree(ctx, v.RepoPath, path, v.Branch, base.Ref); err != nil {
-			return fmt.Errorf("recreating the worktree: %w", err)
+		if made[i], err = git.RestoreWorktree(ctx, p.Repo, path, p.Branch, base.Ref); err != nil {
+			return fmt.Errorf("recreating %s's worktree: %w", p.Name, err)
 		}
 	}
 	c.mu.Lock()
@@ -686,11 +931,17 @@ func (c *Core) Restore(ctx context.Context, threadID string) error {
 		c.mu.Unlock()
 		return fmt.Errorf("no thread %s", threadID)
 	}
-	t.row.WorktreePath, t.row.DoneAt, t.row.Error = wt.Path, time.Time{}, ""
-	if wt.BaseCommit != "" {
-		t.row.BaseCommit = wt.BaseCommit
+	for i, p := range t.parts {
+		p.Worktree, p.changed = made[i].Path, -1
+		if made[i].BaseCommit != "" {
+			p.BaseCommit = made[i].BaseCommit
+		}
+		if p.PR != nil && p.PR.State != forge.StateOpen {
+			p.PR = nil // a new branch gets a new pull request
+		}
 	}
-	t.changed, t.opened = -1, false
+	t.row.DoneAt, t.row.Error = time.Time{}, ""
+	t.opened = false
 	ch := c.setStatusLocked(t, StatusIdle, "")
 	c.mu.Unlock()
 	c.addNotice(threadID, "info", "Restored from History.")
@@ -699,25 +950,19 @@ func (c *Core) Restore(ctx context.Context, threadID string) error {
 	return nil
 }
 
-// threadWorktreePath is where a worker's worktree lives. It depends only on the thread, so Restore
-// finds the same path (and with it the Claude session, which is keyed by directory).
-func (c *Core) threadWorktreePath(row store.Thread) string {
-	return c.worktreePath(row.RepoPath, git.Slug(row.Title)+"-"+row.ID[:6])
-}
-
 const namingSystem = "You name git branches. Reply with only the branch name: no quotes, no explanation, no code formatting."
 
 // nameBranch names a new worker's branch. With branch rules in Settings, the naming model follows
 // them; otherwise, or when its answer isn't a usable name, the branch is solo/<title>-<id>.
-func (c *Core) nameBranch(ctx context.Context, row store.Thread) string {
+func (c *Core) nameBranch(ctx context.Context, row store.Thread, repos []string) string {
 	fallback := "solo/" + git.Slug(row.Title) + "-" + row.ID[:6]
 	s := c.Settings()
-	rules := s.BranchRulesFor(row.RepoPath)
+	rules := s.BranchRulesFor(repos[0])
 	if rules == "" {
 		return fallback
 	}
 	prompt := fmt.Sprintf("Name the git branch for this task, following the rules.\n\nRules:\n%s\n\nRepository: %s\nTask title: %s\nTask:\n%s",
-		rules, filepath.Base(row.RepoPath), row.Title, clipText(row.Prompt, 1500))
+		rules, repoNames(repos), row.Title, clipText(row.Prompt, 1500))
 	nctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
 	text, err := c.agent.Complete(nctx, agent.CompleteParams{Model: s.NamingModel, Effort: s.NamingEffort,
@@ -727,16 +972,27 @@ func (c *Core) nameBranch(ctx context.Context, row store.Thread) string {
 		return fallback
 	}
 	name := cleanBranchName(text)
-	if !git.ValidBranchName(ctx, row.RepoPath, name) {
+	if !git.ValidBranchName(ctx, repos[0], name) {
 		c.addNotice(row.ID, "warning", fmt.Sprintf("The suggested branch name %q isn't valid, so it's %s.", firstLine(text, 80), fallback))
 		return fallback
 	}
+	taken := func(n string) bool { // in any of the repositories, since they share the name
+		return slices.ContainsFunc(repos, func(r string) bool { return git.BranchExists(ctx, r, n) })
+	}
 	for i, n := 2, name; ; i++ {
-		if !git.BranchExists(ctx, row.RepoPath, n) {
+		if !taken(n) {
 			return n
 		}
 		n = fmt.Sprintf("%s-%d", name, i)
 	}
+}
+
+func repoNames(repos []string) string {
+	names := make([]string, len(repos))
+	for i, r := range repos {
+		names[i] = filepath.Base(r)
+	}
+	return strings.Join(names, ", ")
 }
 
 // cleanBranchName takes a branch name from a model's answer: its first line, without quotes or code
@@ -753,36 +1009,53 @@ func cleanBranchName(s string) string {
 	return s
 }
 
-// countChanges counts the files a worker's branch changes, for Done and CanMerge.
+// countChanges counts the files each of a worker's branches changes, for Done and the landing
+// actions, finds each repository's forge, and pushes new commits to open pull requests.
 func (c *Core) countChanges(id string) {
 	v, ok := c.Thread(id)
-	if !ok || !v.IsWorker || v.WorktreePath == "" || v.BaseCommit == "" || Finished(v.Status) {
+	if !ok || !v.IsWorker || !v.HasWorktree || Finished(v.Status) {
 		return
-	}
-	if _, err := os.Stat(v.WorktreePath); err != nil {
-		return // being removed
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	files, err := git.Changes(ctx, v.WorktreePath, v.BaseCommit)
-	if err != nil {
-		c.log.Warn("core: counting changes", "thread", id, "err", err)
-		return
-	}
-	kind := c.forgeFor(v.RepoPath)
-	if v.PR != nil && v.PR.State == forge.StateOpen && !v.InTurn {
-		c.pushPR(ctx, v)
+	counts := map[string]int{}
+	kinds := map[string]forge.Kind{}
+	for _, p := range v.Parts {
+		if p.Worktree == "" || p.BaseCommit == "" {
+			continue
+		}
+		if _, err := os.Stat(p.Worktree); err != nil {
+			return // being removed
+		}
+		files, err := git.Changes(ctx, p.Worktree, p.BaseCommit)
+		if err != nil {
+			c.log.Warn("core: counting changes", "thread", id, "repo", p.Repo, "err", err)
+			return
+		}
+		counts[p.Repo], kinds[p.Repo] = len(files), c.forgeFor(p.Repo)
+		if p.PR != nil && p.PR.State == forge.StateOpen && !v.InTurn {
+			c.pushPR(ctx, v, p)
+		}
 	}
 	c.mu.Lock()
 	t := c.threads[id]
-	if t == nil || (t.changed == len(files) && t.forge == kind) {
+	if t == nil {
 		c.mu.Unlock()
 		return
 	}
-	t.changed, t.forge = len(files), kind
+	changed := false
+	for _, p := range t.parts {
+		n, ok := counts[p.Repo]
+		if !ok || (p.changed == n && p.forge == kinds[p.Repo]) {
+			continue
+		}
+		p.changed, p.forge, changed = n, kinds[p.Repo], true
+	}
 	c.mu.Unlock()
-	nv, _ := c.Thread(id)
-	c.notify(Change{Kind: ChangeThread, ThreadID: id, PrevStatus: nv.Status, Status: nv.Status})
+	if changed {
+		nv, _ := c.Thread(id)
+		c.notify(Change{Kind: ChangeThread, ThreadID: id, PrevStatus: nv.Status, Status: nv.Status})
+	}
 }
 
 // removeAttachments deletes the images of a discarded thread's messages that no other thread uses
@@ -847,7 +1120,7 @@ func (c *Core) setStatusLocked(t *thread, status, errText string) Change {
 	t.row.Status = status
 	t.row.Error = errText
 	t.row.UpdatedAt = now()
-	if err := c.db.SaveThread(&t.row); err != nil {
+	if err := c.saveLocked(t); err != nil {
 		c.log.Error("core: saving thread", "err", err)
 	}
 	return Change{Kind: ChangeThread, ThreadID: t.row.ID, PrevStatus: prev, Status: status}

@@ -10,6 +10,9 @@ import (
 	_ "embed"
 	"fmt"
 	"github.com/tyler-builds/solo/internal/forge"
+	"path/filepath"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/tyler-builds/jamb/icons"
@@ -166,13 +169,52 @@ func shownStatus(v core.ThreadView) string {
 	if v.NoChanges {
 		return statusNoChanges
 	}
-	if v.PR != nil && v.PR.State == forge.StateOpen && !core.Active(v.Status) && v.Status != core.StatusFailed {
-		if v.PR.Checks == forge.ChecksFailing {
-			return statusChecksFailed
+	if open := openPRs(v); len(open) > 0 && !core.Active(v.Status) && v.Status != core.StatusFailed {
+		for _, pr := range open {
+			if pr.Checks == forge.ChecksFailing {
+				return statusChecksFailed
+			}
 		}
 		return statusInReview
 	}
 	return v.Status
+}
+
+// openPRs are a thread's open pull requests, one per repository.
+func openPRs(v core.ThreadView) []*forge.PR {
+	var out []*forge.PR
+	for _, p := range v.Parts {
+		if p.PR != nil && p.PR.State == forge.StateOpen {
+			out = append(out, p.PR)
+		}
+	}
+	return out
+}
+
+// threadRepos are the repositories a thread works in.
+func threadRepos(v core.ThreadView) []string {
+	if len(v.Parts) == 0 {
+		return []string{v.RepoPath}
+	}
+	out := make([]string, len(v.Parts))
+	for i, p := range v.Parts {
+		out[i] = p.Repo
+	}
+	return out
+}
+
+// repoLabel names a thread's repositories: "api", or "client · api · db".
+func repoLabel(v core.ThreadView) string {
+	names := []string{}
+	for _, r := range threadRepos(v) {
+		names = append(names, filepath.Base(r))
+	}
+	return strings.Join(names, " · ")
+}
+
+// inRepo reports whether a thread works in the repository (any, for "").
+func inRepo(v core.ThreadView, repo string) bool {
+	return repo == "" || slices.Contains(threadRepos(v), repo)
 }
 
 func statusColor(ctx *ui.Context, status string) ui.Color {

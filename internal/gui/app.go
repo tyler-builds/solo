@@ -5,7 +5,6 @@ package gui
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 	"slices"
 	"sync"
 	"time"
@@ -514,13 +513,13 @@ func (a *App) paletteItems(query string) []ui.PaletteItem {
 	var out []ui.PaletteItem
 	item := func(th core.ThreadView) ui.PaletteItem {
 		id := th.ID
-		detail := filepath.Base(th.RepoPath) + " · " + statusLabel(th)
+		detail := repoLabel(th) + " · " + statusLabel(th)
 		if th.InTurn && !th.TurnStarted.IsZero() {
 			detail += " · " + elapsed(th.TurnStarted)
 		}
 		return ui.PaletteItem{
 			Key: id, Label: th.Title, Detail: detail, Icon: statusIcon(shownStatus(th)),
-			Keywords: []string{filepath.Base(th.RepoPath), statusLabel(th)},
+			Keywords: []string{repoLabel(th), statusLabel(th)},
 			Run:      func() { a.openThread(id, "conversation") },
 		}
 	}
@@ -550,7 +549,7 @@ func (a *App) openThreads(track bool) []core.ThreadView {
 	for _, g := range railGroups {
 		var group []core.ThreadView
 		for _, th := range threads {
-			if inRail(th) && slices.Contains(g.statuses, shownStatus(th)) && (filter == "" || th.RepoPath == filter) {
+			if inRail(th) && slices.Contains(g.statuses, shownStatus(th)) && inRepo(th, filter) {
 				group = append(group, th)
 			}
 		}

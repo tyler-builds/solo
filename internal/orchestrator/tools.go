@@ -60,6 +60,7 @@ var toolSpecs = []agent.ToolSpec{
 			"Use one thread per task; the thread runs its own subagents for parts of it. It starts at once. Returns its ID.",
 		InputSchema: schema(`{"type":"object","properties":{
 			"repo":{"type":"string","description":"Repository name or path, from list_repos."},
+			"repos":{"type":"array","items":{"type":"string"},"description":"More repositories, for one task that spans them (a client, its API and its database, say). The thread gets a worktree of each, all on one branch, and a pull request in each it changes."},
 			"title":{"type":"string","description":"Short title, a few words, shown to the user."},
 			"prompt":{"type":"string","description":"The complete, self-contained task for the worker."},
 			"model":{"type":"string","description":"Optional model alias (opus, sonnet, haiku) or ID."},
@@ -116,6 +117,7 @@ func (o *Orchestrator) handleTool(ctx context.Context, threadID, name string, ra
 		IncludeClosed bool              `json:"include_closed"`
 		Answers       map[string]string `json:"answers"`
 		Images        []string          `json:"images"`
+		Repos         []string          `json:"repos"`
 	}
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &a); err != nil {
@@ -170,9 +172,9 @@ func (o *Orchestrator) handleTool(ctx context.Context, threadID, name string, ra
 		}
 	case "spawn_thread":
 		var v core.ThreadView
-		if v, err = o.c.CreateWorker(ctx, core.WorkerSpec{Repo: a.Repo, Title: a.Title, Prompt: a.Prompt, Model: a.Model, Base: a.Base, Images: a.Images}); err == nil {
+		if v, err = o.c.CreateWorker(ctx, core.WorkerSpec{Repo: a.Repo, Repos: a.Repos, Title: a.Title, Prompt: a.Prompt, Model: a.Model, Base: a.Base, Images: a.Images}); err == nil {
 			out = fmt.Sprintf("Started thread %s %q in %s (status: %s). You'll get a thread update when it finishes or needs input.",
-				short(v.ID), v.Title, filepath.Base(v.RepoPath), v.Status)
+				short(v.ID), v.Title, repoList(v), v.Status)
 		}
 	case "message_thread":
 		var v core.ThreadView
@@ -320,21 +322,31 @@ func (o *Orchestrator) describe(ctx context.Context, v core.ThreadView) string {
 	if v.Error != "" {
 		fmt.Fprintf(&b, "\nError: %s\n", v.Error)
 	}
-	if pr := v.PR; pr != nil {
-		fmt.Fprintf(&b, "\n%s #%d: %s, %s, checks %s", pr.Kind.Noun(), pr.Number, pr.URL, pr.State, pr.Checks)
-		if pr.AutoMerge {
-			b.WriteString(", auto-merge on")
+	for _, p := range v.Parts {
+		where := ""
+		if v.MultiRepo() {
+			where = p.Name + ": "
+			fmt.Fprintf(&b, "\n%s%s, %d files changed", where, p.Repo, max(p.Changed, 0))
 		}
-		if pr.Blocked != "" && pr.State == forge.StateOpen {
-			b.WriteString(", can't merge yet: " + pr.Blocked)
+		if pr := p.PR; pr != nil {
+			fmt.Fprintf(&b, "\n%s%s #%d: %s, %s, checks %s", where, pr.Kind.Noun(), pr.Number, pr.URL, pr.State, pr.Checks)
+			if pr.Draft {
+				b.WriteString(", draft")
+			}
+			if pr.AutoMerge {
+				b.WriteString(", auto-merge on")
+			}
+			if pr.Blocked != "" && pr.State == forge.StateOpen {
+				b.WriteString(", can't merge yet: " + pr.Blocked)
+			}
+			if len(pr.Failed) > 0 {
+				b.WriteString("; failed: " + failedChecks(pr.Failed))
+			}
+		} else if p.CanOpenPR {
+			fmt.Fprintf(&b, "\n%sLanding: the user opens a %s from your merge proposal.", where, p.Forge.Noun())
 		}
-		if len(pr.Failed) > 0 {
-			b.WriteString("; failed: " + failedChecks(pr.Failed))
-		}
-		b.WriteString("\n")
-	} else if v.Forge != forge.None && v.CanOpenPR {
-		fmt.Fprintf(&b, "\nLanding: the user opens a %s from your merge proposal.\n", v.Forge.Noun())
 	}
+	b.WriteString("\n")
 	if qs := o.c.PendingQuestions(v.ID); len(qs) > 0 {
 		b.WriteString("\nWaiting on these questions:\n")
 		for _, pq := range qs {
@@ -465,4 +477,16 @@ func ago(t time.Time) string {
 	default:
 		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
 	}
+}
+
+// repoList names a thread's repositories: "api", or "client, api, db".
+func repoList(v core.ThreadView) string {
+	if len(v.Parts) == 0 {
+		return filepath.Base(v.RepoPath)
+	}
+	names := make([]string, len(v.Parts))
+	for i, p := range v.Parts {
+		names[i] = p.Name
+	}
+	return strings.Join(names, ", ")
 }

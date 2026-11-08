@@ -63,6 +63,9 @@ func (a *App) mergeLocal(id string) {
 func (a *App) landControl(ctx *ui.Context, th core.ThreadView) ui.Element {
 	t := ctx.Theme()
 	id := th.ID
+	if th.MultiRepo() {
+		return a.landControlMulti(ctx, th)
+	}
 	switch {
 	case th.CanOpenPR:
 		noun := th.Forge.Noun()
@@ -95,9 +98,174 @@ func (a *App) landControl(ctx *ui.Context, th core.ThreadView) ui.Element {
 	return nil
 }
 
+// openPRFor opens pull requests for one of a thread's repositories ("" for all).
+func (a *App) openPRFor(id, repo string, draft bool) {
+	a.run("Opening pull requests", func(ctx context.Context) error {
+		prs, err := a.b.OpenPRFor(ctx, id, repo, draft)
+		if err != nil {
+			return err
+		}
+		what := "Opened"
+		if draft {
+			what = "Opened draft"
+		}
+		if len(prs) == 1 {
+			a.notify(ui.ToastSuccess, fmt.Sprintf("%s %s #%d", what, prs[0].Kind.Noun(), prs[0].Number), prs[0].URL)
+		} else {
+			a.notify(ui.ToastSuccess, fmt.Sprintf("%s %d %ss", what, len(prs), prs[0].Kind.Noun()), "")
+		}
+		return nil
+	})
+}
+
+// mergeRepo merges one of a thread's repositories ("" for every one that can merge now).
+func (a *App) mergeRepo(id, repo string) {
+	a.run("Merge", func(ctx context.Context) error {
+		_, err := a.b.MergeRepo(ctx, id, repo)
+		return err
+	})
+}
+
+// landControlMulti is landControl for a thread in several repositories: a split button that acts on
+// all of them, with each repository on its own in its menu.
+func (a *App) landControlMulti(ctx *ui.Context, th core.ThreadView) ui.Element {
+	t := ctx.Theme()
+	id := th.ID
+	var canOpen, canMerge, open, drafts, auto []core.PartView
+	for _, p := range th.Parts {
+		if p.CanOpenPR {
+			canOpen = append(canOpen, p)
+		}
+		if p.CanMerge {
+			canMerge = append(canMerge, p)
+		}
+		if p.PR != nil && p.PR.State == forge.StateOpen {
+			open = append(open, p)
+			if p.PR.Draft {
+				drafts = append(drafts, p)
+			}
+			if p.PR.AutoMerge {
+				auto = append(auto, p)
+			}
+		}
+	}
+	plural := func(n int, noun string) string {
+		if n == 1 {
+			return "1 " + noun
+		}
+		return fmt.Sprintf("%d %ss", n, noun)
+	}
+	switch {
+	case len(canOpen) > 0:
+		noun := canOpen[0].Forge.Noun()
+		return ui.SplitButton("Open "+plural(len(canOpen), noun), func() { a.openPRFor(id, "", false) }, func() []ui.MenuItem {
+			items := []ui.MenuItem{{Label: "Open " + plural(len(canOpen), noun) + " as drafts", Icon: icons.GitPullRequestDraft,
+				OnClick: func() { a.openPRFor(id, "", true) }}, ui.MenuSeparator()}
+			for _, p := range canOpen {
+				repo := p.Repo
+				items = append(items, ui.MenuItem{Label: noun + " for " + p.Name + " only", Icon: icons.GitPullRequestArrow,
+					OnClick: func() { a.openPRFor(id, repo, false) }})
+			}
+			return items
+		}).Icon(icons.GitPullRequestArrow).Primary().Small().Key("open-pr-" + id)
+	case len(drafts) > 0:
+		return ui.Button("Ready for review").Icon(icons.GitPullRequest).Primary().Small().
+			Tooltip("Mark " + plural(len(drafts), "draft") + " ready for review").
+			OnClick(func() {
+				a.run("Marking them ready", func(ctx context.Context) error { return a.b.MarkReady(ctx, id) })
+			})
+	case len(open) > 0:
+		menu := func() []ui.MenuItem {
+			items := []ui.MenuItem{{Label: "Merge all", Icon: icons.GitMerge, Disabled: len(canMerge) < len(open),
+				OnClick: func() { a.mergeRepo(id, "") }}, ui.MenuSeparator()}
+			for _, p := range open {
+				repo, why := p.Repo, ""
+				if !p.CanMerge {
+					why = " · " + p.PR.Blocked
+				}
+				items = append(items, ui.MenuItem{Label: fmt.Sprintf("Merge %s #%d%s", p.Name, p.PR.Number, why), Icon: icons.GitMerge,
+					Disabled: !p.CanMerge, OnClick: func() { a.mergeRepo(id, repo) }})
+			}
+			return items
+		}
+		switch {
+		case len(canMerge) == len(open):
+			return ui.SplitButton("Merge all", func() { a.mergeRepo(id, "") }, menu).Icon(icons.GitMerge).Primary().Small().Key("merge-" + id)
+		case len(canMerge) > 0:
+			return ui.SplitButton(fmt.Sprintf("Merge %d ready", len(canMerge)), func() { a.mergeRepo(id, "") }, menu).
+				Icon(icons.GitMerge).Primary().Small().Key("merge-" + id)
+		case len(auto) == len(open):
+			return ui.Div().Row().Align(ui.Center).Gap(6).PaddingX(space2).Height(ui.Px(28)).Shrink(0).
+				Tooltip("Each merges once its required checks pass").
+				Child(ui.Icon(icons.Timer).Size(13).Color(t.TextMuted)).
+				Child(ui.Text("Auto-merge on").FontSize(12).Medium().TextColor(t.TextMuted).NoWrap())
+		}
+		return ui.SplitButton("Merge", func() {}, menu).Icon(icons.GitMerge).Secondary().Small().Key("merge-" + id)
+	case th.CanMerge:
+		return ui.Button("Merge all").Icon(icons.GitMerge).Primary().Small().
+			Tooltip("Merge each repository's branch into its base branch").OnClick(func() { a.mergeRepo(id, "") })
+	}
+	return nil
+}
+
+// repoChips name a multi-repository thread's repositories, each with its pull request's state; a chip
+// with a pull request opens it.
+func (a *App) repoChips(ctx *ui.Context, th core.ThreadView) ui.Element {
+	t := ctx.Theme()
+	row := ui.Div().Row().Align(ui.Center).Gap(space1 + 2).Wrap().MinWidth(ui.Px(0))
+	for _, p := range th.Parts {
+		chip := ui.Div().Row().Align(ui.Center).Gap(5).PaddingX(space2).Height(ui.Px(20)).Radius(10).
+			Border(1, t.Border).Shrink(0)
+		tip := p.Branch + " → " + p.BaseBranch
+		if p.Changed == 0 {
+			tip = "No changes in " + p.Name
+		}
+		if pr := p.PR; pr != nil {
+			c := ui.Hex(pal(t).info)
+			switch {
+			case pr.State == forge.StateMerged:
+				c, tip = ui.Hex(pal(t).info), "Merged"
+			case pr.State == forge.StateClosed:
+				c, tip = t.TextSubtle, "Closed"
+			case pr.Checks == forge.ChecksFailing:
+				c, tip = t.Danger, "Checks failed: "+strings.Join(checkNamesOf(pr.Failed), ", ")
+			case pr.Mergeable:
+				c, tip = t.Success, "Ready to merge"
+			case pr.Checks == forge.ChecksPending:
+				c, tip = t.Warning, "Waiting for checks"
+			case pr.Blocked != "":
+				tip = "Can't merge yet: " + pr.Blocked
+			}
+			url := pr.URL
+			chip = chip.Cursor(ui.CursorPointer).Hover(ui.Style{Background: t.SurfaceHover}).
+				Role(access.RoleLink).Label(fmt.Sprintf("%s %s #%d", p.Name, pr.Kind.Noun(), pr.Number)).
+				OnClick(func() { _ = ctx.OpenURL(url) }).
+				Child(dot(c, 7)).
+				Child(ui.Text(p.Name).FontSize(11).Medium().NoWrap()).
+				Child(ui.Text(fmt.Sprintf("#%d", pr.Number)).FontSize(11).Medium().TextColor(ui.Hex(pal(t).info)).NoWrap())
+		} else {
+			color := t.TextMuted
+			if p.Changed == 0 {
+				color = t.TextSubtle
+			}
+			chip = chip.Child(ui.Text(p.Name).FontSize(11).Medium().TextColor(color).NoWrap())
+		}
+		row = row.Child(chip.Tooltip(tip))
+	}
+	return row
+}
+
+func checkNamesOf(cs []forge.Check) []string {
+	var out []string
+	for _, c := range cs {
+		out = append(out, c.Name)
+	}
+	return out
+}
+
 // prLink opens a thread's pull request in the browser.
 func (a *App) prLink(ctx *ui.Context, th core.ThreadView) ui.Element {
-	if th.PR == nil {
+	if th.PR == nil || th.MultiRepo() {
 		return nil
 	}
 	url := th.PR.URL
@@ -156,7 +324,7 @@ func (a *App) threadPanel(ctx *ui.Context) ui.Element {
 	actions := ui.Div().Row().Align(ui.Center).Gap(space1).Shrink(0)
 	actions = actions.Child(a.prLink(ctx, th))
 	switch {
-	case th.CanOpenPR || th.CanMerge || th.CanMarkReady || (th.PR != nil && th.PR.State == forge.StateOpen):
+	case th.CanOpenPR || th.CanMerge || th.CanMarkReady || len(openPRs(th)) > 0:
 		actions = actions.Child(a.landControl(ctx, th))
 	case th.CanDone:
 		actions = actions.Child(ui.Button("Done").Icon(icons.Check).Primary().Small().
@@ -194,6 +362,9 @@ func (a *App) threadPanel(ctx *ui.Context) ui.Element {
 		repo = repo.Tooltip(branchLabel(th) + " → " + th.BaseBranch)
 	}
 	meta := ui.Div().Row().Align(ui.Center).Gap(space2).Wrap().MinWidth(ui.Px(0)).Child(repo)
+	if th.MultiRepo() {
+		meta = ui.Div().Row().Align(ui.Center).Gap(space2).Wrap().MinWidth(ui.Px(0)).Child(a.repoChips(ctx, th))
+	}
 	if added+removed > 0 {
 		meta = meta.Child(stat)
 	}
@@ -221,7 +392,7 @@ func (a *App) threadPanel(ctx *ui.Context) ui.Element {
 
 	var content ui.Element
 	if tab == "changes" && th.HasWorktree {
-		content = a.changesView(ctx, res)
+		content = a.changesView(ctx, th, res)
 	} else {
 		items := a.itemsOf(id).Get()
 		content = ui.Div().Column().Grow(1).MinHeight(ui.Px(0)).
@@ -330,7 +501,7 @@ func (a *App) composerFor(ctx *ui.Context, th core.ThreadView) ui.Element {
 }
 
 // changesView lists a worker's changed files over its diff, a collapsible section per file.
-func (a *App) changesView(ctx *ui.Context, res ui.QueryResult[changeData]) ui.Element {
+func (a *App) changesView(ctx *ui.Context, th core.ThreadView, res ui.QueryResult[changeData]) ui.Element {
 	switch {
 	case res.Loading && len(res.Data.files) == 0:
 		return ui.Div().Column().Center().Grow(1).Child(ui.ProgressRing().Label("Loading changes"))
@@ -344,7 +515,7 @@ func (a *App) changesView(ctx *ui.Context, res ui.QueryResult[changeData]) ui.El
 	files := parseDiff(res.Data.diff)
 	return ui.Component(func(ctx *ui.Context) ui.Element {
 		// Side by side needs room; a narrow panel shows the unified diff.
-		return diffView(ctx, res.Data.files, files, a.panelWidth(ctx) >= splitMinWidth, func() bool { return a.widenFor(ctx, splitMinWidth) }, func() { a.widenNow(ctx, splitMinWidth) })
+		return diffView(ctx, res.Data.files, files, th.MultiRepo(), a.panelWidth(ctx) >= splitMinWidth, func() bool { return a.widenFor(ctx, splitMinWidth) }, func() { a.widenNow(ctx, splitMinWidth) })
 	})
 }
 
@@ -539,7 +710,7 @@ const diffRow = 22
 
 // diffView shows the file list, then each file's diff: a header that folds it, and its lines with
 // old and new line numbers, colored by change and by syntax.
-func diffView(ctx *ui.Context, stats []git.FileChange, files []*diffFile, roomy bool, canWiden func() bool, widen func()) ui.Element {
+func diffView(ctx *ui.Context, stats []git.FileChange, files []*diffFile, grouped, roomy bool, canWiden func() bool, widen func()) ui.Element {
 	t := ctx.Theme()
 	folded := ui.Local(ctx, "folded", map[string]bool{})
 	h := ui.Local(ctx, "list", ui.NewListHandle()).Peek()
@@ -566,10 +737,36 @@ func diffView(ctx *ui.Context, stats []git.FileChange, files []*diffFile, roomy 
 	added, removed := 0, 0
 	list := ui.Div().Column().PaddingX(space2).PaddingY(space2).BorderEdges(ui.Edges{Bottom: 1}, t.Border).Shrink(0).
 		MaxHeight(ui.Px(176)).ScrollY()
+	// With several repositories, each path starts with its repository's folder: group by it.
+	type sum struct{ added, removed int }
+	repoSums := map[string]sum{}
+	for _, f := range stats {
+		r, _, _ := strings.Cut(f.Path, "/")
+		rs := repoSums[r]
+		rs.added, rs.removed = rs.added+f.Added, rs.removed+f.Removed
+		repoSums[r] = rs
+	}
+	lastRepo := ""
 	for _, f := range stats {
 		added += f.Added
 		removed += f.Removed
 		path := f.Path
+		dir := filepath.Dir(path)
+		if grouped {
+			r, rest, _ := strings.Cut(path, "/")
+			dir = filepath.Dir(rest)
+			if r != lastRepo {
+				lastRepo = r
+				rs := repoSums[r]
+				list = list.Child(ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space2).PaddingTop(space2).Height(ui.Px(26)).
+					Child(ui.Icon(icons.FolderGit2).Size(13).Color(t.TextMuted)).
+					Child(ui.Text(r).FontSize(12).Semibold().Grow(1)).
+					Child(counts(ctx, rs.added, rs.removed, 12)))
+			}
+		}
+		if dir == "." {
+			dir = ""
+		}
 		list = list.Child(ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space2).Height(ui.Px(26)).Radius(radiusS).
 			Cursor(ui.CursorPointer).Hover(ui.Style{Background: t.SurfaceHover}).
 			Role(access.RoleButton).Label(path).TabIndex(0).
@@ -580,7 +777,7 @@ func diffView(ctx *ui.Context, stats []git.FileChange, files []*diffFile, roomy 
 			}).
 			Child(ui.Text(fileStatus(f.Status)).Mono().FontSize(12).Semibold().TextColor(fileStatusColor(ctx, f.Status)).Width(ui.Px(12))).
 			Child(ui.Text(filepath.Base(path)).FontSize(13).Medium().NoWrap()).
-			Child(ui.Text(filepath.Dir(path)).FontSize(12).TextColor(t.TextSubtle).TruncateHead().Grow(1).MinWidth(ui.Px(0))).
+			Child(ui.Text(dir).FontSize(12).TextColor(t.TextSubtle).TruncateHead().Grow(1).MinWidth(ui.Px(0))).
 			Child(counts(ctx, f.Added, f.Removed, 12)))
 	}
 

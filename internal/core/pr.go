@@ -2,7 +2,6 @@ package core
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"github.com/tyler-builds/solo/internal/agent"
 	"path/filepath"
@@ -34,67 +33,161 @@ func (c *Core) forgeFor(repo string) forge.Kind {
 	return k
 }
 
-// OpenPR pushes a worker's branch and opens a pull request (or merge request) against the branch it
-// started from; draft opens it as a draft. With AutoMerge on, a ready pull request also gets the
-// forge's auto-merge (a draft gets it when marked ready).
+// OpenPR pushes a worker's branches and opens a pull request (or merge request) in each repository
+// with changes and none open yet, against the branch it started from; draft opens them as drafts.
+// With AutoMerge on, ready pull requests also get the forge's auto-merge (a draft gets it when marked
+// ready). It returns the first pull request opened.
 func (c *Core) OpenPR(ctx context.Context, threadID string, draft bool) (forge.PR, error) {
+	prs, err := c.OpenPRFor(ctx, threadID, "", draft)
+	if err != nil {
+		return forge.PR{}, err
+	}
+	return prs[0], nil
+}
+
+// OpenPRFor is OpenPR for one of the worker's repositories (by path or folder name; "" for all).
+// Pull requests a thread opens in several repositories link to each other.
+func (c *Core) OpenPRFor(ctx context.Context, threadID, repo string, draft bool) ([]forge.PR, error) {
 	v, ok := c.Thread(threadID)
 	if !ok {
-		return forge.PR{}, fmt.Errorf("no thread %s", threadID)
+		return nil, fmt.Errorf("no thread %s", threadID)
 	}
-	if !v.CanOpenPR {
-		return forge.PR{}, fmt.Errorf("thread %q has nothing to open a pull request for", v.Title)
+	var todo []PartView
+	for _, p := range v.Parts {
+		if p.CanOpenPR && (repo == "" || p.Repo == repo || p.Name == repo) {
+			todo = append(todo, p)
+		}
 	}
-	client, err := forge.New(v.Forge)
+	if len(todo) == 0 {
+		return nil, fmt.Errorf("thread %q has nothing to open a pull request for", v.Title)
+	}
+	var opened []forge.PR
+	bodies := map[string]string{}
+	for _, p := range todo {
+		pr, body, err := c.openOne(ctx, v, p, draft)
+		if err != nil {
+			if len(opened) > 0 {
+				break // keep what opened; the rest can be retried
+			}
+			return nil, err
+		}
+		opened = append(opened, pr)
+		bodies[pr.URL] = body
+	}
+	if v.MultiRepo() {
+		c.linkPRs(ctx, threadID, bodies)
+	}
+	c.pokePRs()
+	return opened, nil
+}
+
+func (c *Core) openOne(ctx context.Context, v ThreadView, p PartView, draft bool) (forge.PR, string, error) {
+	client, err := forge.New(p.Forge)
 	if err != nil {
-		return forge.PR{}, err
+		return forge.PR{}, "", err
 	}
-	if _, err := git.CommitAll(ctx, v.WorktreePath, uncommittedPrefix+v.Title); err != nil {
-		return forge.PR{}, fmt.Errorf("committing the worktree's changes: %w", err)
+	if _, err := git.CommitAll(ctx, p.Worktree, uncommittedPrefix+v.Title); err != nil {
+		return forge.PR{}, "", fmt.Errorf("committing %s's changes: %w", p.Name, err)
 	}
-	if err := git.Push(ctx, v.WorktreePath, v.Branch); err != nil {
-		return forge.PR{}, fmt.Errorf("pushing %s: %w", v.Branch, err)
+	if err := git.Push(ctx, p.Worktree, p.Branch); err != nil {
+		return forge.PR{}, "", fmt.Errorf("pushing %s to %s: %w", p.Branch, p.Name, err)
 	}
-	title, body := c.prText(ctx, v)
-	pr, err := client.Open(ctx, v.WorktreePath, v.BaseBranch, v.Branch, title, body, draft)
+	title, body := c.prText(ctx, v, p)
+	pr, err := client.Open(ctx, p.Worktree, p.BaseBranch, p.Branch, title, body, draft)
 	if err != nil {
-		c.addNotice(threadID, "error", fmt.Sprintf("Couldn't open the %s: %v", v.Forge.Noun(), err))
-		return forge.PR{}, err
+		c.addNotice(v.ID, "error", fmt.Sprintf("Couldn't open the %s in %s: %v", p.Forge.Noun(), p.Name, err))
+		return forge.PR{}, "", err
 	}
 	what := "Opened"
 	if draft {
 		what = "Opened draft"
 	}
-	c.addNotice(threadID, "info", fmt.Sprintf("%s %s #%d against %s.", what, v.Forge.Noun(), pr.Number, v.BaseBranch))
+	c.addNotice(v.ID, "info", fmt.Sprintf("%s %s #%d against %s%s.", what, p.Forge.Noun(), pr.Number, p.BaseBranch, inRepo(v, p)))
 	if !draft {
-		pr = c.autoMerge(ctx, threadID, client, v.WorktreePath, pr)
+		pr = c.autoMerge(ctx, v.ID, client, p.Worktree, pr)
 	}
-	c.applyPR(threadID, pr, PROpened)
-	c.pokePRs()
-	return pr, nil
+	c.applyPR(v.ID, p.Repo, pr, PROpened)
+	return pr, body, nil
 }
 
-// MarkReady marks a draft pull request ready for review, and turns on auto-merge when Settings asks.
+// inRepo is " in api" for a multi-repository thread, else "".
+func inRepo(v ThreadView, p PartView) string {
+	if v.MultiRepo() {
+		return " in " + p.Name
+	}
+	return ""
+}
+
+// linkPRs adds to each newly opened pull request's description a list of the thread's pull requests
+// in its other repositories.
+func (c *Core) linkPRs(ctx context.Context, threadID string, bodies map[string]string) {
+	v, ok := c.Thread(threadID)
+	if !ok {
+		return
+	}
+	var all []PartView
+	for _, p := range v.Parts {
+		if p.PR != nil && p.PR.State != forge.StateClosed {
+			all = append(all, p)
+		}
+	}
+	if len(all) < 2 {
+		return
+	}
+	for _, p := range all {
+		body, ok := bodies[p.PR.URL]
+		if !ok {
+			continue
+		}
+		var b strings.Builder
+		if strings.TrimSpace(body) != "" {
+			b.WriteString(strings.TrimSpace(body) + "\n\n")
+		}
+		b.WriteString("Part of a change across repositories:\n")
+		for _, o := range all {
+			if o.Repo != p.Repo {
+				fmt.Fprintf(&b, "- %s: %s\n", o.Name, o.PR.URL)
+			}
+		}
+		client, err := forge.New(p.PR.Kind)
+		if err != nil {
+			continue
+		}
+		if err := client.EditBody(ctx, p.Worktree, *p.PR, b.String()); err != nil {
+			c.log.Warn("core: linking pull requests", "url", p.PR.URL, "err", err)
+		}
+	}
+}
+
+// MarkReady marks a worker's draft pull requests ready for review, and turns on auto-merge when
+// Settings asks.
 func (c *Core) MarkReady(ctx context.Context, threadID string) error {
 	v, ok := c.Thread(threadID)
 	if !ok {
 		return fmt.Errorf("no thread %s", threadID)
 	}
-	if v.PR == nil || v.PR.State != forge.StateOpen || !v.PR.Draft {
+	n := 0
+	for _, p := range v.Parts {
+		if !p.CanMarkReady {
+			continue
+		}
+		client, err := forge.New(p.PR.Kind)
+		if err != nil {
+			return err
+		}
+		if err := client.Ready(ctx, p.Worktree, *p.PR); err != nil {
+			return err
+		}
+		pr := *p.PR
+		pr.Draft = false
+		c.addNotice(threadID, "info", fmt.Sprintf("%s #%d is ready for review%s.", pr.Kind.Noun(), pr.Number, inRepo(v, p)))
+		pr = c.autoMerge(ctx, threadID, client, p.Worktree, pr)
+		c.applyPR(threadID, p.Repo, pr, "")
+		n++
+	}
+	if n == 0 {
 		return fmt.Errorf("thread %q has no draft to mark ready", v.Title)
 	}
-	client, err := forge.New(v.PR.Kind)
-	if err != nil {
-		return err
-	}
-	if err := client.Ready(ctx, v.WorktreePath, *v.PR); err != nil {
-		return err
-	}
-	pr := *v.PR
-	pr.Draft = false
-	c.addNotice(threadID, "info", fmt.Sprintf("%s #%d is ready for review.", pr.Kind.Noun(), pr.Number))
-	pr = c.autoMerge(ctx, threadID, client, v.WorktreePath, pr)
-	c.applyPR(threadID, pr, "")
 	c.pokePRs()
 	return nil
 }
@@ -106,11 +199,11 @@ func (c *Core) autoMerge(ctx context.Context, threadID string, client *forge.Cli
 		return pr
 	}
 	if err := client.EnableAutoMerge(ctx, dir, pr, s.MergeMethod); err != nil {
-		c.addNotice(threadID, "warning", fmt.Sprintf("Couldn't turn on auto-merge (%v). Merge it when its checks pass.", err))
+		c.addNotice(threadID, "warning", fmt.Sprintf("Couldn't turn on auto-merge for #%d (%v). Merge it when its checks pass.", pr.Number, err))
 		return pr
 	}
 	pr.AutoMerge = true
-	c.addNotice(threadID, "info", "Auto-merge is on: it merges once its required checks pass.")
+	c.addNotice(threadID, "info", fmt.Sprintf("Auto-merge is on for #%d: it merges once its required checks pass.", pr.Number))
 	return pr
 }
 
@@ -127,10 +220,10 @@ TITLE: <one-line title>`
 // prText writes a pull request's title and description with the PR text model, following Settings'
 // rules; without a description when Settings says so. If the model fails, the title is the worker's
 // one commit's subject (or the thread's title) and the description its summary.
-func (c *Core) prText(ctx context.Context, v ThreadView) (string, string) {
+func (c *Core) prText(ctx context.Context, v ThreadView, p PartView) (string, string) {
 	s := c.Settings()
 	var subjects []string // the worker's own commits, not Solo's commit of what it left uncommitted
-	if log, err := git.Run(ctx, v.WorktreePath, "log", "--format=%s", v.BaseCommit+"..HEAD"); err == nil {
+	if log, err := git.Run(ctx, p.Worktree, "log", "--format=%s", p.BaseCommit+"..HEAD"); err == nil {
 		for _, l := range strings.Split(strings.TrimSpace(log), "\n") {
 			if l != "" && !strings.HasPrefix(l, uncommittedPrefix) {
 				subjects = append(subjects, l)
@@ -154,7 +247,7 @@ func (c *Core) prText(ctx context.Context, v ThreadView) (string, string) {
 		rules = "A short, specific title in the imperative mood. A brief description: what changed and why, then a short list of the main changes."
 	}
 	var files []string
-	if fc, err := git.Changes(ctx, v.WorktreePath, v.BaseCommit); err == nil {
+	if fc, err := git.Changes(ctx, p.Worktree, p.BaseCommit); err == nil {
 		for i, f := range fc {
 			if i == 60 {
 				files = append(files, fmt.Sprintf("… and %d more", len(fc)-60))
@@ -163,8 +256,12 @@ func (c *Core) prText(ctx context.Context, v ThreadView) (string, string) {
 			files = append(files, fmt.Sprintf("%s %s (+%d −%d)", f.Status, f.Path, f.Added, f.Removed))
 		}
 	}
-	prompt := fmt.Sprintf("Write the pull request for this change.\n\nRules:\n%s\n\nRepository: %s\nBranch: %s into %s\nTask title: %s\nTask:\n%s\n\nWhat the agent that made the change reported:\n%s\n\nCommits:\n%s\n\nFiles changed:\n%s",
-		rules, filepath.Base(v.RepoPath), v.Branch, v.BaseBranch, v.Title, clipText(v.Prompt, 1500),
+	scope := ""
+	if v.MultiRepo() {
+		scope = fmt.Sprintf("\nThis pull request is the %s part of a change across %s; describe this repository's part.", p.Name, repoNames(partRepos(v.Parts)))
+	}
+	prompt := fmt.Sprintf("Write the pull request for this change.\n\nRules:\n%s\n\nRepository: %s%s\nBranch: %s into %s\nTask title: %s\nTask:\n%s\n\nWhat the agent that made the change reported:\n%s\n\nCommits:\n%s\n\nFiles changed:\n%s",
+		rules, p.Name, scope, p.Branch, p.BaseBranch, v.Title, clipText(v.Prompt, 1500),
 		clipText(strings.TrimSpace(v.Summary), 3000), strings.Join(subjects, "\n"), strings.Join(files, "\n"))
 	system := prSystem
 	if s.SkipPRDescription {
@@ -210,31 +307,31 @@ func parsePRText(s string) (title, desc string) {
 	return title, desc
 }
 
-// mergePR merges an open pull request through the forge.
-func (c *Core) mergePR(ctx context.Context, v ThreadView) error {
-	client, err := forge.New(v.PR.Kind)
+// mergePR merges one repository's open pull request through the forge.
+func (c *Core) mergePR(ctx context.Context, v ThreadView, p PartView) error {
+	client, err := forge.New(p.PR.Kind)
 	if err != nil {
 		return err
 	}
-	if err := client.Merge(ctx, v.WorktreePath, *v.PR, c.Settings().MergeMethod); err != nil {
-		c.addNotice(v.ID, "error", fmt.Sprintf("Merging %s #%d failed: %v", v.PR.Kind.Noun(), v.PR.Number, err))
+	if err := client.Merge(ctx, p.Worktree, *p.PR, c.Settings().MergeMethod); err != nil {
+		c.addNotice(v.ID, "error", fmt.Sprintf("Merging %s #%d failed: %v", p.PR.Kind.Noun(), p.PR.Number, err))
 		return err
 	}
-	c.checkPR(ctx, v.ID)
+	c.checkPR(ctx, v.ID, p.Repo)
 	return nil
 }
 
-// pushPR pushes new commits on a thread's branch to its open pull request.
-func (c *Core) pushPR(ctx context.Context, v ThreadView) {
-	ahead, err := git.Run(ctx, v.WorktreePath, "rev-list", "--count", "@{upstream}..HEAD")
+// pushPR pushes new commits on one repository's branch to its open pull request.
+func (c *Core) pushPR(ctx context.Context, v ThreadView, p PartView) {
+	ahead, err := git.Run(ctx, p.Worktree, "rev-list", "--count", "@{upstream}..HEAD")
 	if err == nil && strings.TrimSpace(ahead) == "0" {
 		return
 	}
-	if err := git.Push(ctx, v.WorktreePath, v.Branch); err != nil {
-		c.addNotice(v.ID, "error", fmt.Sprintf("Couldn't push to the %s: %v", v.PR.Kind.Noun(), err))
+	if err := git.Push(ctx, p.Worktree, p.Branch); err != nil {
+		c.addNotice(v.ID, "error", fmt.Sprintf("Couldn't push to %s #%d: %v", p.PR.Kind.Noun(), p.PR.Number, err))
 		return
 	}
-	c.addNotice(v.ID, "info", fmt.Sprintf("Pushed new commits to %s #%d.", v.PR.Kind.Noun(), v.PR.Number))
+	c.addNotice(v.ID, "info", fmt.Sprintf("Pushed new commits to %s #%d%s.", p.PR.Kind.Noun(), p.PR.Number, inRepo(v, p)))
 	c.pokePRs()
 }
 
@@ -267,72 +364,90 @@ func (c *Core) watchPRs() {
 
 // CheckPRs reads the state of every open pull request.
 func (c *Core) CheckPRs(ctx context.Context) {
+	type key struct{ id, repo string }
 	c.mu.Lock()
-	var ids []string
+	var todo []key
 	for id, t := range c.threads {
-		if t.pr != nil && t.pr.State == forge.StateOpen {
-			ids = append(ids, id)
+		for _, p := range t.parts {
+			if p.prOpen() {
+				todo = append(todo, key{id, p.Repo})
+			}
 		}
 	}
 	c.mu.Unlock()
-	for _, id := range ids {
-		c.checkPR(ctx, id)
+	for _, k := range todo {
+		c.checkPR(ctx, k.id, k.repo)
 	}
 }
 
-func (c *Core) checkPR(ctx context.Context, id string) {
+func (c *Core) checkPR(ctx context.Context, id, repo string) {
 	v, ok := c.Thread(id)
-	if !ok || v.PR == nil {
+	if !ok {
 		return
 	}
-	client, err := forge.New(v.PR.Kind)
-	if err != nil {
+	for _, p := range v.Parts {
+		if p.Repo != repo || p.PR == nil {
+			continue
+		}
+		client, err := forge.New(p.PR.Kind)
+		if err != nil {
+			return
+		}
+		dir := p.Worktree
+		if dir == "" {
+			dir = p.Repo
+		}
+		vctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		pr, err := client.View(vctx, dir, *p.PR)
+		cancel()
+		if err != nil {
+			c.log.Warn("core: reading a pull request", "url", p.PR.URL, "err", err)
+			return
+		}
+		c.applyPR(id, repo, pr, "")
 		return
 	}
-	dir := v.WorktreePath
-	if dir == "" {
-		dir = v.RepoPath
-	}
-	vctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	pr, err := client.View(vctx, dir, *v.PR)
-	if err != nil {
-		c.log.Warn("core: reading a pull request", "url", v.PR.URL, "err", err)
-		return
-	}
-	c.applyPR(id, pr, "")
 }
 
-// applyPR records a pull request's new state and acts on what changed: it says so in the thread,
-// tells Solo (through Change.PREvent), and finishes the thread when the pull request merged.
-func (c *Core) applyPR(id string, pr forge.PR, event string) {
+// applyPR records a repository's pull request's new state and acts on what changed: it says so in the
+// thread, tells Solo (through Change.PREvent), and closes the thread once every repository's pull
+// request merged.
+func (c *Core) applyPR(id, repo string, pr forge.PR, event string) {
 	c.mu.Lock()
 	t := c.threads[id]
-	if t == nil {
+	var p *part
+	if t != nil {
+		p = t.part(repo)
+	}
+	if p == nil {
 		c.mu.Unlock()
 		return
 	}
 	var old forge.PR
-	if t.pr != nil {
-		old = *t.pr
+	if p.PR != nil {
+		old = *p.PR
 	}
 	if event == "" && prSame(old, pr) {
 		c.mu.Unlock()
 		return
 	}
-	t.pr = &pr
-	data, _ := json.Marshal(pr)
-	t.row.PR = string(data)
+	p.PR = &pr
 	t.row.UpdatedAt = now()
-	_ = c.db.SaveThread(&t.row)
+	_ = c.saveLocked(t)
 	status := t.row.Status
+	multi := len(t.parts) > 1
+	name := filepath.Base(p.Repo)
 	c.mu.Unlock()
 
 	noun := fmt.Sprintf("%s #%d", pr.Kind.Noun(), pr.Number)
+	if multi {
+		noun += " (" + name + ")"
+	}
 	if event == "" {
 		switch {
 		case pr.State == forge.StateMerged && old.State != forge.StateMerged:
 			event = PRMerged
+			c.addNotice(id, "info", noun+" merged.")
 		case pr.State == forge.StateClosed && old.State != forge.StateClosed:
 			event = PRClosed
 			c.addNotice(id, "warning", noun+" was closed without merging.")
@@ -344,11 +459,10 @@ func (c *Core) applyPR(id string, pr forge.PR, event string) {
 			c.addNotice(id, "info", "Checks passed on "+noun+".")
 		}
 	}
+	c.notify(Change{Kind: ChangeThread, ThreadID: id, PrevStatus: status, Status: status, PREvent: event, Repo: repo})
 	if event == PRMerged {
-		c.finishMerged(id, pr)
-		return
+		c.finishIfLanded(id)
 	}
-	c.notify(Change{Kind: ChangeThread, ThreadID: id, PrevStatus: status, Status: status, PREvent: event})
 }
 
 func prSame(a, b forge.PR) bool {
@@ -365,31 +479,4 @@ func checkNames(cs []forge.Check) string {
 		return "see the checks"
 	}
 	return strings.Join(names, ", ")
-}
-
-// finishMerged closes a thread whose pull request merged on the forge: it removes the worktree and
-// the local branch.
-func (c *Core) finishMerged(id string, pr forge.PR) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
-	v, ok := c.Thread(id)
-	if !ok || Finished(v.Status) {
-		return
-	}
-	c.closeSession(ctx, id)
-	if v.WorktreePath != "" {
-		if err := git.RemoveWorktree(ctx, v.RepoPath, v.WorktreePath, v.Branch, true); err != nil {
-			c.log.Warn("core: removing a merged worktree", "err", err)
-		}
-	}
-	c.mu.Lock()
-	var ch Change
-	if t := c.threads[id]; t != nil {
-		t.row.WorktreePath = ""
-		ch = c.setStatusLocked(t, StatusMerged, "")
-		ch.PREvent = PRMerged
-	}
-	c.mu.Unlock()
-	c.addNotice(id, "info", fmt.Sprintf("%s #%d merged into %s.", pr.Kind.Noun(), pr.Number, v.BaseBranch))
-	c.notify(ch)
 }

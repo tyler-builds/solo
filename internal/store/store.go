@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS threads (
 	prompt_images  TEXT NOT NULL DEFAULT '',
 	done_at        INTEGER NOT NULL DEFAULT 0,
 	pr             TEXT NOT NULL DEFAULT '',
+	parts          TEXT NOT NULL DEFAULT '',
 	cost_usd       REAL NOT NULL DEFAULT 0,
 	context_tokens INTEGER NOT NULL DEFAULT 0,
 	created_at     INTEGER NOT NULL,
@@ -75,7 +76,7 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("store: schema: %w", err)
 	}
 	// Columns added after the first release. SQLite has no ADD COLUMN IF NOT EXISTS.
-	for _, col := range []string{`prompt_images TEXT NOT NULL DEFAULT ''`, `done_at INTEGER NOT NULL DEFAULT 0`, `pr TEXT NOT NULL DEFAULT ''`} {
+	for _, col := range []string{`prompt_images TEXT NOT NULL DEFAULT ''`, `done_at INTEGER NOT NULL DEFAULT 0`, `pr TEXT NOT NULL DEFAULT ''`, `parts TEXT NOT NULL DEFAULT ''`} {
 		if _, err := db.Exec(`ALTER TABLE threads ADD COLUMN ` + col); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			db.Close()
 			return nil, fmt.Errorf("store: migrate: %w", err)
@@ -136,6 +137,7 @@ type Thread struct {
 	PromptImages  []string  // image files sent with the prompt
 	DoneAt        time.Time // when the user marked it done (it leaves the rail for History); zero while open
 	PR            string    // its pull request, as JSON (see forge.PR); "" when none
+	Parts         string    // every repository it works in, as JSON (see core.Part); "" for old rows
 	CostUSD       float64
 	ContextTokens int
 	CreatedAt     time.Time
@@ -143,19 +145,19 @@ type Thread struct {
 }
 
 const threadCols = `id, kind, session_id, has_transcript, title, repo_path, worktree_path, branch, base_branch,
-	base_commit, model, status, summary, error, prompt, prompt_images, done_at, pr, cost_usd, context_tokens, created_at, updated_at`
+	base_commit, model, status, summary, error, prompt, prompt_images, done_at, pr, parts, cost_usd, context_tokens, created_at, updated_at`
 
 // SaveThread inserts or replaces the thread.
 func (s *Store) SaveThread(t *Thread) error {
-	_, err := s.db.Exec(`INSERT INTO threads(`+threadCols+`) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+	_, err := s.db.Exec(`INSERT INTO threads(`+threadCols+`) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(id) DO UPDATE SET kind=excluded.kind, session_id=excluded.session_id,
 		has_transcript=excluded.has_transcript, title=excluded.title, repo_path=excluded.repo_path,
 		worktree_path=excluded.worktree_path, branch=excluded.branch, base_branch=excluded.base_branch,
 		base_commit=excluded.base_commit, model=excluded.model, status=excluded.status, summary=excluded.summary,
-		error=excluded.error, prompt=excluded.prompt, prompt_images=excluded.prompt_images, done_at=excluded.done_at, pr=excluded.pr, cost_usd=excluded.cost_usd,
+		error=excluded.error, prompt=excluded.prompt, prompt_images=excluded.prompt_images, done_at=excluded.done_at, pr=excluded.pr, parts=excluded.parts, cost_usd=excluded.cost_usd,
 		context_tokens=excluded.context_tokens, updated_at=excluded.updated_at`,
 		t.ID, t.Kind, t.SessionID, t.HasTranscript, t.Title, t.RepoPath, t.WorktreePath, t.Branch, t.BaseBranch,
-		t.BaseCommit, t.Model, t.Status, t.Summary, t.Error, t.Prompt, joinPaths(t.PromptImages), unixMilli(t.DoneAt), t.PR, t.CostUSD, t.ContextTokens,
+		t.BaseCommit, t.Model, t.Status, t.Summary, t.Error, t.Prompt, joinPaths(t.PromptImages), unixMilli(t.DoneAt), t.PR, t.Parts, t.CostUSD, t.ContextTokens,
 		t.CreatedAt.UnixMilli(), t.UpdatedAt.UnixMilli())
 	return err
 }
@@ -174,7 +176,7 @@ func (s *Store) Threads() ([]*Thread, error) {
 		var images string
 		var done int64
 		if err := rows.Scan(&t.ID, &t.Kind, &t.SessionID, &t.HasTranscript, &t.Title, &t.RepoPath, &t.WorktreePath,
-			&t.Branch, &t.BaseBranch, &t.BaseCommit, &t.Model, &t.Status, &t.Summary, &t.Error, &t.Prompt, &images, &done, &t.PR,
+			&t.Branch, &t.BaseBranch, &t.BaseCommit, &t.Model, &t.Status, &t.Summary, &t.Error, &t.Prompt, &images, &done, &t.PR, &t.Parts,
 			&t.CostUSD, &t.ContextTokens, &created, &updated); err != nil {
 			return nil, err
 		}

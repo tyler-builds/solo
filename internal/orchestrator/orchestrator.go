@@ -160,8 +160,17 @@ func (o *Orchestrator) onChange(ch core.Change) {
 		return
 	}
 	var line string
-	if pr := v.PR; pr != nil && ch.PREvent != "" && ch.PREvent != core.PRMerged {
+	var pr *forge.PR
+	for _, p := range v.Parts {
+		if p.Repo == ch.Repo {
+			pr = p.PR
+		}
+	}
+	if pr != nil && ch.PREvent != "" && ch.PREvent != core.PRMerged {
 		noun := fmt.Sprintf("%s #%d (%s)", pr.Kind.Noun(), pr.Number, pr.URL)
+		if v.MultiRepo() {
+			noun = fmt.Sprintf("the %s %s #%d (%s)", filepath.Base(ch.Repo), pr.Kind.Noun(), pr.Number, pr.URL)
+		}
 		switch ch.PREvent {
 		case core.PROpened:
 			line = fmt.Sprintf("%s: the user opened %s.", label(v), noun)
@@ -202,6 +211,8 @@ func (o *Orchestrator) onChange(ch core.Change) {
 		line = fmt.Sprintf("%s was merged into %s by the user.", label(v), v.BaseBranch)
 		if v.PR != nil {
 			line = fmt.Sprintf("%s: %s #%d merged into %s.", label(v), v.PR.Kind.Noun(), v.PR.Number, v.BaseBranch)
+		} else if v.MultiRepo() {
+			line = fmt.Sprintf("%s: every repository's change has landed.", label(v))
 		}
 	case core.StatusDiscarded:
 		line = fmt.Sprintf("%s was discarded by the user.", label(v))
@@ -288,7 +299,7 @@ func (o *Orchestrator) recap(v core.ThreadView) string {
 }
 
 func label(v core.ThreadView) string {
-	return fmt.Sprintf("Thread %s %q (%s)", short(v.ID), v.Title, filepath.Base(v.RepoPath))
+	return fmt.Sprintf("Thread %s %q (%s)", short(v.ID), v.Title, repoList(v))
 }
 
 func short(id string) string {

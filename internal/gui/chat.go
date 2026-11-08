@@ -964,7 +964,7 @@ func (a *App) foldedAsk(ctx *ui.Context, th core.ThreadView, pq core.PendingQues
 		}).
 		Child(ui.Icon(icons.MessageCircleQuestionMark).Size(15).Color(t.Warning)).
 		Child(ui.Text("Question").FontSize(12).Semibold().TextColor(t.Warning).NoWrap()).
-		Child(ui.Text(filepath.Base(th.RepoPath) + " › " + th.Title).FontSize(12).TextColor(t.TextMuted).NoWrap().Shrink(0).MaxWidth(ui.Px(260)).Truncate()).
+		Child(ui.Text(repoLabel(th) + " › " + th.Title).FontSize(12).TextColor(t.TextMuted).NoWrap().Shrink(0).MaxWidth(ui.Px(260)).Truncate()).
 		Child(ui.Text(q).FontSize(13).Truncate().Grow(1).MinWidth(ui.Px(0))).
 		Child(ui.Text("Answer").FontSize(12).Medium().TextColor(t.Link).NoWrap())
 }
@@ -1010,14 +1010,14 @@ func (a *App) attentionBar(ctx *ui.Context) ui.Element {
 	}
 	row := ui.Div().Row().Align(ui.Center).Gap(space2).MinWidth(ui.Px(0))
 	if len(ready) > 0 {
-		text := filepath.Base(ready[0].RepoPath) + " · " + ready[0].Title + " is ready"
+		text := repoLabel(ready[0]) + " · " + ready[0].Title + " is ready"
 		if len(ready) > 1 {
 			text = fmt.Sprintf("%d ready to land", len(ready))
 		}
 		row = row.Child(pill(icons.GitMerge, t.Success, text, ready[0], "changes"))
 	}
 	if len(failed) > 0 {
-		text := filepath.Base(failed[0].RepoPath) + " · " + failed[0].Title + " failed"
+		text := repoLabel(failed[0]) + " · " + failed[0].Title + " failed"
 		if len(failed) > 1 {
 			text = fmt.Sprintf("%d failed", len(failed))
 		}
@@ -1220,7 +1220,7 @@ func (a *App) cardHeader(ctx *ui.Context, icon *icons.Icon, c ui.Color, typ, thr
 	return row.
 		Child(ui.Div().Grow(1)).
 		Child(ui.Div().Row().Align(ui.Center).Gap(space1 + 2).Shrink(1).MinWidth(ui.Px(0)).
-			Child(ui.Text(filepath.Base(th.RepoPath)).FontSize(12).TextColor(t.TextMuted).NoWrap()).
+			Child(ui.Text(repoLabel(th)).FontSize(12).TextColor(t.TextMuted).NoWrap()).
 			Child(ui.Icon(icons.ChevronRight).Size(12).Color(t.TextSubtle)).
 			Child(ui.Div().MinWidth(ui.Px(0)).Cursor(ui.CursorPointer).
 				Role(access.RoleButton).Label("Open " + th.Title).TabIndex(0).Tooltip("Open this thread").

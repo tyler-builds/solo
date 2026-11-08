@@ -40,7 +40,7 @@ func (c *Core) onEvent(e agent.Event) {
 		t.retry = ""
 		if !t.row.HasTranscript {
 			t.row.HasTranscript = true
-			_ = c.db.SaveThread(&t.row)
+			_ = c.saveLocked(t)
 		}
 		if t.row.Status != StatusRunning && t.row.Status != StatusWaiting {
 			changes = append(changes, c.setStatusLocked(t, StatusRunning, ""))
@@ -197,7 +197,7 @@ func (c *Core) onEvent(e agent.Event) {
 		itemsChanged, streamChanged = true, true
 		if e.QueuedTurns > 0 {
 			// Another queued message runs next; stay running.
-			_ = c.db.SaveThread(&t.row)
+			_ = c.saveLocked(t)
 			threadChanged = true
 			break
 		}

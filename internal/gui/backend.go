@@ -33,6 +33,8 @@ type Backend interface {
 	MergeLocal(ctx context.Context, threadID string) (string, error)
 	OpenPR(ctx context.Context, threadID string, draft bool) (forge.PR, error)
 	MarkReady(ctx context.Context, threadID string) error
+	OpenPRFor(ctx context.Context, threadID, repo string, draft bool) ([]forge.PR, error)
+	MergeRepo(ctx context.Context, threadID, repo string) (string, error)
 	Discard(ctx context.Context, threadID string) error
 	Done(ctx context.Context, threadID string) error
 	Restore(ctx context.Context, threadID string) error

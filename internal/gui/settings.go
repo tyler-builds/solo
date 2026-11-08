@@ -355,7 +355,7 @@ func (a *App) historyList(ctx *ui.Context) ui.Element {
 			Child(statusMark(ctx, shownStatus(th))).
 			Child(ui.Div().Column().Gap(2).Grow(1).MinWidth(ui.Px(0)).
 				Child(ui.Text(th.Title).FontSize(13).Truncate()).
-				Child(caption(ctx, filepath.Base(th.RepoPath)+" · "+statusLabel(th)+" · "+doneAgo(th.DoneAt)).Truncate())).
+				Child(caption(ctx, repoLabel(th)+" · "+statusLabel(th)+" · "+doneAgo(th.DoneAt)).Truncate())).
 			Child(ui.Div().Shrink(0).Child(ui.Button("Restore").Icon(icons.RotateCcw).Secondary().Small().
 				Tooltip("Back to your list").OnClick(func() { a.restore(id) })))
 		if i > 0 {

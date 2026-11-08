@@ -41,7 +41,7 @@ func (a *App) rail(ctx *ui.Context) ui.Element {
 	var open []core.ThreadView
 	running := false
 	for _, th := range a.threads.Get() {
-		if !inRail(th) || (filter != "" && th.RepoPath != filter) {
+		if !inRail(th) || !inRepo(th, filter) {
 			continue
 		}
 		open = append(open, th)
@@ -124,10 +124,12 @@ func (a *App) repoMenu(ctx *ui.Context) ui.Element {
 	var repos []string
 	for _, th := range a.threads.Get() {
 		if th.IsWorker && !core.Finished(th.Status) {
-			if counts[th.RepoPath] == 0 {
-				repos = append(repos, th.RepoPath)
+			for _, r := range threadRepos(th) {
+				if counts[r] == 0 {
+					repos = append(repos, r)
+				}
+				counts[r]++
 			}
-			counts[th.RepoPath]++
 		}
 	}
 	if len(repos) < 2 && filter == "" {
@@ -187,7 +189,7 @@ func (a *App) threadRow(ctx *ui.Context, th core.ThreadView) ui.Element {
 	}
 	// The mark and the group carry the state; the line stays neutral.
 	line, lineColor := a.activityLine(th), t.TextMuted
-	repo := filepath.Base(th.RepoPath)
+	repo := repoLabel(th)
 	row := ui.Div().Column().Gap(3).PaddingX(space2 + 2).PaddingY(space2).Radius(radiusM).
 		Cursor(ui.CursorPointer).Hover(ui.Style{Background: t.SurfaceHover}).
 		Role(access.RoleButton).Label(th.Title).TabIndex(0).Key("card-" + th.ID).
@@ -226,8 +228,10 @@ func (a *App) rowDetail(ctx *ui.Context, repo, line string, c ui.Color) ui.Eleme
 	t := ctx.Theme()
 	l := ui.Div().Row().Align(ui.Center).Gap(6).PaddingLeft(space5 + 2).MinWidth(ui.Px(0))
 	if a.repoFilter() == "" {
-		l = l.Child(ui.Text(repo).FontSize(12).TextColor(t.TextSubtle).NoWrap()).
-			Child(ui.Text("·").FontSize(12).TextColor(t.TextSubtle))
+		l = l.Child(ui.Text(repo).FontSize(12).TextColor(t.TextSubtle).NoWrap())
+		if line != "" {
+			l = l.Child(ui.Text("·").FontSize(12).TextColor(t.TextSubtle))
+		}
 	}
 	return l.Child(ui.Text(line).FontSize(12).TextColor(c).Truncate().Grow(1).MinWidth(ui.Px(0)))
 }
@@ -242,7 +246,11 @@ func branchLabel(th core.ThreadView) string {
 // activityLine says what a thread is doing or did, in a line.
 func (a *App) activityLine(th core.ThreadView) string {
 	if s := shownStatus(th); s == statusInReview || s == statusChecksFailed {
-		return prLine(th.PR)
+		if open := openPRs(th); len(open) > 1 {
+			return prsLine(open)
+		} else if len(open) == 1 {
+			return prLine(open[0])
+		}
 	}
 	switch th.Status {
 	case core.StatusQueued:
@@ -300,6 +308,35 @@ func prLine(pr *forge.PR) string {
 	}
 	if pr.AutoMerge {
 		parts = append(parts, "auto-merge on")
+	}
+	return strings.Join(parts, " · ")
+}
+
+// prsLine sums up several pull requests: "3 PRs · 1 failing".
+func prsLine(prs []*forge.PR) string {
+	failing, ready, drafts := 0, 0, 0
+	for _, pr := range prs {
+		switch {
+		case pr.Draft:
+			drafts++
+		case pr.Checks == forge.ChecksFailing:
+			failing++
+		case pr.Mergeable:
+			ready++
+		}
+	}
+	parts := []string{fmt.Sprintf("%d %ss", len(prs), prs[0].Kind.Noun())}
+	switch {
+	case failing > 0:
+		parts = append(parts, fmt.Sprintf("%d failing", failing))
+	case ready == len(prs):
+		parts = append(parts, "ready to merge")
+	case ready > 0:
+		parts = append(parts, fmt.Sprintf("%d ready", ready))
+	case drafts == len(prs):
+		parts = append(parts, "drafts")
+	default:
+		parts = append(parts, "waiting for checks")
 	}
 	return strings.Join(parts, " · ")
 }

@@ -153,6 +153,13 @@ Raw `SDKMessage`s are also appended to a per-session JSONL file for debugging an
   A watcher polls open PRs every 30 s: failed checks (sent to Solo to have the thread fix them, or just
   shown, per the setting), passed checks, closed, merged (the thread closes and its worktree goes).
   New commits a thread makes are pushed to its PR at the end of each turn.
+- Multi-repository threads: one task across repositories (client, API, database) is one thread with
+  a part per repository (`core.Part`: worktree, branch, base, PR; stored as JSON in `threads.parts`,
+  the first mirrored into the single-repository columns). Every repository gets a worktree on the same
+  branch in `<data>/worktrees/threads/<title>-<id>/<repo>/`, and the session runs in that folder.
+  Changes and the diff prefix paths with the repository. Open PRs opens one per changed repository,
+  each description listing the others; the split button's menu opens or merges one repository on its
+  own. Auto-merge is each forge's own. The thread is merged once every changed repository has landed.
 - Discarding a thread deletes its message images, except ones another thread's history still shows.
 
 ## UI (jamb)

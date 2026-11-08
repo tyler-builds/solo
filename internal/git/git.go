@@ -296,7 +296,17 @@ func Changes(ctx context.Context, worktree, base string) ([]FileChange, error) {
 
 // Diff returns the unified diff of the worktree against base, including untracked files.
 func Diff(ctx context.Context, worktree, base string) (string, error) {
-	d, err := Run(ctx, worktree, "diff", "--no-color", "--no-ext-diff", base)
+	return DiffPrefixed(ctx, worktree, base, "")
+}
+
+// DiffPrefixed is Diff with every path under prefix ("api" makes a/api/x.go), for showing several
+// repositories' diffs as one.
+func DiffPrefixed(ctx context.Context, worktree, base, prefix string) (string, error) {
+	var px []string
+	if prefix != "" {
+		px = []string{"--src-prefix=a/" + prefix + "/", "--dst-prefix=b/" + prefix + "/"}
+	}
+	d, err := Run(ctx, worktree, append(append([]string{"diff", "--no-color", "--no-ext-diff"}, px...), base)...)
 	if err != nil {
 		return "", err
 	}
@@ -311,7 +321,7 @@ func Diff(ctx context.Context, worktree, base string) (string, error) {
 			continue
 		}
 		// --no-index exits 1 when files differ, which they always do here.
-		cmd := exec.CommandContext(ctx, "git", "diff", "--no-color", "--no-index", "--", os.DevNull, p)
+		cmd := exec.CommandContext(ctx, "git", append(append([]string{"diff", "--no-color", "--no-index"}, px...), "--", os.DevNull, p)...)
 		cmd.Dir = worktree
 		out, _ := cmd.Output()
 		if b.Len() > 0 && !strings.HasSuffix(b.String(), "\n") {

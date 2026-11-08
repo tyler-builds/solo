@@ -9,7 +9,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/tyler-builds/solo/internal/forge"
@@ -130,9 +129,10 @@ type Change struct {
 	ThreadID string
 	// For ChangeThread: the status before and after, equal when something else changed.
 	PrevStatus, Status string
-	// PREvent is set when something happened to the thread's pull request: PROpened, PRChecksFailed,
-	// PRChecksPassed, PRMerged or PRClosed.
+	// PREvent is set when something happened to one of the thread's pull requests: PROpened,
+	// PRChecksFailed, PRChecksPassed, PRMerged or PRClosed. Repo is its repository.
 	PREvent string
+	Repo    string
 }
 
 // Pull request events (Change.PREvent).
@@ -230,13 +230,7 @@ func New(cfg Config) (*Core, error) {
 		return nil, err
 	}
 	for _, row := range rows {
-		t := &thread{row: *row, changed: -1}
-		if row.PR != "" {
-			var pr forge.PR
-			if json.Unmarshal([]byte(row.PR), &pr) == nil {
-				t.pr = &pr
-			}
-		}
+		t := &thread{row: *row, parts: loadParts(*row)}
 		// A thread that was working when the app stopped lost its process; say so.
 		switch t.row.Status {
 		case StatusStarting, StatusRunning, StatusWaiting:

@@ -785,3 +785,165 @@ func TestParsePRText(t *testing.T) {
 		}
 	}
 }
+
+// fakeGHMulti is a gh for several repositories: each pull request is numbered in turn and named after
+// the folder gh runs in; views answer from view.json with the asked URL and number filled in.
+func fakeGHMulti(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	script := `#!/bin/sh
+d="$(dirname "$0")"
+case "$1 $2" in
+"pr create")
+  n=$(( $(cat "$d/n" 2>/dev/null || echo 0) + 1 )); echo $n > "$d/n"
+  echo "$(basename "$PWD") $@" >> "$d/create"
+  echo "https://github.com/acme/$(basename "$PWD")/pull/$n" ;;
+"pr view") num="${3##*/}"; sed -e "s|__URL__|$3|" -e "s|__NUM__|$num|" "$d/view.json" ;;
+"pr edit") echo "$@" >> "$d/edit" ;;
+"pr merge") echo "$@" >> "$d/merge" ;;
+*) echo "unexpected: $@" >&2; exit 1 ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(dir, "gh"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return dir
+}
+
+func setViewMulti(t *testing.T, dir, state, merge string) {
+	t.Helper()
+	j := fmt.Sprintf(`{"number":__NUM__,"url":"__URL__","state":%q,"isDraft":false,"autoMergeRequest":null,"mergeStateStatus":%q,"reviewDecision":"","statusCheckRollup":[{"__typename":"CheckRun","name":"test","status":"COMPLETED","conclusion":"SUCCESS"}]}`, state, merge)
+	if err := os.WriteFile(filepath.Join(dir, "view.json"), []byte(j), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMultiRepoThread(t *testing.T) {
+	gh := fakeGHMulti(t)
+	e := newEnv(t)
+	ctx := context.Background()
+	run := func(dir string, args ...string) string {
+		t.Helper()
+		out, err := git.Run(ctx, dir, args...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	// Three repositories, each with an origin on GitHub.
+	repos := map[string]string{}
+	for _, name := range []string{"client", "api", "db"} {
+		r := filepath.Join(e.root, name)
+		os.MkdirAll(r, 0o755)
+		run(r, "init", "-q", "-b", "main")
+		run(r, "commit", "-q", "--allow-empty", "-m", "init")
+		origin := filepath.Join(e.root, name+".git")
+		run(e.root, "clone", "-q", "--bare", r, origin)
+		run(r, "remote", "add", "origin", origin)
+		run(r, "config", "solo.forge", "github")
+		repos[name] = r
+	}
+	e.c.RescanRepos()
+
+	v, err := e.c.CreateWorker(ctx, WorkerSpec{Repos: []string{"client", "api", "db"}, Title: "Audit export", Prompt: "write api/handler.go hi"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	v = waitStatus(t, e.c, v.ID, StatusIdle)
+	if !v.MultiRepo() || len(v.Parts) != 3 {
+		t.Fatalf("parts %+v", v.Parts)
+	}
+	dir := e.c.threadDir(v.Thread)
+	for i, name := range []string{"client", "api", "db"} {
+		p := v.Parts[i]
+		if p.Worktree != filepath.Join(dir, name) || p.Branch != v.Parts[0].Branch || p.BaseBranch != "main" {
+			t.Fatalf("part %s: %+v", name, p.Part)
+		}
+	}
+	if b, err := os.ReadFile(filepath.Join(dir, "api", "handler.go")); err != nil || string(b) != "hi\n" {
+		t.Fatalf("the session didn't run in the thread folder: %q %v", b, err)
+	}
+	if err := e.c.Send(ctx, v.ID, "write db/0042_audit.sql create"); err != nil {
+		t.Fatal(err)
+	}
+	waitStatus(t, e.c, v.ID, StatusIdle)
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		if v, _ = e.c.Thread(v.ID); v.Parts[2].Changed == 1 && v.Parts[0].Forge != "" {
+			break
+		}
+	}
+	if v.Changed != 2 || v.Parts[0].Changed != 0 || v.Parts[0].CanOpenPR || !v.Parts[1].CanOpenPR || !v.Parts[2].CanOpenPR || v.PR != nil {
+		t.Fatalf("after work: changed %d, parts %+v", v.Changed, v.Parts)
+	}
+	changes, err := e.c.Changes(ctx, v.ID)
+	if err != nil || len(changes) != 2 || changes[0].Path != "api/handler.go" || changes[1].Path != "db/0042_audit.sql" {
+		t.Fatalf("changes %+v %v", changes, err)
+	}
+	if d, _ := e.c.Diff(ctx, v.ID); !strings.Contains(d, "b/api/handler.go") || !strings.Contains(d, "b/db/0042_audit.sql") {
+		t.Fatalf("diff:\n%s", d)
+	}
+
+	// One click opens a PR in each repository it changed, linked to each other.
+	setViewMulti(t, gh, "OPEN", "BLOCKED")
+	prs, err := e.c.OpenPRFor(ctx, v.ID, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(prs) != 2 {
+		t.Fatalf("opened %+v", prs)
+	}
+	create, _ := os.ReadFile(filepath.Join(gh, "create"))
+	if strings.Contains(string(create), "client ") || !strings.Contains(string(create), "api ") || !strings.Contains(string(create), "db ") {
+		t.Fatalf("gh pr create:\n%s", create)
+	}
+	edit, _ := os.ReadFile(filepath.Join(gh, "edit"))
+	if !strings.Contains(string(edit), "- db: https://github.com/acme/db/pull/2") || !strings.Contains(string(edit), "- api: https://github.com/acme/api/pull/1") {
+		t.Fatalf("links:\n%s", edit)
+	}
+	for _, r := range []string{"api", "db"} {
+		if run(repos[r], "ls-remote", "origin", v.Parts[0].Branch) == "" {
+			t.Fatalf("%s's branch not pushed", r)
+		}
+	}
+
+	// Merging one repository leaves the thread open; when the other merges, it closes.
+	setViewMulti(t, gh, "OPEN", "CLEAN")
+	e.c.CheckPRs(ctx)
+	if v, _ = e.c.Thread(v.ID); !v.Parts[1].CanMerge || !v.Parts[2].CanMerge {
+		t.Fatalf("mergeable parts %+v", v.Parts)
+	}
+	if _, err := e.c.MergeRepo(ctx, v.ID, "db"); err != nil {
+		t.Fatal(err)
+	}
+	merge, _ := os.ReadFile(filepath.Join(gh, "merge"))
+	if !strings.Contains(string(merge), "acme/db/pull/2") || strings.Contains(string(merge), "acme/api") {
+		t.Fatalf("merge log %q", merge)
+	}
+	setViewMulti(t, gh, "MERGED", "UNKNOWN")
+	e.c.CheckPRs(ctx)
+	v, _ = e.c.Thread(v.ID)
+	if v.Status != StatusMerged || v.HasWorktree || !v.CanDone {
+		t.Fatalf("after both merged: %+v", v)
+	}
+	if _, err := os.Stat(dir); err == nil {
+		t.Fatal("thread folder kept")
+	}
+
+	// Done, then Restore: every repository's worktree comes back in the thread folder.
+	if err := e.c.Done(ctx, v.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.c.Restore(ctx, v.ID); err != nil {
+		t.Fatal(err)
+	}
+	v, _ = e.c.Thread(v.ID)
+	for _, name := range []string{"client", "api", "db"} {
+		if _, err := os.Stat(filepath.Join(dir, name, ".git")); err != nil {
+			t.Fatalf("%s not restored: %v", name, err)
+		}
+	}
+	if v.Status != StatusIdle || v.Parts[1].PR != nil {
+		t.Fatalf("restored %+v", v)
+	}
+}
