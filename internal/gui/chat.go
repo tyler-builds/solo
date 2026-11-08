@@ -564,7 +564,7 @@ func firstSentence(s string) string {
 func thinkingView(ctx *ui.Context, text string, live bool) ui.Element {
 	return ui.Component(func(ctx *ui.Context) ui.Element {
 		t := ctx.Theme()
-		open := ui.Local(ctx, "open", live)
+		open := ui.Local(ctx, "open", false) // closed, live or not: the working line already says it thinks
 		label := "Thought" // a finished thought; "Thinking" is only what is happening now
 		if live {
 			label = "Thinking"
@@ -680,6 +680,10 @@ func (a *App) describeTool(d core.ToolData) (*icons.Icon, string, string) {
 	case "Glob":
 		return icons.Search, "Found files", str("pattern")
 	case "Bash":
+		// Claude says what a command is for ("Measure baseline durations"): lead with that, then the command.
+		if desc := strings.TrimSpace(str("description")); desc != "" {
+			return icons.Terminal, desc, firstLine(str("command"))
+		}
 		return icons.Terminal, "Ran", firstLine(str("command"))
 	case "WebFetch":
 		return icons.Globe, "Fetched", str("url")

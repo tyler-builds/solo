@@ -288,3 +288,20 @@ func TestForegroundTaskShowsAsItsCommand(t *testing.T) {
 		t.Fatal("the background task has no row")
 	}
 }
+
+// A command Claude described leads with what it is for; the command follows, and the working line
+// says only what it is for.
+func TestBashRowLeadsWithDescription(t *testing.T) {
+	a, _ := newUI(t, demoBackend())
+	d := tool("b1", "Bash", map[string]any{"command": "node harness.js --plays 40", "description": "Measure baseline interlude durations"}, "")
+	if _, label, detail := a.describeTool(d); label != "Measure baseline interlude durations" || detail != "node harness.js --plays 40" {
+		t.Fatalf("row %q · %q", label, detail)
+	}
+	if got := a.stepLabel(d); got != "Measure baseline interlude durations" {
+		t.Fatalf("working line %q", got)
+	}
+	plain := tool("b2", "Bash", map[string]any{"command": "pnpm test"}, "")
+	if got := a.stepLabel(plain); got != "Running pnpm test" {
+		t.Fatalf("working line without a description %q", got)
+	}
+}

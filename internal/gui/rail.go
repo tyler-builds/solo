@@ -382,6 +382,9 @@ func prsLine(prs []*forge.PR) string {
 // stepLabel says what a tool call in progress is doing: "Running pnpm test".
 func (a *App) stepLabel(d core.ToolData) string {
 	_, verb, detail := a.describeTool(d)
+	if d.Name == "Bash" && verb != "Ran" {
+		return verb // what the command is for says more than the command
+	}
 	if p, ok := presentTense[verb]; ok {
 		verb = p
 	}
