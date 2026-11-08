@@ -14,7 +14,6 @@ import (
 	"github.com/tyler-builds/jamb/access"
 	"github.com/tyler-builds/jamb/icons"
 	"github.com/tyler-builds/jamb/input"
-	"github.com/tyler-builds/jamb/markdown"
 	"github.com/tyler-builds/jamb/markdown/mdcode"
 	"github.com/tyler-builds/jamb/ui"
 
@@ -26,8 +25,6 @@ const chatMaxWidth = 780
 
 // code colors the code blocks of every transcript; one highlighter for the app.
 var code = mdcode.Highlight()
-
-func md(text string) ui.Element { return markdown.View(text).Code(code).Key("md") }
 
 // orchestratorView is the center panel: the conversation with the orchestrator.
 func (a *App) orchestratorView(ctx *ui.Context) ui.Element {
@@ -281,7 +278,7 @@ func (a *App) rowView(ctx *ui.Context, v core.ThreadView, r row) ui.Element {
 		if r.live.Thinking {
 			return thinkingView(ctx, r.live.Text, true)
 		}
-		return md(r.live.Text)
+		return a.md(ctx, r.live.Text, viewBases(v))
 	case r.steps != nil && r.item != nil && r.item.Kind == core.ItemProposal:
 		var d core.ProposalData
 		r.item.Decode(&d)
@@ -312,14 +309,14 @@ func (a *App) rowView(ctx *ui.Context, v core.ThreadView, r row) ui.Element {
 				Child(a.messageImages(ctx, d.Images, ui.Start)).
 				Child(ui.Div().PaddingX(space3+2).PaddingY(space2+2).Radius(radiusL).MaxWidth(ui.Percent(92)).
 					Background(t.Surface).Border(1, t.Border).
-					Child(ui.Text(d.Text).Selectable()))
+					Child(a.withPathMenu(a.pathText(d.Text, viewBases(v)).Selectable(), d.Text, viewBases(v))))
 		}
 		col := ui.Div().Column().Align(ui.End).Gap(space1 + 2).MaxWidth(ui.Percent(85)).
 			Child(a.messageImages(ctx, d.Images, ui.End))
 		if strings.TrimSpace(d.Text) != "" {
 			col = col.Child(ui.Div().PaddingX(space3 + 2).PaddingY(space2 + 2).Radius(radiusL).
 				Background(t.SurfaceActive).
-				Child(ui.Text(d.Text).Selectable()))
+				Child(a.withPathMenu(a.pathText(d.Text, viewBases(v)).Selectable(), d.Text, viewBases(v))))
 		}
 		if d.Steer {
 			col = col.Child(ui.Div().Row().Align(ui.Center).Gap(4).PaddingRight(2).
@@ -331,7 +328,7 @@ func (a *App) rowView(ctx *ui.Context, v core.ThreadView, r row) ui.Element {
 	case core.ItemAssistant:
 		var d core.TextData
 		it.Decode(&d)
-		return md(d.Text)
+		return a.md(ctx, d.Text, viewBases(v))
 	default:
 		return a.stepView(ctx, it, v)
 	}
@@ -852,6 +849,7 @@ func (a *App) questionCard(ctx *ui.Context, threadID string, d core.QuestionData
 func (a *App) askForm(ctx *ui.Context, threadID, toolUseID string, qs []agent.Question, title string) ui.Element {
 	return ui.Component(func(ctx *ui.Context) ui.Element {
 		t := ctx.Theme()
+		bases := a.threadBases(threadID)
 		answers := ui.Local(ctx, "answers", map[string]string{})
 		other := ui.Local(ctx, "other", "")
 		cur := answers.Get()
@@ -909,7 +907,7 @@ func (a *App) askForm(ctx *ui.Context, threadID, toolUseID string, qs []agent.Qu
 					Key("opt-" + label)
 				text := ui.Div().Column().Gap(2).Grow(1).MinWidth(ui.Px(0)).Child(ui.Text(o.Label).FontSize(13).Medium())
 				if o.Description != "" {
-					text = text.Child(ui.Text(o.Description).FontSize(12).TextColor(t.TextMuted))
+					text = text.Child(a.pathText(o.Description, bases).FontSize(12).TextColor(t.TextMuted))
 				}
 				o2 = o2.Child(text)
 				// Picking an option answers at once; the arrow says so on hover, the key otherwise.
@@ -936,8 +934,13 @@ func (a *App) askForm(ctx *ui.Context, threadID, toolUseID string, qs []agent.Qu
 				OnClick(func() {
 					a.run("Skipping", func(context.Context) error { return a.b.Dismiss(threadID, toolUseID) })
 				}))
+		all := q.Question
+		for _, o := range q.Options {
+			all += "\n" + o.Description
+		}
 		return ui.Div().Column().Gap(space3).Padding(space4).Radius(radiusL).Background(t.Surface).
 			Border(1, t.Warning.Alpha(0.4)).
+			ContextMenu(func() []ui.MenuItem { return a.pathMenu(findPaths(all, bases)) }).
 			OnKeyDown(func(e *ui.KeyEvent) {
 				if e.Key >= input.Key1 && e.Key <= input.Key9 && e.Mods == 0 {
 					if i := int(e.Key - input.Key1); i < len(q.Options) {
@@ -947,7 +950,7 @@ func (a *App) askForm(ctx *ui.Context, threadID, toolUseID string, qs []agent.Qu
 				}
 			}).
 			Child(head).
-			Child(ui.Text(q.Question).FontSize(14).Medium()).
+			Child(a.pathText(q.Question, bases).FontSize(14).Medium()).
 			Child(opts).
 			Child(otherRow)
 	})

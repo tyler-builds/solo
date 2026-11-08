@@ -63,6 +63,16 @@ func TestShots(t *testing.T) {
 			a.items = map[string]*ui.Signal[[]core.Item]{}
 			a.orchImages.Set([]string{sampleScreenshot(dir, color.RGBA{200, 140, 60, 255})})
 		}},
+		{"paths", func(a *App, f *fakeBackend) {
+			dir := filepath.Join(t.TempDir(), "solo-brand")
+			_ = os.MkdirAll(dir, 0o755)
+			for _, n := range []string{"preview-orbit.png", "preview-branch.png"} {
+				_ = os.WriteFile(filepath.Join(dir, n), nil, 0o644)
+			}
+			f.add(core.OrchestratorID, core.ItemAssistant, core.TextData{Text: "The previews are in " + dir +
+				": `" + filepath.Join(dir, "preview-orbit.png") + "` and " + filepath.Join(dir, "preview-branch.png") + "."})
+			a.items = map[string]*ui.Signal[[]core.Item]{}
+		}},
 		{"lightbox", func(a *App, f *fakeBackend) {
 			a.lightbox.Set(sampleScreenshot(t.TempDir(), color.RGBA{47, 214, 193, 255}))
 		}},

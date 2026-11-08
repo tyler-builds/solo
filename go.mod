@@ -3,6 +3,7 @@ module github.com/tyler-builds/solo
 go 1.27.3
 
 require (
+	github.com/godbus/dbus/v5 v5.2.4
 	github.com/tyler-builds/jamb v0.7.1
 	golang.org/x/image v0.47.0
 	modernc.org/sqlite v1.61.1
@@ -12,7 +13,6 @@ require (
 	github.com/dustin/go-humanize v1.1.0 // indirect
 	github.com/ebitengine/purego v0.11.3 // indirect
 	github.com/go-text/typesetting v0.3.5 // indirect
-	github.com/godbus/dbus/v5 v5.2.4 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/ncruces/go-strftime v1.1.0 // indirect
