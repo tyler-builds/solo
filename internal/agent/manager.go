@@ -138,7 +138,7 @@ func (m *Manager) onEvent(e Event) {
 			s.inTurn = true
 			s.hasTranscript = true
 		case EventTurnEnd:
-			s.inTurn = false
+			s.inTurn = e.Steered // a steered turn carries on
 		case EventExited:
 			s.gen = 0
 			s.inTurn = false
@@ -195,11 +195,13 @@ func (m *Manager) ensureOpen(ctx context.Context, id string) error {
 // running turn.
 func (m *Manager) Send(ctx context.Context, sessionID, text string, synthetic bool) (string, error) {
 	uuid := NewUUID()
-	return uuid, m.SendUUID(ctx, sessionID, uuid, text, nil, synthetic)
+	return uuid, m.SendUUID(ctx, SendParams{SessionID: sessionID, UUID: uuid, Text: text, Synthetic: synthetic})
 }
 
-// SendUUID is Send with a uuid the caller chose, so it can record the message before Claude answers.
-func (m *Manager) SendUUID(ctx context.Context, sessionID, uuid, text string, images []Image, synthetic bool) error {
+// SendUUID is Send with the whole message, including a uuid the caller chose, so it can record the
+// message before Claude answers.
+func (m *Manager) SendUUID(ctx context.Context, p SendParams) error {
+	sessionID := p.SessionID
 	// A session whose process exited (or whose sidecar died) reopens here, with resume. Retry once if the
 	// sidecar dies between the open and the send.
 	var err error
@@ -211,7 +213,7 @@ func (m *Manager) SendUUID(ctx context.Context, sessionID, uuid, text string, im
 		if sc, _, err = m.sidecar(ctx); err != nil {
 			continue
 		}
-		err = sc.call(ctx, "session.send", SendParams{SessionID: sessionID, UUID: uuid, Text: text, Images: images, Synthetic: synthetic}, nil)
+		err = sc.call(ctx, "session.send", p, nil)
 		if err == nil {
 			return nil
 		}

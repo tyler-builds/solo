@@ -63,7 +63,11 @@ type fakeSession struct {
 	resumed   bool
 	seq       int
 	interrupt chan struct{}
+	// steer reaches a "slow" turn waiting on it (unbuffered: a steer with no such turn is a plain send).
+	steer chan steerMsg
 }
+
+type steerMsg struct{ uuid, text string }
 
 func run() {
 	var wm sync.Mutex
@@ -136,6 +140,7 @@ func run() {
 			Text      string `json:"text"`
 			Model     string `json:"model"`
 			Prompt    string `json:"prompt"`
+			Steer     bool   `json:"steer"`
 			Images    []struct {
 				MediaType string `json:"mediaType"`
 			} `json:"images"`
@@ -146,7 +151,7 @@ func run() {
 			reply(map[string]any{"protocol": 1, "runtime": "fake"})
 		case "session.open":
 			mu.Lock()
-			sessions[p.SessionID] = &fakeSession{cwd: p.Cwd, resumed: p.Resume, interrupt: make(chan struct{}, 1)}
+			sessions[p.SessionID] = &fakeSession{cwd: p.Cwd, resumed: p.Resume, interrupt: make(chan struct{}, 1), steer: make(chan steerMsg)}
 			mu.Unlock()
 			reply(struct{}{})
 			event(p.SessionID, map[string]any{"kind": "init", "model": "fake-model", "cwd": p.Cwd, "claudeVersion": "0.0.0", "permissionMode": "fake"})
@@ -162,6 +167,13 @@ func run() {
 			text := p.Text
 			for _, im := range p.Images { // the echo reports the images it got
 				text += " +" + im.MediaType
+			}
+			if p.Steer {
+				select {
+				case s.steer <- steerMsg{p.UUID, text}:
+					continue
+				default:
+				}
 			}
 			go turn(s, p.SessionID, p.UUID, text, event, request, write)
 		case "session.interrupt":
@@ -268,6 +280,12 @@ func turn(s *fakeSession, sid, uuid, text string, event func(string, map[string]
 		select {
 		case <-s.interrupt:
 			status = "interrupted"
+		case m := <-s.steer:
+			// As Claude does: the turn ends aborted, marked steered, and carries on with the steer.
+			event(sid, map[string]any{"kind": "turn_end", "uuids": []string{uuid}, "status": "interrupted",
+				"reason": "aborted_streaming", "steered": true, "usage": map[string]any{}})
+			turn(s, sid, m.uuid, m.text, event, request, write)
+			return
 		case <-time.After(30 * time.Second):
 		}
 	case "fail":

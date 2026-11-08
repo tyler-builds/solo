@@ -318,6 +318,12 @@ func (a *App) rowView(ctx *ui.Context, v core.ThreadView, r row) ui.Element {
 				Background(t.SurfaceActive).
 				Child(ui.Text(d.Text).Selectable()))
 		}
+		if d.Steer {
+			col = col.Child(ui.Div().Row().Align(ui.Center).Gap(4).PaddingRight(2).
+				Tooltip("Sent while the thread worked: it stopped what it was doing to read this").
+				Child(ui.Icon(icons.CornerUpRight).Size(12).Color(t.TextSubtle)).
+				Child(ui.Text("Steered").FontSize(12).TextColor(t.TextSubtle)))
+		}
 		return ui.Div().Row().Justify(ui.End).Child(col)
 	case core.ItemAssistant:
 		var d core.TextData
@@ -1097,11 +1103,25 @@ func (a *App) composer(ctx *ui.Context, v core.ThreadView, key, placeholder stri
 			})
 		}
 		empty := strings.TrimSpace(draft.Get()) == "" && len(images.Get()) == 0
-		sendBtn := ui.IconButton(icons.ArrowUp).Small().Style(ui.Style{Radius: 999}).Label("Send").Tooltip("Send (Enter) · Shift+Enter for a new line").OnClick(submit)
-		if empty {
-			sendBtn = sendBtn.Secondary().Disabled(true)
-		} else {
-			sendBtn = sendBtn.Primary()
+		// As in t3code: while the thread works, the button stops it, or steers it once there's a message.
+		round := ui.Style{Radius: 999}
+		var sendBtn *ui.ButtonElement
+		switch {
+		case v.InTurn && empty:
+			id := v.ID
+			sendBtn = ui.IconButton(icons.Square).Small().Style(round).Danger().Label("Stop").
+				Tooltip("Stop the current turn").
+				OnClick(func() {
+					a.run("Stopping", func(ctx context.Context) error { return a.b.Interrupt(ctx, id) })
+				})
+		case v.InTurn && !v.PendingAsk:
+			sendBtn = ui.IconButton(icons.CornerUpRight).Small().Style(round).Primary().Label("Steer").
+				Tooltip("Steer (Enter): it stops what it's doing and reads this now").OnClick(submit)
+		case empty:
+			sendBtn = ui.IconButton(icons.ArrowUp).Small().Style(round).Secondary().Disabled(true).Label("Send")
+		default:
+			sendBtn = ui.IconButton(icons.ArrowUp).Small().Style(round).Primary().Label("Send").
+				Tooltip("Send (Enter) · Shift+Enter for a new line").OnClick(submit)
 		}
 		actions := ui.Div().Row().Align(ui.Center).Gap(space1).Shrink(0)
 		if v.IsWorker && !core.Finished(v.Status) {
@@ -1121,14 +1141,6 @@ func (a *App) composer(ctx *ui.Context, v core.ThreadView, key, placeholder stri
 							}
 						})
 				}))
-		if v.InTurn {
-			id := v.ID
-			actions = actions.Child(ui.IconButton(icons.Square).Ghost().Small().Label("Stop").
-				Tooltip("Stop the current turn").
-				OnClick(func() {
-					a.run("Stopping", func(ctx context.Context) error { return a.b.Interrupt(ctx, id) })
-				}))
-		}
 		actions = actions.Child(sendBtn)
 		area := ui.TextArea(draft).Placeholder(placeholder).Label(placeholder).MinRows(1).Borderless().
 			MaxHeight(ui.Px(220)).Width(ui.Full).Key(key + "-area").FocusHandle(focus).

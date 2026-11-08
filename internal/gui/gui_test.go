@@ -306,3 +306,20 @@ func TestBashRowLeadsWithDescription(t *testing.T) {
 		t.Fatalf("working line without a description %q", got)
 	}
 }
+
+func TestWorkingComposerStopsThenSteers(t *testing.T) {
+	f := demoBackend()
+	a, u := newUI(t, f)
+	a.openThread("a1f3c9d2-oauth", "conversation")
+	u.Frame()
+	if !u.HasRole(access.RoleButton, "Stop") || u.HasRole(access.RoleButton, "Steer") {
+		t.Fatal("a working thread's empty composer should offer Stop, not Steer")
+	}
+	u.Get("draft-a1f3c9d2-oauth-area").Type("Use the v2 endpoint instead")
+	u.Frame()
+	if u.HasRole(access.RoleButton, "Stop") || !u.HasRole(access.RoleButton, "Steer") {
+		t.Fatal("typing should turn Stop into Steer")
+	}
+	u.Press("enter")
+	waitSent(t, f, "Use the v2 endpoint instead")
+}

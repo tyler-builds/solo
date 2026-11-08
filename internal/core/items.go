@@ -41,6 +41,8 @@ type UserData struct {
 	From string `json:"from,omitempty"`
 	// Images are the image files sent with it.
 	Images []string `json:"images,omitempty"`
+	// Steer marks a message sent into a running turn, which Claude read at once.
+	Steer bool `json:"steer,omitempty"`
 }
 
 // Message authors.

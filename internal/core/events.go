@@ -35,8 +35,10 @@ func (c *Core) onEvent(e agent.Event) {
 		threadChanged = true
 
 	case agent.EventTurnStart:
+		if !t.inTurn { // after a steer the turn carries on, and keeps its start
+			t.turnStart = now()
+		}
 		t.inTurn = true
-		t.turnStart = now()
 		t.retry = ""
 		if !t.row.HasTranscript {
 			t.row.HasTranscript = true
@@ -175,6 +177,17 @@ func (c *Core) onEvent(e agent.Event) {
 		threadChanged = true
 
 	case agent.EventTurnEnd:
+		if e.Steered {
+			// The turn stopped only to read a steer and carries on: its cut-off tool calls are done.
+			for _, itemID := range t.tools {
+				c.updateToolLocked(itemID, func(d *ToolData) { d.Done = true })
+			}
+			t.tools = nil
+			t.step = nil
+			t.live, t.liveTxt = nil, nil
+			itemsChanged, streamChanged = true, true
+			break
+		}
 		t.inTurn = false
 		if t.reopen && e.QueuedTurns == 0 {
 			t.reopen = false

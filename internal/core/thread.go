@@ -517,7 +517,7 @@ branch and in these worktrees. Change only the repositories the task needs; comm
 }
 
 // Send sends the user's message, with any images (see ImportImage), to a thread, starting its session
-// if needed.
+// if needed. Sent while the thread is working, it steers: Claude stops what it is doing and reads it.
 func (c *Core) Send(ctx context.Context, threadID, text string, images ...string) error {
 	return c.send(ctx, threadID, text, images, false, FromUser)
 }
@@ -562,10 +562,13 @@ func (c *Core) send(ctx context.Context, threadID, text string, images []string,
 	}
 	needOpen := !t.opened
 	row := t.row
+	// The user's message to a working thread steers it, as in t3code; a question it is waiting on is
+	// answered in its own card, so a message then waits for the turn like the others.
+	steer := from == FromUser && !synthetic && t.inTurn && len(t.asks) == 0
 	// Record the message and the running state before Claude can answer, so a fast reply never lands
 	// ahead of the message or leaves the thread marked running after its turn ended.
 	uuid := agent.NewUUID()
-	data, _ := json.Marshal(UserData{Text: text, Synthetic: synthetic, From: from, Images: images})
+	data, _ := json.Marshal(UserData{Text: text, Synthetic: synthetic, From: from, Images: images, Steer: steer})
 	if err := c.db.AddItem(&store.Item{ThreadID: threadID, Kind: ItemUser, TurnUUID: uuid, Data: data, CreatedAt: now()}); err != nil {
 		c.mu.Unlock()
 		return err
@@ -614,7 +617,8 @@ func (c *Core) send(ctx context.Context, threadID, text string, images []string,
 		t.opened = true
 		c.mu.Unlock()
 	}
-	if err := c.agent.SendUUID(ctx, params.SessionID, uuid, sent, blocks, synthetic); err != nil {
+	if err := c.agent.SendUUID(ctx, agent.SendParams{SessionID: params.SessionID, UUID: uuid, Text: sent,
+		Images: blocks, Synthetic: synthetic, Steer: steer}); err != nil {
 		return fail(err)
 	}
 	return nil

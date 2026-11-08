@@ -1121,3 +1121,38 @@ func TestRestartKeepsQuestion(t *testing.T) {
 		}
 	}
 }
+
+func TestSteerCarriesOnTheTurn(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	v, _ := e.c.CreateWorker(ctx, WorkerSpec{Repo: "proj", Prompt: "slow"})
+	deadline := time.Now().Add(10 * time.Second)
+	for v, _ = e.c.Thread(v.ID); !v.InTurn; v, _ = e.c.Thread(v.ID) {
+		if time.Now().After(deadline) {
+			t.Fatal("the turn never started")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err := e.c.Send(ctx, v.ID, "use tabs"); err != nil {
+		t.Fatal(err)
+	}
+	v = waitStatus(t, e.c, v.ID, StatusIdle, StatusInterrupted)
+	if v.Status != StatusIdle || !strings.HasPrefix(v.Summary, "echo: use tabs") {
+		t.Fatalf("after the steer: %s, summary %q", v.Status, v.Summary)
+	}
+	items, _ := e.c.Items(ctx, v.ID, 0)
+	turns, steered := 0, false
+	for _, it := range items {
+		switch it.Kind {
+		case ItemTurn:
+			turns++
+		case ItemUser:
+			var d UserData
+			it.Decode(&d)
+			steered = steered || (d.Text == "use tabs" && d.Steer)
+		}
+	}
+	if turns != 1 || !steered {
+		t.Fatalf("want one turn and a steered message; got %d turns, steered=%v (%s)", turns, steered, kinds(items))
+	}
+}

@@ -81,6 +81,10 @@ Raw `SDKMessage`s are also appended to a per-session JSONL file for debugging an
    first message** (startup errors) and keep later stderr out of the UI.
 7. **Interrupt.** `interrupt()`, then wait for the turn's `result`. To restart a wedged session:
    `close()`, and the next turn reopens with `resume`.
+   **Steer** (t3code's `steerTurn`): move the turn's foreground subagents to the background
+   (`backgroundTasks(toolUseId)`, 5 s cap), then offer the message at `priority: "now"`. Claude ends the
+   running segment with an `aborted_*` result and carries on in a new segment that answers the steer;
+   the sidecar marks that result `steered`, so the app keeps the turn going.
 8. **MCP registration** can time out. Retry once, and only for resumed opens.
 9. **Probe** capabilities (models, account) with a query whose prompt never yields, then read
    `initializationResult()`, instead of hard-coding the model list.
@@ -177,6 +181,8 @@ Raw `SDKMessage`s are also appended to a per-session JSONL file for debugging an
 - **Right rail:** thread cards (title, repo, status dot, elapsed time, last activity line).
 - **Slide-over:** a thread's transcript, a diff (`codeedit`, read-only), an input to message it
   directly, and Interrupt / Merge / Discard buttons.
+- **Composer button** (as in t3code): send; while the thread works, a red stop button, which turns into
+  Steer once there is a message. A message sent then steers the turn and is tagged "Steered".
 - **Images:** paste, drop or attach images in any message box. They're copied into
   `<data>/attachments` (scaled to at most 2000 px and 3.5 MB) and sent as image blocks before the text.
   Messages to Solo also list the saved paths, so Solo can pass them on with `spawn_thread` or

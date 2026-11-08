@@ -57,6 +57,11 @@ export interface SendParams {
   images?: { mediaType: "image/png" | "image/jpeg" | "image/gif" | "image/webp"; data: string }[];
   /** Text the app composed (status updates to the orchestrator), not typed by the user. */
   synthetic?: boolean;
+  /**
+   * Steer the running turn: Claude stops what it is doing (its running subagents move to the
+   * background first) and reads this now. Without a running turn it is an ordinary send.
+   */
+  steer?: boolean;
 }
 
 export interface QuestionOption {
@@ -166,6 +171,8 @@ export type AgentEvent = { sessionId: string; seq: number } & (
       /** Input-side tokens of the last API call: an estimate of the context in use. */
       contextTokens: number;
       queuedTurns: number;
+      /** The turn only paused to take a steer: Claude carries on with it in the next turn_start. */
+      steered?: boolean;
     }
   | { kind: "notice"; level: "info" | "warning" | "error"; text: string }
   /** The session's claude process is gone. A later send reopens it with resume. */

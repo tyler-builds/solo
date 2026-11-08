@@ -54,6 +54,9 @@ export function claudeExecutable(path?: string): { pathToClaudeCodeExecutable?: 
 }
 
 const STDERR_TAIL = 2048;
+// A steer waits at most this long for the running subagents to move to the background (t3code's
+// BACKGROUND_MOVE_TIMEOUT_MS).
+const BACKGROUND_MOVE_MS = 5_000;
 const EXIT_WAIT_MS = 10_000;
 
 /** Built-in tools a read-only session may use without asking. */
@@ -133,6 +136,12 @@ export class Session {
   /** True once a transcript exists, so a reopen must resume rather than start fresh. */
   private hasTranscript: boolean;
   private opening: Promise<void> | null = null;
+  /** Steers sent into the running turn whose abort result hasn't come back yet. */
+  private steers = 0;
+  /** Set by interrupt() until the turn ends, so its abort isn't taken for a steer's. */
+  private interrupting = false;
+  /** Subagents (Agent tool calls) of the running turn still in the foreground, by tool use id. */
+  private foreground = new Set<string>();
 
   constructor(
     private params: OpenParams,
@@ -155,18 +164,68 @@ export class Session {
 
   async send(p: SendParams) {
     if (!this.live) await this.open();
+    // A steer (from t3code's steerTurn) is offered at priority "now", which stops the turn's running
+    // tools; subagents move to the background first so their work isn't lost.
+    const steer = !!p.steer && this.normalizer.inTurn;
+    if (steer) await this.backgroundSubagents();
     const msg: SDKUserMessage = {
       type: "user",
       message: { role: "user", content: userContent(p) },
       parent_tool_use_id: null,
       uuid: p.uuid as SDKUserMessage["uuid"],
       ...(p.synthetic ? { client_composed: true as const } : {}),
+      ...(steer && this.normalizer.inTurn ? { priority: "now" as const } : {}),
     };
+    if (msg.priority) this.steers++;
     this.live!.prompt.push(msg);
+  }
+
+  private async backgroundSubagents() {
+    const live = this.live;
+    if (!live || this.foreground.size === 0) return;
+    const moves = [...this.foreground].map((id) =>
+      live.query.backgroundTasks(id).catch((e) => log(`steer: backgrounding a subagent: ${errorText(e)}`)),
+    );
+    const timeout = new Promise<void>((r) => setTimeout(r, BACKGROUND_MOVE_MS).unref?.());
+    await Promise.race([Promise.all(moves), timeout]);
+  }
+
+  /** Follows the turn's foreground subagents and marks a turn end that only made way for a steer. */
+  private track(body: AgentEventBody) {
+    switch (body.kind) {
+      case "assistant":
+        if (body.parentToolUseId !== null) break;
+        for (const b of body.blocks) {
+          if (b.type === "tool_use" && (b.name === "Agent" || b.name === "Task")) this.foreground.add(b.id);
+        }
+        break;
+      case "tool_result":
+        if (body.parentToolUseId === null) this.foreground.delete(body.toolUseId);
+        break;
+      case "task":
+        if (body.toolUseId && (body.background || body.phase === "ended")) this.foreground.delete(body.toolUseId);
+        break;
+      case "turn_end":
+        this.foreground.clear();
+        if (
+          this.steers > 0 &&
+          !this.interrupting &&
+          body.status === "interrupted" &&
+          (body.reason === "aborted_streaming" || body.reason === "aborted_tools")
+        ) {
+          this.steers--;
+          body.steered = true;
+          break;
+        }
+        this.steers = 0;
+        this.interrupting = false;
+        break;
+    }
   }
 
   async interrupt() {
     if (!this.live) return { stillQueued: [] as string[] };
+    this.interrupting = true;
     const res = await this.live.query.interrupt();
     return { stillQueued: res?.still_queued ?? [] };
   }
@@ -243,7 +302,10 @@ export class Session {
           this.hasTranscript = true;
         }
         this.record(msg);
-        for (const body of this.normalizer.push(msg)) this.emit(body);
+        for (const body of this.normalizer.push(msg)) {
+          this.track(body);
+          this.emit(body);
+        }
       }
     } catch (e) {
       if (!live.closing) {
@@ -256,6 +318,9 @@ export class Session {
       await this.reap(live);
       if (this.live === live) this.live = null;
       this.record({ type: "$exit", ...(failure === undefined ? {} : { error: failure }) });
+      this.steers = 0;
+      this.interrupting = false;
+      this.foreground.clear();
       const closed = this.normalizer.abortTurn(failure ?? "Claude exited before the turn finished.");
       if (closed) this.emit(closed);
       this.emit(failure === undefined ? { kind: "exited" } : { kind: "exited", error: failure });

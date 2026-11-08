@@ -56,6 +56,9 @@ type SendParams struct {
 	Text      string  `json:"text"`
 	Images    []Image `json:"images,omitempty"`
 	Synthetic bool    `json:"synthetic,omitempty"`
+	// Steer stops what the running turn is doing so Claude reads this message now (running subagents
+	// move to the background first). Without a running turn it is an ordinary send.
+	Steer bool `json:"steer,omitempty"`
 }
 
 // Image is an image sent with a user message, as Claude takes it.
@@ -236,6 +239,8 @@ type Event struct {
 	Usage         *Usage  `json:"usage,omitempty"`
 	ContextTokens int     `json:"contextTokens,omitempty"`
 	QueuedTurns   int     `json:"queuedTurns,omitempty"`
+	// Steered marks a turn end that only made way for a steer: the turn carries on at the next turn_start.
+	Steered bool `json:"steered,omitempty"`
 
 	// notice
 	Level string `json:"level,omitempty"`
