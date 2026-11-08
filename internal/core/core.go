@@ -177,6 +177,14 @@ type Core struct {
 	forges    map[string]forge.Kind // by repository
 	stop      chan struct{}         // closed by Close
 	pollNow   chan struct{}         // asks the pull request watcher to look now
+	// resume are the threads that were working when Solo last closed, for ResumeInterrupted.
+	resume []resumeInfo
+}
+
+// resumeInfo is a thread that was working when Solo closed, and how far it had got.
+type resumeInfo struct {
+	id     string
+	status string // StatusStarting, StatusRunning or StatusWaiting
 }
 
 // DefaultDataDir is where Solo keeps its data: ~/.local/share/solo on Linux, %LOCALAPPDATA%\Solo on
@@ -238,12 +246,15 @@ func New(cfg Config) (*Core, error) {
 	}
 	for _, row := range rows {
 		t := &thread{row: *row, parts: loadParts(*row)}
-		// A thread that was working when the app stopped lost its process; say so.
+		// A thread that was working when the app stopped lost its process. It shows as stopped until
+		// ResumeInterrupted carries it on, and the steps it had running end.
 		switch t.row.Status {
 		case StatusStarting, StatusRunning, StatusWaiting:
+			c.resume = append(c.resume, resumeInfo{id: t.row.ID, status: t.row.Status})
 			t.row.Status = StatusInterrupted
 			t.row.Error = "Solo was closed while this thread was working."
 			_ = db.SaveThread(&t.row)
+			c.settleItems(t.row.ID)
 		}
 		c.threads[t.row.ID] = t
 		c.bySession[t.row.SessionID] = t

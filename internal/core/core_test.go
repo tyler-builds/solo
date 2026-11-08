@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"image"
@@ -17,6 +18,7 @@ import (
 	"github.com/tyler-builds/solo/internal/agent"
 	"github.com/tyler-builds/solo/internal/agent/agenttest"
 	"github.com/tyler-builds/solo/internal/git"
+	"github.com/tyler-builds/solo/internal/store"
 )
 
 func TestMain(m *testing.M) {
@@ -969,5 +971,55 @@ func TestSearchMessages(t *testing.T) {
 	}
 	if got := snippet(strings.Repeat("a", 100)+" needle "+strings.Repeat("b", 200), 101, 6); !strings.HasPrefix(got, "…") || !strings.HasSuffix(got, "…") || !strings.Contains(got, "needle") {
 		t.Errorf("snippet %q", got)
+	}
+}
+
+// A thread that was working when Solo closed carries on after a restart, resuming its session with a
+// note; the steps it had running end instead of spinning. A thread the user stopped stays stopped.
+func TestRestartCarriesOnWorkingThreads(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	busy, _ := e.c.CreateWorker(ctx, WorkerSpec{Repo: "proj", Title: "Busy", Prompt: "hello"})
+	waitStatus(t, e.c, busy.ID, StatusIdle)
+	if err := e.c.Send(ctx, busy.ID, "slow"); err != nil {
+		t.Fatal(err)
+	}
+	waitStatusAllowTurn(t, e.c, busy.ID, StatusRunning)
+	tool, _ := json.Marshal(ToolData{ID: "b1", Name: "Bash", Input: json.RawMessage(`{"command":"sleep 100"}`)})
+	if err := e.c.db.AddItem(&store.Item{ThreadID: busy.ID, Kind: ItemTool, Ref: "b1", Data: tool, CreatedAt: now()}); err != nil {
+		t.Fatal(err)
+	}
+	stopped, _ := e.c.CreateWorker(ctx, WorkerSpec{Repo: "proj", Title: "Stopped", Prompt: "hello"})
+	waitStatus(t, e.c, stopped.ID, StatusIdle)
+	e.c.Send(ctx, stopped.ID, "slow")
+	waitStatusAllowTurn(t, e.c, stopped.ID, StatusRunning)
+	if err := e.c.Interrupt(ctx, stopped.ID); err != nil {
+		t.Fatal(err)
+	}
+	waitStatus(t, e.c, stopped.ID, StatusInterrupted)
+	e.c.Close()
+
+	c2 := e.open(t)
+	if v, _ := c2.Thread(busy.ID); v.Status != StatusInterrupted {
+		t.Fatalf("before resuming: %s", v.Status)
+	}
+	items, _ := c2.Items(ctx, busy.ID, 0)
+	for _, it := range items {
+		if it.Kind == ItemTool {
+			var d ToolData
+			it.Decode(&d)
+			if d.ID == "b1" && !d.Done {
+				t.Fatal("the running command still spins after the restart")
+			}
+		}
+	}
+	c2.ResumeInterrupted()
+	v := waitStatus(t, c2, busy.ID, StatusIdle)
+	if !strings.HasPrefix(v.Summary, "echo: Solo was closed while you were working") || !strings.HasSuffix(v.Summary, "resume=true") {
+		t.Fatalf("summary %q", v.Summary)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if v, _ := c2.Thread(stopped.ID); v.Status != StatusInterrupted {
+		t.Fatalf("the thread the user stopped is %s", v.Status)
 	}
 }

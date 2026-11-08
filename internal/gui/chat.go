@@ -707,6 +707,8 @@ func taskView(ctx *ui.Context, d core.TaskData) ui.Element {
 		state = ui.ProgressRing().Size(ui.RingSmall).Label("Running")
 	case "completed":
 		state = ui.Icon(icons.Check).Size(13).Color(t.TextSubtle)
+	case "stopped", "killed":
+		state = ui.Icon(icons.CircleStop).Size(13).Color(t.TextSubtle)
 	default:
 		state = ui.Icon(icons.CircleAlert).Size(13).Color(t.Danger)
 	}

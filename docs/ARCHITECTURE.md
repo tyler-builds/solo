@@ -137,6 +137,11 @@ Raw `SDKMessage`s are also appended to a per-session JSONL file for debugging an
 - Status machine: `queued → starting → running ⇄ waiting → idle | failed | interrupted → merged |
   discarded | archived`. No concurrency cap. After each turn Solo counts the files the branch changes:
   an idle thread with changes is "Ready to merge"; one without shows "No changes".
+- **Restart:** a thread that was starting, running or waiting when Solo closed is marked interrupted on
+  load, and its unfinished steps (tool calls without a result, running tasks, open questions) are
+  ended. `ResumeInterrupted`, called once the orchestrator is set up, then carries each on: its session
+  resumes with a note that Solo restarted (a lost question is to be asked again), or a worker that never
+  reached Claude starts over. Threads the user stopped stay stopped.
 - Threads stay in the rail until the user marks them **Done**, which is offered only when nothing is
   left to merge (merged, or no changes). Done sets `done_at`, removes a leftover worktree and branch,
   and moves the thread to Settings › History; discarding marks it done too. **Restore** recreates the

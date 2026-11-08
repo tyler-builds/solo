@@ -56,6 +56,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	c.ResumeInterrupted() // threads that were working when Solo last closed carry on
 	g := gui.New(gui.Live{Core: c, O: o})
 	defer g.Close()
 
