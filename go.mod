@@ -3,7 +3,7 @@ module github.com/tyler-builds/solo
 go 1.27.3
 
 require (
-	github.com/tyler-builds/jamb v0.7.0
+	github.com/tyler-builds/jamb v0.7.1
 	golang.org/x/image v0.47.0
 	modernc.org/sqlite v1.61.1
 )
