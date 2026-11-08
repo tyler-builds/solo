@@ -565,7 +565,7 @@ func thinkingView(ctx *ui.Context, text string, live bool) ui.Element {
 	return ui.Component(func(ctx *ui.Context) ui.Element {
 		t := ctx.Theme()
 		open := ui.Local(ctx, "open", false) // closed, live or not: the working line already says it thinks
-		label := "Thought" // a finished thought; "Thinking" is only what is happening now
+		label := "Thought"                   // a finished thought; "Thinking" is only what is happening now
 		if live {
 			label = "Thinking"
 		}
