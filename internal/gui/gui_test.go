@@ -205,10 +205,11 @@ func TestSettingsPicksFolder(t *testing.T) {
 	want := filepath.Join("~", "work", "repos")
 	u.ByRole(access.RoleButton, "Remove "+want) // fails the test when the row is missing
 	u.ByRole(access.RoleButton, "Save").Click()
-	u.Frame()
-	if got := f.Settings().Folders; !slices.Contains(got, want) {
-		t.Fatalf("saved folders %v, want %q among them", got, want)
-	}
+	u.WaitFor("the folder to be saved", func() bool { // Save runs in the background
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		return slices.Contains(f.settings.Folders, want)
+	})
 }
 
 // A folder that isn't in git is listed in Settings with a button that puts it in git, after which it

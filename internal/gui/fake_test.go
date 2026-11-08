@@ -133,8 +133,14 @@ func (f *fakeBackend) OpenPR(_ context.Context, id string, draft bool) (forge.PR
 	return forge.PR{Kind: forge.GitHub, Number: 1, URL: "https://github.com/acme/web/pull/1"}, nil
 }
 func (f *fakeBackend) Discard(context.Context, string) error { return nil }
-func (f *fakeBackend) Settings() core.Settings               { return f.settings }
+func (f *fakeBackend) Settings() core.Settings {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.settings
+}
 func (f *fakeBackend) UpdateSettings(fn func(*core.Settings)) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	fn(&f.settings)
 	return nil
 }
