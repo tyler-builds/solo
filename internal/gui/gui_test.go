@@ -1,11 +1,16 @@
 package gui
 
 import (
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/tyler-builds/jamb/access"
+	"github.com/tyler-builds/jamb/dialog"
+	"github.com/tyler-builds/jamb/ui"
 	"github.com/tyler-builds/jamb/ui/uitest"
 
 	"github.com/tyler-builds/solo/internal/core"
@@ -162,5 +167,44 @@ func TestSearchFindsMessages(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("no message result")
+	}
+}
+
+// pickerWindow answers the folder picker with a fixed choice.
+type pickerWindow struct {
+	ui.NopWindow
+	folder string
+	asked  int
+}
+
+func (w *pickerWindow) Focused() bool { return true }
+func (w *pickerWindow) PickFolder(_ dialog.FileOptions, done func(dialog.FileResult)) {
+	w.asked++
+	done(dialog.FileResult{Paths: []string{w.folder}})
+}
+
+// Add folder… takes the folder from the system's picker, shown and saved as ~/… inside home.
+func TestSettingsPicksFolder(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("no home folder")
+	}
+	f := demoBackend()
+	a, u := newUI(t, f)
+	w := &pickerWindow{folder: filepath.Join(home, "work", "repos")}
+	u.Runtime().SetWindow(w)
+	a.settings.Set(true)
+	u.Frame()
+	u.ByRole(access.RoleButton, "Add folder…").Click()
+	u.Frame()
+	if w.asked != 1 {
+		t.Fatalf("picker asked %d times, want 1", w.asked)
+	}
+	want := filepath.Join("~", "work", "repos")
+	u.ByRole(access.RoleButton, "Remove "+want) // fails the test when the row is missing
+	u.ByRole(access.RoleButton, "Save").Click()
+	u.Frame()
+	if got := f.Settings().Folders; !slices.Contains(got, want) {
+		t.Fatalf("saved folders %v, want %q among them", got, want)
 	}
 }

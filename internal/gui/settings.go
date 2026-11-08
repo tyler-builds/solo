@@ -7,6 +7,9 @@ import (
 	"github.com/tyler-builds/solo/internal/agent"
 	"github.com/tyler-builds/solo/internal/launch"
 	"maps"
+	"os"
+
+	"github.com/tyler-builds/jamb/dialog"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -215,13 +218,31 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 		claudePath := ui.Local(ctx, "claude-path", initial.ClaudePath)
 		checked := ui.Local(ctx, "claude-checked", strings.TrimSpace(initial.ClaudePath))
 
-		add := func() {
-			f := strings.TrimSpace(newFolder.Peek())
+		typing := ui.Local(ctx, "folder-typing", false)
+		addPath := func(f string) {
+			f = tildePath(strings.TrimSpace(f))
 			if f == "" || slices.Contains(folders.Peek(), f) {
 				return
 			}
 			folders.Set(append(slices.Clone(folders.Peek()), f))
+		}
+		add := func() {
+			addPath(newFolder.Peek())
 			newFolder.Set("")
+		}
+		pick := func() {
+			home, _ := os.UserHomeDir()
+			ctx.Window().PickFolder(dialog.FileOptions{Title: "Add a repository folder", Folder: home}, func(r dialog.FileResult) {
+				switch {
+				case r.Err != nil:
+					a.notify(ui.ToastError, "Couldn't open the folder picker", "Type the folder's path instead. "+r.Err.Error())
+					typing.Set(true)
+				case !r.Canceled:
+					for _, p := range r.Paths {
+						addPath(p)
+					}
+				}
+			})
 		}
 		list := ui.Div().Column().Gap(space1)
 		for _, f := range folders.Get() {
@@ -302,10 +323,7 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 				"Solo looks for git repositories up to three folders deep.",
 				ui.Div().Column().Gap(space2).
 					Child(list).
-					Child(ui.Div().Row().Gap(space2).
-						Child(ui.TextInput(newFolder).Placeholder("Add a folder, such as ~/projects").Label("Folder to add").Small().Width(ui.Full).
-							Key("new-folder").OnSubmit(func(string) { add() })).
-						Child(ui.Button("Add").Icon(icons.Plus).Secondary().Small().OnClick(add))))).
+					Child(folderAdder(newFolder, typing.Get(), pick, add, func() { typing.Set(true) })))).
 			Child(ui.Div().Row().Gap(space4).
 				Child(ui.Div().Grow(1).Basis(ui.Px(0)).Child(field("Editor", "Opens a thread's folder. {path} marks where the folder goes.",
 					ui.TextInput(editorCmd).Placeholder(placeholderFor(detected[0], "code")).Label("Editor command").Small().Width(ui.Full)))).
@@ -467,4 +485,35 @@ func doneAgo(t time.Time) string {
 		return "done " + s + " ago"
 	}
 	return "done just now"
+}
+
+// folderAdder is how a repository folder is added: chosen in the system's folder picker, or typed
+// when the user asks to (or the picker can't open).
+func folderAdder(path *ui.Signal[string], typing bool, pick, add, typeIt func()) ui.Element {
+	choose := ui.Button("Add folder…").Icon(icons.FolderPlus).Secondary().Small().OnClick(pick)
+	if !typing {
+		return ui.Div().Row().Align(ui.Center).Gap(space2).
+			Child(choose).
+			Child(ui.Button("Type a path").Ghost().Small().OnClick(typeIt))
+	}
+	return ui.Div().Row().Gap(space2).
+		Child(ui.TextInput(path).Placeholder("A folder, such as ~/projects").Label("Folder to add").Small().Width(ui.Full).
+			Key("new-folder").AutoFocus().OnSubmit(func(string) { add() })).
+		Child(ui.Button("Add").Icon(icons.Plus).Secondary().Small().OnClick(add)).
+		Child(ui.IconButton(icons.FolderOpen).Secondary().Small().Label("Choose a folder").OnClick(pick))
+}
+
+// tildePath writes a path in the home folder as ~/…, the way folders are shown.
+func tildePath(p string) string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" || p == "" {
+		return p
+	}
+	if p == home {
+		return "~"
+	}
+	if rest, ok := strings.CutPrefix(p, home+string(filepath.Separator)); ok {
+		return "~" + string(filepath.Separator) + rest
+	}
+	return p
 }
