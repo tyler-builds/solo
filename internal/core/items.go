@@ -70,6 +70,10 @@ type TaskData struct {
 	Status      string `json:"status,omitempty"` // running, completed, failed, stopped
 	Summary     string `json:"summary,omitempty"`
 	ToolUses    int    `json:"toolUses,omitempty"`
+	// ToolUseID is the tool call that started it (a Bash command, a subagent). Background: it runs on
+	// after that call returned, so the call's own row no longer shows it working.
+	ToolUseID  string `json:"toolUseId,omitempty"`
+	Background bool   `json:"background,omitempty"`
 }
 
 type QuestionData struct {

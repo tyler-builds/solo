@@ -251,6 +251,12 @@ func visible(it *core.Item) bool {
 		var d core.TextData
 		it.Decode(&d)
 		return strings.TrimSpace(d.Text) != "(noted)"
+	case core.ItemTask:
+		// A task started by a tool call in the foreground is that call; its row says it all. Only a task
+		// that runs on in the background after its call returned gets a row of its own.
+		var d core.TaskData
+		it.Decode(&d)
+		return d.ToolUseID == "" || d.Background
 	}
 	return true
 }
@@ -704,8 +710,12 @@ func taskView(ctx *ui.Context, d core.TaskData) ui.Element {
 	if detail == "" && d.ToolUses > 0 {
 		detail = fmt.Sprintf("%d tool uses", d.ToolUses)
 	}
+	icon := icons.Bot
+	if strings.Contains(d.TaskType, "bash") || strings.Contains(d.TaskType, "shell") {
+		icon = icons.SquareTerminal
+	}
 	return ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space2).Height(ui.Px(26)).
-		Child(ui.Icon(icons.Bot).Size(14).Color(t.TextMuted)).
+		Child(ui.Icon(icon).Size(14).Color(t.TextMuted)).
 		Child(ui.Text(d.Description).FontSize(13).Medium().TextColor(t.TextMuted).NoWrap().Shrink(0)).
 		Child(ui.Text(detail).FontSize(12).TextColor(t.TextSubtle).Truncate().Grow(1).MinWidth(ui.Px(0))).
 		Child(state)

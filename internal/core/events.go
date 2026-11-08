@@ -132,6 +132,7 @@ func (c *Core) onEvent(e agent.Event) {
 			}
 			t.tasks[e.TaskID] = c.addItemLocked(t, ItemTask, e.TaskID, TaskData{
 				TaskID: e.TaskID, Description: e.Description, TaskType: e.TaskType, Status: "running",
+				ToolUseID: e.ToolUseID, Background: e.Background,
 			})
 			itemsChanged = true
 			break
@@ -148,6 +149,10 @@ func (c *Core) onEvent(e agent.Event) {
 			if e.ToolUses > 0 {
 				d.ToolUses = e.ToolUses
 			}
+			if e.ToolUseID != "" {
+				d.ToolUseID = e.ToolUseID
+			}
+			d.Background = d.Background || e.Background
 			if e.Phase == "ended" {
 				d.Status = e.Status
 			} else if e.Status != "" {

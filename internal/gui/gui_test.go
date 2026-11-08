@@ -267,3 +267,24 @@ func TestThreadPanelShowsWorkingOnce(t *testing.T) {
 		t.Fatal("the transcript repeats the working line")
 	}
 }
+
+// A command that Claude Code also tracks as a task shows once, as the command; a task that runs on in
+// the background after its command returned keeps a row of its own.
+func TestForegroundTaskShowsAsItsCommand(t *testing.T) {
+	f := demoBackend()
+	id := "a7a7a7a7-subs"
+	run := tool("b1", "Bash", map[string]any{"command": "node harness.js", "description": "Measure baseline interlude durations"}, "")
+	run.Done = false
+	f.add(id, core.ItemTool, run)
+	f.add(id, core.ItemTask, core.TaskData{TaskID: "t1", Description: "Measure baseline interlude durations", TaskType: "local_bash", Status: "running", ToolUseID: "b1"})
+	f.add(id, core.ItemTask, core.TaskData{TaskID: "t2", Description: "Serve the demo game", TaskType: "local_bash", Status: "running", ToolUseID: "b2", Background: true})
+	a, u := newUI(t, f)
+	a.openThread(id, "conversation")
+	u.Frame()
+	if u.HasName("Measure baseline interlude durations") {
+		t.Fatal("the foreground task has a row besides its command")
+	}
+	if !u.HasName("Serve the demo game") {
+		t.Fatal("the background task has no row")
+	}
+}
