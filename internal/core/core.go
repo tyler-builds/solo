@@ -43,6 +43,9 @@ type Settings struct {
 	TerminalCommand string `json:"terminalCommand,omitempty"`
 	// NoNotifications turns off desktop notifications.
 	NoNotifications bool `json:"noNotifications,omitempty"`
+	// NoResumeAfterRestart leaves threads that were working when Solo closed stopped, instead of
+	// carrying them on when it starts again (ResumeInterrupted).
+	NoResumeAfterRestart bool `json:"noResumeAfterRestart,omitempty"`
 
 	// Effort for each model; "" leaves it to Claude.
 	OrchestratorEffort string `json:"orchestratorEffort,omitempty"`
@@ -183,8 +186,8 @@ type Core struct {
 
 // resumeInfo is a thread that was working when Solo closed, and how far it had got.
 type resumeInfo struct {
-	id     string
-	status string // StatusStarting, StatusRunning or StatusWaiting
+	id      string
+	stopped []string // what the restart stopped: "command: …", "subagent: …"
 }
 
 // DefaultDataDir is where Solo keeps its data: ~/.local/share/solo on Linux, %LOCALAPPDATA%\Solo on
@@ -249,14 +252,18 @@ func New(cfg Config) (*Core, error) {
 		// A thread that was working when the app stopped lost its process. It shows as stopped until
 		// ResumeInterrupted carries it on, and the steps it had running end.
 		switch t.row.Status {
-		case StatusStarting, StatusRunning, StatusWaiting:
-			c.resume = append(c.resume, resumeInfo{id: t.row.ID, status: t.row.Status})
+		case StatusStarting, StatusRunning:
+			stopped := c.settleItems(t.row.ID, false)
+			c.resume = append(c.resume, resumeInfo{id: t.row.ID, stopped: stopped})
 			t.row.Status = StatusInterrupted
 			t.row.Error = "Solo was closed while this thread was working."
 			_ = db.SaveThread(&t.row)
-			c.settleItems(t.row.ID)
+		case StatusWaiting:
+			// It stays waiting: its question can still be answered, which carries it on (resolveAsk).
+			c.settleItems(t.row.ID, true)
+			c.keepQuestion(t)
 		case StatusInterrupted:
-			c.settleItems(t.row.ID) // stopped before this was done on load
+			c.settleItems(t.row.ID, false) // stopped before this was done on load
 		}
 		c.threads[t.row.ID] = t
 		c.bySession[t.row.SessionID] = t

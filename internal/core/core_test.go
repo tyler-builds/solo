@@ -985,7 +985,7 @@ func TestRestartCarriesOnWorkingThreads(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitStatusAllowTurn(t, e.c, busy.ID, StatusRunning)
-	tool, _ := json.Marshal(ToolData{ID: "b1", Name: "Bash", Input: json.RawMessage(`{"command":"sleep 100"}`)})
+	tool, _ := json.Marshal(ToolData{ID: "b1", Name: "Bash", Input: json.RawMessage(`{"command":"sleep 100","description":"Run the slow suite"}`)})
 	if err := e.c.db.AddItem(&store.Item{ThreadID: busy.ID, Kind: ItemTool, Ref: "b1", Data: tool, CreatedAt: now()}); err != nil {
 		t.Fatal(err)
 	}
@@ -1015,11 +1015,109 @@ func TestRestartCarriesOnWorkingThreads(t *testing.T) {
 	}
 	c2.ResumeInterrupted()
 	v := waitStatus(t, c2, busy.ID, StatusIdle)
-	if !strings.HasPrefix(v.Summary, "echo: Solo was closed while you were working") || !strings.HasSuffix(v.Summary, "resume=true") {
+	if !strings.HasPrefix(v.Summary, "echo: Solo was closed while you were working") || !strings.HasSuffix(v.Summary, "resume=true") ||
+		!strings.Contains(v.Summary, "\n- command: Run the slow suite (sleep 100)") {
 		t.Fatalf("summary %q", v.Summary)
 	}
 	time.Sleep(100 * time.Millisecond)
 	if v, _ := c2.Thread(stopped.ID); v.Status != StatusInterrupted {
 		t.Fatalf("the thread the user stopped is %s", v.Status)
+	}
+}
+
+// runningAtClose leaves a worker mid-turn and closes Solo, returning the thread's ID.
+func runningAtClose(t *testing.T, e *env) string {
+	t.Helper()
+	ctx := context.Background()
+	v, _ := e.c.CreateWorker(ctx, WorkerSpec{Repo: "proj", Title: "Busy", Prompt: "hello"})
+	waitStatus(t, e.c, v.ID, StatusIdle)
+	if err := e.c.Send(ctx, v.ID, "slow"); err != nil {
+		t.Fatal(err)
+	}
+	waitStatusAllowTurn(t, e.c, v.ID, StatusRunning)
+	e.c.Close()
+	return v.ID
+}
+
+// A thread Solo already carried on resumeMax times in a few minutes stays stopped, so a crash it causes
+// can't loop.
+func TestRestartLoopGuard(t *testing.T) {
+	e := newEnv(t)
+	id := runningAtClose(t, e)
+	c2 := e.open(t)
+	ms := time.Now().UnixMilli()
+	if err := c2.db.SetSetting(resumeLogKey, map[string][]int64{id: {ms - 3000, ms - 2000, ms - 1000}}); err != nil {
+		t.Fatal(err)
+	}
+	c2.ResumeInterrupted()
+	time.Sleep(200 * time.Millisecond)
+	if v, _ := c2.Thread(id); v.Status != StatusInterrupted {
+		t.Fatalf("a thread restarted too often is %s", v.Status)
+	}
+	items, _ := c2.Items(context.Background(), id, 0)
+	var d NoticeData
+	items[len(items)-1].Decode(&d)
+	if !strings.Contains(d.Text, "stays stopped") {
+		t.Fatalf("last notice %q", d.Text)
+	}
+}
+
+// With the setting off, threads that were working stay stopped after a restart.
+func TestRestartResumeOff(t *testing.T) {
+	e := newEnv(t)
+	if err := e.c.UpdateSettings(func(s *Settings) { s.NoResumeAfterRestart = true }); err != nil {
+		t.Fatal(err)
+	}
+	id := runningAtClose(t, e)
+	c2 := e.open(t)
+	c2.ResumeInterrupted()
+	time.Sleep(200 * time.Millisecond)
+	if v, _ := c2.Thread(id); v.Status != StatusInterrupted {
+		t.Fatalf("with resuming off the thread is %s", v.Status)
+	}
+}
+
+// A thread waiting on a question when Solo closed still waits on it after a restart, and the answer
+// reaches it as a message that resumes its session.
+func TestRestartKeepsQuestion(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	v, _ := e.c.CreateWorker(ctx, WorkerSpec{Repo: "proj", Prompt: "ask"})
+	waitStatusAllowTurn(t, e.c, v.ID, StatusWaiting)
+	e.c.Close()
+
+	c2 := e.open(t)
+	c2.ResumeInterrupted()
+	v2, _ := c2.Thread(v.ID)
+	qs := c2.PendingQuestions(v.ID)
+	if v2.Status != StatusWaiting || !v2.PendingAsk || len(qs) != 1 || qs[0].Questions[0].Question != "Tabs or spaces?" {
+		t.Fatalf("after restart: %s, pending %v, %+v", v2.Status, v2.PendingAsk, qs)
+	}
+	if err := c2.Answer(v.ID, qs[0].ToolUseID, map[string]string{"Tabs or spaces?": "Spaces"}); err != nil {
+		t.Fatal(err)
+	}
+	var v3 ThreadView
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if v3, _ = c2.Thread(v.ID); v3.Status == StatusIdle && v3.Summary != "" {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !strings.Contains(v3.Summary, "Tabs or spaces?\n  Their answer: Spaces") || !strings.HasSuffix(v3.Summary, "resume=true") {
+		t.Fatalf("summary %q", v3.Summary)
+	}
+	if len(c2.PendingQuestions(v.ID)) != 0 {
+		t.Fatal("the question is still pending")
+	}
+	items, _ := c2.Items(ctx, v.ID, 0)
+	for _, it := range items {
+		if it.Kind == ItemQuestion {
+			var d QuestionData
+			it.Decode(&d)
+			if d.Answers["Tabs or spaces?"] != "Spaces" {
+				t.Fatalf("question row not answered: %+v", d)
+			}
+		}
 	}
 }

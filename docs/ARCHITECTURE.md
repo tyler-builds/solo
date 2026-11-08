@@ -137,11 +137,14 @@ Raw `SDKMessage`s are also appended to a per-session JSONL file for debugging an
 - Status machine: `queued → starting → running ⇄ waiting → idle | failed | interrupted → merged |
   discarded | archived`. No concurrency cap. After each turn Solo counts the files the branch changes:
   an idle thread with changes is "Ready to merge"; one without shows "No changes".
-- **Restart:** a thread that was starting, running or waiting when Solo closed is marked interrupted on
-  load, and its unfinished steps (tool calls without a result, running tasks, open questions) are
-  ended. `ResumeInterrupted`, called once the orchestrator is set up, then carries each on: its session
-  resumes with a note that Solo restarted (a lost question is to be asked again), or a worker that never
-  reached Claude starts over. Threads the user stopped stay stopped.
+- **Restart:** like t3code, Solo carries on what a restart cut short. On load, a thread that was starting
+  or running is marked interrupted and its unfinished steps end (tool calls without a result, running
+  tasks); the commands and subagents among them are noted. `ResumeInterrupted`, called once the
+  orchestrator is set up, resumes each session with a note that Solo restarted, what that stopped, and to
+  check a step took effect before repeating it; a worker that never reached Claude starts over. A thread
+  carried on 3 times within 5 minutes stays stopped (loop guard, logged in the `resume-log` setting), and
+  Settings › General can turn this off. A thread waiting on a question stays waiting: the question is
+  pending again, and its answer reaches the thread as a message. Threads the user stopped stay stopped.
 - Threads stay in the rail until the user marks them **Done**, which is offered only when nothing is
   left to merge (merged, or no changes). Done sets `done_at`, removes a leftover worktree and branch,
   and moves the thread to Settings › History; discarding marks it done too. **Restore** recreates the

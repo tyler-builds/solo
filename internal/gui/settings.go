@@ -213,6 +213,7 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 		editorCmd := ui.Local(ctx, "editor-cmd", initial.EditorCommand)
 		terminalCmd := ui.Local(ctx, "terminal-cmd", initial.TerminalCommand)
 		notifications := ui.Local(ctx, "notifications", !initial.NoNotifications)
+		resume := ui.Local(ctx, "resume", !initial.NoResumeAfterRestart)
 		detected := ui.Local(ctx, "detected", [2]string{launch.Detect("editor"), launch.Detect("terminal")}).Peek()
 		showCosts := ui.Local(ctx, "show-costs", initial.ShowCosts)
 		claudePath := ui.Local(ctx, "claude-path", initial.ClaudePath)
@@ -339,6 +340,11 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 				Child(ui.Switch("Notifications", notifications))).
 			Child(ui.Div().Row().Align(ui.Center).Gap(space4).
 				Child(ui.Div().Column().Gap(space1).Grow(1).MinWidth(ui.Px(0)).
+					Child(subhead("Carry on after a restart")).
+					Child(caption(ctx, "Threads that were working when Solo closed pick up where they left off when it opens again."))).
+				Child(ui.Switch("Carry on after a restart", resume))).
+			Child(ui.Div().Row().Align(ui.Center).Gap(space4).
+				Child(ui.Div().Column().Gap(space1).Grow(1).MinWidth(ui.Px(0)).
 					Child(subhead("Costs")).
 					Child(caption(ctx, "What each thread has cost so far, as Claude estimates it."))).
 				Child(ui.Switch("Show", showCosts)))
@@ -421,6 +427,7 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 				s.Folders, s.ShowCosts, s.ClaudePath = folders.Peek(), showCosts.Peek(), strings.TrimSpace(claudePath.Peek())
 				s.EditorCommand, s.TerminalCommand = strings.TrimSpace(editorCmd.Peek()), strings.TrimSpace(terminalCmd.Peek())
 				s.NoNotifications = !notifications.Peek()
+				s.NoResumeAfterRestart = !resume.Peek()
 				s.OrchestratorModel, s.WorkerModel, s.NamingModel = orchModel.Peek(), workerModel.Peek(), namingModel.Peek()
 				s.OrchestratorEffort, s.WorkerEffort, s.NamingEffort = orchEffort.Peek(), workerEffort.Peek(), namingEffort.Peek()
 				s.BranchRules, s.RepoBranchRules = strings.TrimSpace(branchRules.Peek()), repoRules.Peek()

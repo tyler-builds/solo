@@ -56,6 +56,9 @@ type thread struct {
 	retry     string // the latest API retry, while it lasts
 	asks      map[string]chan agent.AskResult
 	askQs     map[string][]agent.Question
+	// staleAsks are questions asked before Solo last closed (tool use id → item id): nothing waits on
+	// them any more, so an answer goes to the thread as a message instead.
+	staleAsks map[string]int64
 	// recovered is when the thread last moved to a new session after losing its conversation.
 	recovered time.Time
 	tasks     map[string]int64 // task id → item id
@@ -126,7 +129,7 @@ func (t *thread) view() ThreadView {
 		Step:        t.step,
 		ActualModel: t.model,
 		Retry:       t.retry,
-		PendingAsk:  len(t.asks) > 0,
+		PendingAsk:  len(t.asks)+len(t.staleAsks) > 0,
 		IsWorker:    t.row.Kind == store.KindWorker,
 	}
 	for _, k := range t.live {
@@ -568,6 +571,22 @@ func (c *Core) send(ctx context.Context, threadID, text string, images []string,
 		return err
 	}
 	prev := t.row.Status
+	if len(t.staleAsks) > 0 {
+		// A question from before Solo restarted: a message instead of an answer moves past it.
+		for key, itemID := range t.staleAsks {
+			c.updateItemLocked(itemID, func(raw json.RawMessage) any {
+				var d QuestionData
+				_ = json.Unmarshal(raw, &d)
+				d.Cancelled = true
+				return d
+			})
+			delete(t.askQs, key)
+		}
+		t.staleAsks = nil
+		if prev == StatusWaiting {
+			prev = StatusIdle
+		}
+	}
 	var ch Change
 	if prev != StatusRunning && prev != StatusWaiting {
 		ch = c.setStatusLocked(t, StatusRunning, "")
@@ -683,6 +702,9 @@ func (c *Core) resolveAsk(threadID, toolUseID string, res agent.AskResult) error
 	}
 	ch := t.asks[toolUseID]
 	if ch == nil {
+		if itemID, ok := t.staleAsks[toolUseID]; ok {
+			return c.answerStaleLocked(t, toolUseID, itemID, res)
+		}
 		return errors.New("that question is no longer waiting for an answer")
 	}
 	delete(t.asks, toolUseID)
