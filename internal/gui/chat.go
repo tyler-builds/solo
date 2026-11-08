@@ -1147,7 +1147,7 @@ func (a *App) composer(ctx *ui.Context, v core.ThreadView, key, placeholder stri
 					submit()
 				}
 			})
-		box := ui.Div().Column().PaddingLeft(space3).PaddingRight(space2).PaddingY(space2).
+		box := ui.Div().Column().Justify(ui.Center).PaddingLeft(space3).PaddingRight(space2).PaddingY(space2).
 			MinHeight(ui.Px(52)).Radius(radiusXL).Border(1, t.BorderStrong).Background(t.Surface).
 			FocusWithin(ui.Style{BorderColor: t.TextSubtle}).
 			OnDrop(ui.Drop(func(f ui.Files, _ *ui.DropEvent) { importFiles(f) }))
