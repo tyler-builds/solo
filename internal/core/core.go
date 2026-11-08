@@ -255,6 +255,8 @@ func New(cfg Config) (*Core, error) {
 			t.row.Error = "Solo was closed while this thread was working."
 			_ = db.SaveThread(&t.row)
 			c.settleItems(t.row.ID)
+		case StatusInterrupted:
+			c.settleItems(t.row.ID) // stopped before this was done on load
 		}
 		c.threads[t.row.ID] = t
 		c.bySession[t.row.SessionID] = t
