@@ -132,8 +132,10 @@ Raw `SDKMessage`s are also appended to a per-session JSONL file for debugging an
 - Branch names: `solo/<title>-<id>`, unless Settings has naming rules (global, or per repository).
   Then a small model (`complete` RPC: one turn, no tools, no session) names it; an unusable answer
   falls back to the default name, and a taken name gets a numeric suffix.
-- Settings › Models shows the model and effort for each feature: Solo, threads, branch names and PR text. The worktree is removed
-  after merge or discard; the branch is kept until merged.
+- Settings (laid out as t3code's: a page list on the left, rows in cards, changes saved as they're made)
+  has a page each for General, Repositories, Models (Solo and threads), Branches (naming rules and their
+  model), Pull requests (text rules, its model, merging) and History. The worktree is removed after merge
+  or discard; the branch is kept until merged.
 - Session: `cwd` = worktree, `permissionMode: "bypassPermissions"`,
   `allowDangerouslySkipPermissions: true`, default model configurable.
 - AskUserQuestion goes to Go → shows as a card in the rail and orchestrator chat. You or the

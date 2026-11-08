@@ -324,7 +324,7 @@ func demoBackend() *fakeBackend {
 		items:   map[string][]core.Item{},
 		repos:   repos,
 		plain:   []string{"/home/dev/code/vfl"},
-		settings: core.Settings{Folders: []string{"~/code"}, OrchestratorModel: "opus", WorkerModel: "sonnet", ScanDepth: 3,
+		settings: core.Settings{Folders: []string{"/home/dev/code"}, OrchestratorModel: "opus", WorkerModel: "sonnet", ScanDepth: 3,
 			NamingModel: "haiku", OrchestratorEffort: "high", MergeMethod: "squash", OnChecksFail: core.ChecksFix,
 			PRModel: "sonnet", PREffort: "low"},
 		pending: map[string][]core.PendingQuestion{limiter.ID: {{ToolUseID: "toolu_q1", Questions: []agent.Question{{

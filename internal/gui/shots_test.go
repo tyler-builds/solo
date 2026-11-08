@@ -6,6 +6,7 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -68,6 +69,23 @@ func TestShots(t *testing.T) {
 		{"done", func(a *App, f *fakeBackend) { a.openThread("a0b1c2d3-audit", "conversation") }},
 		{"in-place", func(a *App, f *fakeBackend) { a.openThread("a7a7a7a7-subs", "conversation") }},
 		{"history", func(a *App, f *fakeBackend) { a.settingsTab = "history"; a.settings.Set(true) }},
+		{"settings-repos", func(a *App, f *fakeBackend) { a.settingsTab = "repos"; a.settings.Set(true) }},
+		// Settings pages at full height, for review.
+		{"tall-settings-general", func(a *App, f *fakeBackend) { a.settings.Set(true) }},
+		{"tall-settings-repos", func(a *App, f *fakeBackend) { a.settingsTab = "repos"; a.settings.Set(true) }},
+		{"tall-settings-models", func(a *App, f *fakeBackend) { a.settingsTab = "models"; a.settings.Set(true) }},
+		{"tall-settings-branches", func(a *App, f *fakeBackend) {
+			f.settings.BranchRules = "feature/<ticket>-<short-summary>, lowercase, under 50 characters. fix/ for bug fixes."
+			f.settings.RepoBranchRules = map[string]string{"/home/dev/code/api": "api-<ticket>-<summary>"}
+			a.settingsTab = "branches"
+			a.settings.Set(true)
+		}},
+		{"tall-settings-prs", func(a *App, f *fakeBackend) {
+			f.settings.PRRules = "Conventional Commit title with the ticket. Description: Summary, Changes, Testing."
+			a.settingsTab = "prs"
+			a.settings.Set(true)
+		}},
+		{"tall-settings-history", func(a *App, f *fakeBackend) { a.settingsTab = "history"; a.settings.Set(true) }},
 		{"settings-models", func(a *App, f *fakeBackend) { a.settingsTab = "models"; a.settings.Set(true) }},
 		{"settings-git", func(a *App, f *fakeBackend) {
 			f.settings.BranchRules = "feature/<ticket>-<short-summary>, lowercase, under 50 characters. fix/ for bug fixes."
@@ -104,7 +122,11 @@ func TestShots(t *testing.T) {
 			if sh.name == "narrow-thread" {
 				w = 1000
 			}
-			u := uitest.New(t, a.Root, uitest.Size(w, 900), uitest.Theme(theme.t), uitest.Bindings(Bindings()...))
+			h := float32(900)
+			if strings.HasPrefix(sh.name, "tall-") {
+				h = 1400
+			}
+			u := uitest.New(t, a.Root, uitest.Size(w, h), uitest.Theme(theme.t), uitest.Bindings(Bindings()...))
 			for i := 0; i < 10; i++ {
 				u.Advance(100 * time.Millisecond)
 				time.Sleep(20 * time.Millisecond)

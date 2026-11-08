@@ -185,7 +185,7 @@ func (w *pickerWindow) PickFolder(_ dialog.FileOptions, done func(dialog.FileRes
 	done(dialog.FileResult{Paths: []string{w.folder}})
 }
 
-// Add folder… takes the folder from the system's picker, shown and saved as ~/… inside home.
+// Choose… takes the folder from the system's picker, shown and saved as ~/… inside home.
 func TestSettingsPicksFolder(t *testing.T) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -195,17 +195,18 @@ func TestSettingsPicksFolder(t *testing.T) {
 	a, u := newUI(t, f)
 	w := &pickerWindow{folder: filepath.Join(home, "work", "repos")}
 	u.Runtime().SetWindow(w)
+	a.settingsTab = "repos"
 	a.settings.Set(true)
 	u.Frame()
-	u.ByRole(access.RoleButton, "Add folder…").Click()
+	u.ByRole(access.RoleButton, "Choose a folder").Click()
 	u.Frame()
 	if w.asked != 1 {
 		t.Fatalf("picker asked %d times, want 1", w.asked)
 	}
 	want := filepath.Join("~", "work", "repos")
 	u.ByRole(access.RoleButton, "Remove "+want) // fails the test when the row is missing
-	u.ByRole(access.RoleButton, "Save").Click()
-	u.WaitFor("the folder to be saved", func() bool { // Save runs in the background
+	// Saved a moment after the change, in the background.
+	u.WaitFor("the folder to be saved", func() bool {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		return slices.Contains(f.settings.Folders, want)
@@ -217,6 +218,7 @@ func TestSettingsPicksFolder(t *testing.T) {
 func TestSettingsPutsFolderInGit(t *testing.T) {
 	f := demoBackend()
 	a, u := newUI(t, f)
+	a.settingsTab = "repos"
 	a.settings.Set(true)
 	u.Frame()
 	u.ByRole(access.RoleButton, "Put vfl in git").Click()

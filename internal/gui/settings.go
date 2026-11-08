@@ -1,6 +1,7 @@
 package gui
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"github.com/tyler-builds/jamb/access"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/tyler-builds/jamb/dialog"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"time"
@@ -133,33 +135,34 @@ func effortChoices(models []agent.ModelInfo, model, current string) []ui.Option[
 	return out
 }
 
-// repoRulesEditor edits the branch naming rules that override the global ones for a repository.
+// repoRulesEditor edits the branch naming rules that replace the global ones for a repository: a row
+// per repository, and a menu to add one.
 func (a *App) repoRulesEditor(ctx *ui.Context, rules *ui.Signal[map[string]string]) ui.Element {
 	t := ctx.Theme()
 	cur := rules.Get()
-	col := ui.Div().Column().Gap(space2)
-	repos := slices.Sorted(maps.Keys(cur))
-	for _, repo := range repos {
+	var rows []ui.Element
+	for _, repo := range slices.Sorted(maps.Keys(cur)) {
 		r := repo
-		col = col.Child(ui.Div().Column().Gap(space1).Padding(space3).Radius(radiusM).Border(1, t.Border).Background(t.Background).
+		name := filepath.Base(r)
+		rows = append(rows, ui.Div().Column().Gap(space2).PaddingLeft(space4).PaddingRight(space3).PaddingY(space3).
 			Child(ui.Div().Row().Align(ui.Center).Gap(space2).
-				Child(ui.Icon(icons.FolderGit2).Size(13).Color(t.TextMuted)).
-				Child(ui.Text(filepath.Base(r)).FontSize(13).Medium().Grow(1)).
-				Child(ui.IconButton(icons.X).Ghost().Small().Label("Remove the rules for " + filepath.Base(r)).OnClick(func() {
+				Child(ui.Icon(icons.FolderGit2).Size(15).Color(t.TextMuted)).
+				Child(ui.Text(name).FontSize(13).Medium().Grow(1).Truncate()).
+				Child(ui.IconButton(icons.X).Ghost().Small().Label("Remove the rules for "+name).Tooltip("Use the rules above again").OnClick(func() {
 					next := maps.Clone(rules.Peek())
 					delete(next, r)
 					rules.Set(next)
 				}))).
-			Child(ui.Component(func(ctx *ui.Context) ui.Element {
+			Child(ui.Div().PaddingRight(space1).Child(ui.Component(func(ctx *ui.Context) ui.Element {
 				text := ui.Local(ctx, "rules", cur[r])
-				return ui.TextArea(text).Placeholder("Rules for " + filepath.Base(r)).Label("Branch naming rules for " + filepath.Base(r)).
-					MinRows(2).MaxHeight(ui.Px(120)).Width(ui.Full).Borderless().
+				return ui.TextArea(text).Placeholder("Rules for " + name).Label("Branch naming rules for " + name).
+					MinRows(1).MaxHeight(ui.Px(120)).Width(ui.Full).
 					OnChange(func(v string) {
 						next := maps.Clone(rules.Peek())
 						next[r] = v
 						rules.Set(next)
 					})
-			}).Key("rules-" + r)))
+			}).Key("rules-"+r))))
 	}
 	var add []ui.MenuItem
 	for _, repo := range a.repos.Get() {
@@ -176,15 +179,151 @@ func (a *App) repoRulesEditor(ctx *ui.Context, rules *ui.Signal[map[string]strin
 			rules.Set(next)
 		}})
 	}
+	if len(rows) == 0 {
+		rows = append(rows, ui.Div().PaddingX(space4).PaddingY(space3).
+			Child(caption(ctx, "None yet.")))
+	}
 	if len(add) > 0 {
-		col = col.Child(ui.Div().Row().Child(ui.DropdownMenu(ui.Button("Rules for a repository").Icon(icons.Plus).Secondary().Small(),
-			func() []ui.MenuItem { return add })))
+		rows = append(rows, ui.Div().Row().PaddingX(space3).PaddingY(space2).
+			Child(ui.DropdownMenu(ui.Button("Add a repository").Icon(icons.Plus).Ghost().Small(),
+				func() []ui.MenuItem { return add })))
+	}
+	return settingsSection(ctx, "Per-repository rules", "These replace the rules above for that repository.", nil, rows...)
+}
+
+// settingsTabs are Settings' pages, listed down its left side as t3code does.
+var settingsTabs = []struct {
+	value, label string
+	icon         *icons.Icon
+}{
+	{"general", "General", icons.Settings2},
+	{"repos", "Repositories", icons.FolderGit2},
+	{"models", "Models", icons.Bot},
+	{"branches", "Branches", icons.GitBranch},
+	{"prs", "Pull requests", icons.GitPullRequest},
+	{"history", "History", icons.Archive},
+}
+
+// settingsNav is Settings' list of pages.
+func settingsNav(ctx *ui.Context, tab *ui.Signal[string]) ui.Element {
+	t := ctx.Theme()
+	nav := ui.Div().Column().Gap(2).Width(ui.Px(184)).Shrink(0).Role(access.RoleTabList).Label("Settings pages")
+	for _, p := range settingsTabs {
+		value := p.value
+		on := tab.Get() == value
+		item := ui.Div().Row().Align(ui.Center).Gap(space2 + 2).PaddingX(space3).Height(ui.Px(34)).Radius(radiusS).
+			Cursor(ui.CursorPointer).Role(access.RoleTab).Label(p.label).AccessSelected(on).Key("settings-tab-" + value).
+			OnClick(func() { tab.Set(value) })
+		icon, text := t.TextMuted, t.TextMuted
+		if on {
+			item = item.Background(t.SurfaceActive)
+			icon, text = t.Text, t.Text
+		} else {
+			item = item.Hover(ui.Style{Background: t.SurfaceHover})
+		}
+		nav = nav.Child(item.
+			Child(ui.Icon(p.icon).Size(15).Color(icon)).
+			Child(ui.Text(p.label).FontSize(13).Medium().TextColor(text)))
+	}
+	return nav
+}
+
+// settingsPage is a page of Settings: its name, an optional line about it, and its sections.
+func settingsPage(ctx *ui.Context, title, help string, sections ...ui.Element) ui.Element {
+	t := ctx.Theme()
+	head := ui.Div().Column().Gap(space1).PaddingX(1).
+		Child(ui.Text(title).FontSize(20).FontWeight(ui.FontSemibold).TextColor(t.Text))
+	if help != "" {
+		head = head.Child(caption(ctx, help))
+	}
+	page := ui.Div().Column().Gap(space6).Child(head)
+	for _, s := range sections {
+		if s != nil {
+			page = page.Child(s)
+		}
+	}
+	return page
+}
+
+// settingsSection is a titled group of settings: rows in a rounded card, divided by rules (t3code's
+// SettingsSection). The title is a small label lined up with the rows' names, over help when there is
+// some; side is shown at its right.
+// Nil rows are left out.
+func settingsSection(ctx *ui.Context, title, help string, side ui.Element, rows ...ui.Element) ui.Element {
+	t := ctx.Theme()
+	label := ui.Div().Column().Gap(space1 + 2).Grow(1).MinWidth(ui.Px(0)).
+		Child(ui.Text(strings.ToUpper(title)).FontSize(11).FontWeight(ui.FontSemibold).TextColor(t.TextSubtle))
+	if help != "" {
+		label = label.Child(caption(ctx, help))
+	}
+	head := ui.Div().Row().Align(ui.End).Gap(space2).PaddingLeft(space4 + 1).PaddingRight(space4 + 1).Child(label)
+	if side != nil {
+		head = head.Child(side)
+	}
+	card := ui.Div().Column().Radius(radiusL).Border(1, t.Border).Background(t.Background)
+	n := 0
+	for _, r := range rows {
+		if r == nil {
+			continue
+		}
+		cell := ui.Div().Column().Child(r)
+		if n > 0 {
+			cell = cell.BorderEdges(ui.Edges{Top: 1}, t.Border)
+		}
+		card = card.Child(cell)
+		n++
+	}
+	return ui.Div().Column().Gap(space2).Child(head).Child(card)
+}
+
+// settingLabel is a setting's name over what it does.
+func settingLabel(ctx *ui.Context, title, help string) *ui.DivElement {
+	col := ui.Div().Column().Gap(2).Grow(1).MinWidth(ui.Px(0)).Child(subhead(title))
+	if help != "" {
+		col = col.Child(caption(ctx, help))
 	}
 	return col
 }
 
-// settingsDialog edits the Claude Code path, the folders to search for repositories, the models, and
-// whether costs show.
+// settingRow is one setting: its name and what it does on the left, its control on the right.
+func settingRow(ctx *ui.Context, title, help string, control ui.Element) ui.Element {
+	return ui.Div().Row().Align(ui.Center).Gap(space6).PaddingX(space4).PaddingY(space3).MinHeight(ui.Px(60)).
+		Child(settingLabel(ctx, title, help)).
+		Child(ui.Div().Row().Align(ui.Center).Gap(space2).Shrink(0).Child(control))
+}
+
+// settingBlock is a setting whose control needs the full width, such as a text box, under its name.
+func settingBlock(ctx *ui.Context, title, help string, control ui.Element) ui.Element {
+	return ui.Div().Column().Gap(space2 + 2).PaddingX(space4).PaddingY(space3).
+		Child(settingLabel(ctx, title, help)).
+		Child(control)
+}
+
+// Widths of the model and effort pickers, shared by their column labels.
+const (
+	modelPickW  = 150
+	effortPickW = 110
+)
+
+// pickerHeads labels the model and effort columns over a section's pickers.
+func pickerHeads(ctx *ui.Context) ui.Element {
+	t := ctx.Theme()
+	head := func(s string) ui.Element {
+		return ui.Text(strings.ToUpper(s)).FontSize(11).FontWeight(ui.FontSemibold).TextColor(t.TextSubtle)
+	}
+	return ui.Div().Row().Gap(space2).
+		Child(ui.Div().Width(ui.Px(modelPickW)).Child(head("Model"))).
+		Child(ui.Div().Width(ui.Px(effortPickW)).Child(head("Effort")))
+}
+
+// settingsSaver saves Settings a moment after the last change, so typing doesn't save on every key.
+type settingsSaver struct {
+	timer *time.Timer
+	last  core.Settings // what was last saved
+	apply func(*core.Settings)
+}
+
+// settingsDialog edits Solo's settings, a page per area. Changes save as they're made, as in t3code.
 func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 	if !a.settings.Get() {
 		return nil
@@ -194,7 +333,7 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 		initial := a.b.Settings()
 		folders := ui.Local(ctx, "folders", initial.Folders)
 		newFolder := ui.Local(ctx, "new-folder", "")
-		tab := ui.Local(ctx, "tab", a.settingsTab)
+		tab := ui.Local(ctx, "tab", cmp.Or(a.settingsTab, "general"))
 		orchModel := ui.Local(ctx, "orch-model", initial.OrchestratorModel)
 		workerModel := ui.Local(ctx, "worker-model", initial.WorkerModel)
 		namingModel := ui.Local(ctx, "naming-model", initial.NamingModel)
@@ -218,8 +357,69 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 		showCosts := ui.Local(ctx, "show-costs", initial.ShowCosts)
 		claudePath := ui.Local(ctx, "claude-path", initial.ClaudePath)
 		checked := ui.Local(ctx, "claude-checked", strings.TrimSpace(initial.ClaudePath))
+		saved := ui.Local(ctx, "saved", "") // "", "saving" or "saved"
 
-		typing := ui.Local(ctx, "folder-typing", false)
+		// Save what changed, a moment after the last change.
+		apply := func(s *core.Settings) {
+			s.Folders, s.ShowCosts, s.ClaudePath = folders.Get(), showCosts.Get(), strings.TrimSpace(claudePath.Get())
+			s.EditorCommand, s.TerminalCommand = strings.TrimSpace(editorCmd.Get()), strings.TrimSpace(terminalCmd.Get())
+			s.NoNotifications = !notifications.Get()
+			s.NoResumeAfterRestart = !resume.Get()
+			s.OrchestratorModel, s.WorkerModel, s.NamingModel = orchModel.Get(), workerModel.Get(), namingModel.Get()
+			s.OrchestratorEffort, s.WorkerEffort, s.NamingEffort = orchEffort.Get(), workerEffort.Get(), namingEffort.Get()
+			s.BranchRules, s.RepoBranchRules = strings.TrimSpace(branchRules.Get()), repoRules.Get()
+			s.AutoMerge, s.MergeMethod, s.OnChecksFail = autoMerge.Get(), mergeMethod.Get(), onFail.Get()
+			s.PRModel, s.PREffort, s.PRRules, s.SkipPRDescription = prModel.Get(), prEffort.Get(), strings.TrimSpace(prRules.Get()), !prDescribe.Get()
+		}
+		saver := ui.Local(ctx, "saver", &settingsSaver{last: initial}).Peek()
+		want := initial
+		apply(&want)
+		saveNow := func() {
+			if saver.timer != nil {
+				saver.timer.Stop()
+				saver.timer = nil
+			}
+			if saver.apply == nil {
+				return
+			}
+			do := saver.apply
+			saver.apply = nil
+			a.run("Saving settings", func(context.Context) error {
+				err := a.b.UpdateSettings(do)
+				a.onUI(func() {
+					if err == nil && saver.apply == nil {
+						saved.Set("saved")
+					}
+				})
+				return err
+			})
+		}
+		if !reflect.DeepEqual(want, saver.last) {
+			saver.last = want
+			snap := want
+			saver.apply = func(s *core.Settings) {
+				s.Folders, s.ShowCosts, s.ClaudePath = snap.Folders, snap.ShowCosts, snap.ClaudePath
+				s.EditorCommand, s.TerminalCommand = snap.EditorCommand, snap.TerminalCommand
+				s.NoNotifications, s.NoResumeAfterRestart = snap.NoNotifications, snap.NoResumeAfterRestart
+				s.OrchestratorModel, s.WorkerModel, s.NamingModel = snap.OrchestratorModel, snap.WorkerModel, snap.NamingModel
+				s.OrchestratorEffort, s.WorkerEffort, s.NamingEffort = snap.OrchestratorEffort, snap.WorkerEffort, snap.NamingEffort
+				s.BranchRules, s.RepoBranchRules = snap.BranchRules, snap.RepoBranchRules
+				s.AutoMerge, s.MergeMethod, s.OnChecksFail = snap.AutoMerge, snap.MergeMethod, snap.OnChecksFail
+				s.PRModel, s.PREffort, s.PRRules, s.SkipPRDescription = snap.PRModel, snap.PREffort, snap.PRRules, snap.SkipPRDescription
+			}
+			if saver.timer != nil {
+				saver.timer.Stop()
+			}
+			saver.timer = time.AfterFunc(600*time.Millisecond, func() { a.onUI(saveNow) })
+			if saved.Peek() != "saving" {
+				a.onUI(func() { saved.Set("saving") })
+			}
+		}
+		closeDialog := func() {
+			saveNow()
+			a.settings.Set(false)
+		}
+
 		addPath := func(f string) {
 			f = tildePath(strings.TrimSpace(f))
 			if f == "" || slices.Contains(folders.Peek(), f) {
@@ -237,7 +437,6 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 				switch {
 				case r.Err != nil:
 					a.notify(ui.ToastError, "Couldn't open the folder picker", "Type the folder's path instead. "+r.Err.Error())
-					typing.Set(true)
 				case !r.Canceled:
 					for _, p := range r.Paths {
 						addPath(p)
@@ -245,39 +444,7 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 				}
 			})
 		}
-		list := ui.Div().Column().Gap(space1)
-		for _, f := range folders.Get() {
-			folder := f
-			list = list.Child(ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space3).Height(ui.Px(34)).
-				Radius(radiusM).Border(1, t.Border).Background(t.Background).
-				Child(ui.Icon(icons.Folder).Size(14).Color(t.TextMuted)).
-				Child(ui.Text(folder).FontSize(13).TruncateHead().Grow(1).MinWidth(ui.Px(0))).
-				Child(ui.IconButton(icons.X).Ghost().Small().Label("Remove " + folder).OnClick(func() {
-					folders.Set(slices.DeleteFunc(slices.Clone(folders.Peek()), func(s string) bool { return s == folder }))
-				})))
-		}
-		if len(folders.Get()) == 0 {
-			list = list.Child(caption(ctx, "No folders yet."))
-		}
-		// What the last scan found, so the user can check it.
-		if found := a.repos.Get(); len(found) > 0 {
-			names := make([]string, 0, len(found))
-			for _, r := range found {
-				names = append(names, filepath.Base(r))
-			}
-			list = list.Child(ui.Div().Row().Gap(space1 + 2).PaddingTop(space1).
-				Child(ui.Icon(icons.FolderGit2).Size(13).Color(t.TextSubtle)).
-				Child(caption(ctx, fmt.Sprintf("Found %d repositories: %s", len(found), strings.Join(names, ", "))).Grow(1)))
-		}
-		if plain := a.plain.Get(); len(plain) > 0 {
-			list = list.Child(a.plainFolders(ctx, plain))
-		}
-		field := func(label, help string, control ui.Element) ui.Element {
-			return ui.Div().Column().Gap(space1 + 2).
-				Child(subhead(label)).
-				Child(control).
-				Child(caption(ctx, help))
-		}
+
 		// Claude Code: what Solo found, and a path to use instead.
 		claude := ui.Query(ctx, "claude:"+checked.Get(), func(c context.Context) (core.ClaudeStatus, error) {
 			return a.b.CheckClaude(c, checked.Peek()), nil
@@ -290,10 +457,10 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 			}
 			checked.Set(p)
 		}
-		var status ui.Element
+		var claudeRow ui.Element
 		if st := claude.Data; claude.Loading || claude.Fetching {
-			status = ui.Div().Row().Align(ui.Center).Gap(space2).
-				Child(ui.ProgressRing().Size(14)).
+			claudeRow = ui.Div().Row().Align(ui.Center).Gap(space3).PaddingX(space4).MinHeight(ui.Px(60)).
+				Child(ui.ProgressRing().Size(16)).
 				Child(muted(ctx, "Checking Claude Code…"))
 		} else {
 			icon, color, line := icons.CircleCheck, t.Success, "Claude Code "+st.Version
@@ -308,139 +475,185 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 				where = st.Path + " · " + map[string]string{"setting": "from the path below", "PATH": "found on PATH",
 					"default location": "found in its default location", "bundled": "shipped with Solo"}[st.Source]
 			}
-			status = ui.Div().Row().Align(ui.Start).Gap(space2).
-				Child(ui.Div().PaddingTop(2).Child(ui.Icon(icon).Size(14).Color(color))).
+			claudeRow = ui.Div().Row().Align(ui.Center).Gap(space3).PaddingX(space4).PaddingY(space3).MinHeight(ui.Px(60)).
+				Child(ui.Icon(icon).Size(16).Color(color)).
 				Child(ui.Div().Column().Gap(2).Grow(1).MinWidth(ui.Px(0)).
-					Child(ui.Text(line).FontSize(13).TextColor(t.Text)).
-					Child(caption(ctx, where).TruncateHead()))
+					Child(ui.Text(line).FontSize(13).Medium().TextColor(t.Text).Truncate()).
+					Child(caption(ctx, where).TruncateHead())).
+				Child(ui.Button("Check again").Icon(icons.RefreshCw).Secondary().Small().OnClick(check))
 		}
-		claudeBox := ui.Div().Column().Gap(space2).
-			Child(ui.Div().Padding(space3).Radius(radiusM).Border(1, t.Border).Background(t.Background).Child(status)).
-			Child(ui.Div().Row().Gap(space2).
-				Child(ui.TextInput(claudePath).Placeholder("Path to claude (leave empty to detect it)").Label("Path to claude").
-					Small().Width(ui.Full).Key("claude-path").OnSubmit(func(string) { check() })).
-				Child(ui.Button("Check").Icon(icons.RefreshCw).Secondary().Small().OnClick(check)))
+		input := func(in *ui.TextInputElement) *ui.TextInputElement { return in.Small().Width(ui.Px(280)) }
+		appRow := func(name, what, found, example string, cmd *ui.Signal[string]) ui.Element {
+			help, hint := what+" {path} marks where the folder goes.", "e.g. "+example
+			if found != "" {
+				prog, _, _ := strings.Cut(found, " ")
+				help, hint = what+" Leave empty to use "+filepath.Base(prog)+".", filepath.Base(prog)+" … {path}"
+			}
+			return settingRow(ctx, name, help,
+				input(ui.TextInput(cmd).Placeholder(hint).Label(name+" command")))
+		}
 
-		general := ui.Div().Column().Gap(space5).Width(ui.Full).
-			Child(field("Claude Code", "Solo runs your installed Claude Code and uses its sign-in. A changed path applies to sessions started after you save.", claudeBox)).
-			Child(field("Repository folders",
-				"Solo looks for git repositories up to three folders deep.",
-				ui.Div().Column().Gap(space2).
-					Child(list).
-					Child(folderAdder(newFolder, typing.Get(), pick, add, func() { typing.Set(true) })))).
-			Child(ui.Div().Row().Gap(space4).
-				Child(ui.Div().Grow(1).Basis(ui.Px(0)).Child(field("Editor", "Opens a thread's folder. {path} marks where the folder goes.",
-					ui.TextInput(editorCmd).Placeholder(placeholderFor(detected[0], "code")).Label("Editor command").Small().Width(ui.Full)))).
-				Child(ui.Div().Grow(1).Basis(ui.Px(0)).Child(field("Terminal", "Opens a terminal in a thread's folder.",
-					ui.TextInput(terminalCmd).Placeholder(placeholderFor(detected[1], "a terminal")).Label("Terminal command").Small().Width(ui.Full))))).
-			Child(ui.Div().Row().Align(ui.Center).Gap(space4).
-				Child(ui.Div().Column().Gap(space1).Grow(1).MinWidth(ui.Px(0)).
-					Child(subhead("Notifications")).
-					Child(caption(ctx, "When a thread asks something, fails or finishes, its checks fail or it merges, and when Solo replies, while Solo isn't in front."))).
-				Child(ui.Switch("Notifications", notifications))).
-			Child(ui.Div().Row().Align(ui.Center).Gap(space4).
-				Child(ui.Div().Column().Gap(space1).Grow(1).MinWidth(ui.Px(0)).
-					Child(subhead("Carry on after a restart")).
-					Child(caption(ctx, "Threads that were working when Solo closed pick up where they left off when it opens again."))).
-				Child(ui.Switch("Carry on after a restart", resume))).
-			Child(ui.Div().Row().Align(ui.Center).Gap(space4).
-				Child(ui.Div().Column().Gap(space1).Grow(1).MinWidth(ui.Px(0)).
-					Child(subhead("Costs")).
-					Child(caption(ctx, "What each thread has cost so far, as Claude estimates it."))).
-				Child(ui.Switch("Show", showCosts)))
+		general := settingsPage(ctx, "General", "How Solo runs Claude Code, and the apps it opens threads in.",
+			settingsSection(ctx, "Claude Code", "", nil,
+				claudeRow,
+				settingRow(ctx, "Path to claude", "Leave empty to find it on PATH.",
+					input(ui.TextInput(claudePath).Placeholder("Find automatically").Label("Path to claude").Key("claude-path").
+						OnSubmit(func(string) { check() })))),
+			settingsSection(ctx, "Behavior", "", nil,
+				settingRow(ctx, "Notifications", "Alerts when a thread needs you, fails or finishes, while Solo is in the background.",
+					ui.Switch("Notifications", notifications)),
+				settingRow(ctx, "Carry on after a restart", "Threads that were working when Solo closed pick up where they left off.",
+					ui.Switch("Carry on after a restart", resume)),
+				settingRow(ctx, "Show costs", "What each thread has cost so far, as Claude estimates it.",
+					ui.Switch("Show costs", showCosts))),
+			settingsSection(ctx, "Apps", "", nil,
+				appRow("Editor", "Opens a thread's folder.", detected[0], "code {path}", editorCmd),
+				appRow("Terminal", "Opens a terminal in a thread's folder.", detected[1], "ptyxis --working-directory {path}", terminalCmd)))
+
+		// Repositories: the folders to search, what the search found, and folders outside git.
+		var folderRows []ui.Element
+		for _, f := range folders.Get() {
+			folder := f
+			folderRows = append(folderRows, ui.Div().Row().Align(ui.Center).Gap(space3).PaddingLeft(space4).PaddingRight(space3).Height(ui.Px(48)).
+				Child(ui.Icon(icons.Folder).Size(15).Color(t.TextMuted)).
+				Child(ui.Text(folder).FontSize(13).Medium().TruncateHead().Grow(1).MinWidth(ui.Px(0))).
+				Child(ui.IconButton(icons.X).Ghost().Small().Label("Remove "+folder).Tooltip("Stop searching here").OnClick(func() {
+					folders.Set(slices.DeleteFunc(slices.Clone(folders.Peek()), func(s string) bool { return s == folder }))
+				})))
+		}
+		if len(folderRows) == 0 {
+			folderRows = append(folderRows, ui.Div().PaddingX(space4).PaddingY(space3).Child(caption(ctx, "No folders yet. Add the folder that holds your projects.")))
+		}
+		folderRows = append(folderRows, ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space4).PaddingY(space3).
+			Child(ui.TextInput(newFolder).Placeholder("Add a folder path, such as ~/projects").Label("Folder to add").Small().
+				Grow(1).Key("new-folder").OnSubmit(func(string) { add() })).
+			Child(ui.Button("Add").Secondary().Small().Disabled(strings.TrimSpace(newFolder.Get()) == "").OnClick(add)).
+			Child(ui.Button("Choose…").Icon(icons.FolderOpen).Secondary().Small().Label("Choose a folder").OnClick(pick)))
+		var found ui.Element
+		if repos := a.repos.Get(); len(repos) > 0 {
+			parent := filepath.Dir(repos[0])
+			for _, r := range repos {
+				if filepath.Dir(r) != parent {
+					parent = ""
+				}
+			}
+			var rows []ui.Element
+			for _, r := range repos {
+				row := ui.Div().Row().Align(ui.Center).Gap(space3).PaddingX(space4).Height(ui.Px(42)).
+					Child(ui.Icon(icons.FolderGit2).Size(15).Color(t.TextMuted)).
+					Child(ui.Text(filepath.Base(r)).FontSize(13).Medium())
+				if parent == "" {
+					row = row.Child(caption(ctx, tildePath(filepath.Dir(r))).TruncateHead().Grow(1).MinWidth(ui.Px(0)))
+				}
+				rows = append(rows, row)
+			}
+			title := fmt.Sprintf("Found %d repositories", len(repos))
+			var side ui.Element
+			if parent != "" {
+				side = caption(ctx, "in "+tildePath(parent)).TruncateHead()
+			}
+			found = settingsSection(ctx, title, "", side, rows...)
+		}
+		var plain ui.Element
+		if p := a.plain.Get(); len(p) > 0 {
+			plain = a.plainFolders(ctx, p)
+		}
+		reposTab := settingsPage(ctx, "Repositories", "Solo looks for git repositories up to three folders deep in these folders.",
+			settingsSection(ctx, "Folders to search", "", nil, folderRows...),
+			found,
+			plain)
 
 		models := claude.Data.Models
-		feature := func(name, help string, model, effort *ui.Signal[string]) ui.Element {
-			return ui.Div().Column().Gap(space1 + 2).
-				Child(subhead(name)).
-				Child(ui.Div().Row().Gap(space3).
-					Child(ui.Div().Grow(2).Basis(ui.Px(0)).Child(ui.Select(model, modelChoices(models, model.Get())...).Width(ui.Full).Label(name + " model"))).
-					Child(ui.Div().Grow(1).Basis(ui.Px(0)).Child(ui.Select(effort, effortChoices(models, model.Get(), effort.Get())...).Width(ui.Full).Label(name + " effort")))).
-				Child(caption(ctx, help))
+		pickers := func(name string, model, effort *ui.Signal[string]) ui.Element {
+			return ui.Div().Row().Gap(space2).
+				Child(ui.Select(model, modelChoices(models, model.Get())...).Width(ui.Px(modelPickW)).Label(name + " model")).
+				Child(ui.Select(effort, effortChoices(models, model.Get(), effort.Get())...).Width(ui.Px(effortPickW)).Label(name + " effort"))
 		}
-		modelsTab := ui.Div().Column().Gap(space5).Width(ui.Full).
-			Child(feature("Solo", "The lead agent you talk to. It plans, follows the threads and reviews their work.", orchModel, orchEffort)).
-			Child(feature("Threads", "The agents that do the work, one per task. Solo can pick another model for a thread when the task calls for it.", workerModel, workerEffort)).
-			Child(feature("Branch names", "Names each thread's branch by your rules (Git tab). Only used when you have rules.", namingModel, namingEffort)).
-			Child(feature("Pull request text", "Writes each pull request's title and description, by your rules (Git tab).", prModel, prEffort)).
-			Child(caption(ctx, "Effort is how long a model thinks before it acts. Default leaves it to Claude. Changes apply to sessions started after you save."))
-
-		gitTab := ui.Div().Column().Gap(space5).Width(ui.Full).PaddingRight(space3). // clear of the scrollbar
-												Child(field("Branch names",
-				"Rules for naming a thread's branch, in your words: a prefix, a ticket format, a length. A small model applies them. Leave empty for solo/<title>.",
-				ui.TextArea(branchRules).Placeholder("For example: feature/<ticket>-<short-summary>, lowercase, hyphens, under 50 characters. Use fix/ for bug fixes.").
-					Label("Branch naming rules").MinRows(3).MaxHeight(ui.Px(140)).Width(ui.Full).Key("branch-rules"))).
-			Child(a.repoRulesEditor(ctx, repoRules)).
-			Child(ui.Div().Column().Gap(space1 + 2).
-				Child(subhead("Pull request text")).
-				Child(caption(ctx, "How to write a pull request's title and description. A model applies them to the thread's commits, changes and summary.")).
-				Child(ui.Div().Column().Gap(space3).PaddingTop(space2).
-					Child(ui.TextArea(prRules).Placeholder("For example: Conventional Commit title with the ticket, like feat(auth): OW-123 refresh tokens. Description: Summary, Changes, Testing.").
-						Label("Pull request text rules").MinRows(3).MaxHeight(ui.Px(140)).Width(ui.Full).Key("pr-rules")).
-					Child(ui.Div().Row().Align(ui.Center).Gap(space4).
-						Child(ui.Div().Column().Gap(2).Grow(1).MinWidth(ui.Px(0)).
-							Child(ui.Text("Write a description").FontSize(13)).
-							Child(caption(ctx, "Off: pull requests get a title only."))).
-						Child(ui.Switch("Write a description", prDescribe))))).
-			Child(ui.Div().Column().Gap(space1 + 2).
-				Child(subhead("Pull requests")).
-				Child(caption(ctx, "Solo pushes a thread's branch and opens a pull request (GitHub, with gh) or merge request (GitLab, with glab) against the branch it started from. Repositories without a remote merge locally.")).
-				Child(ui.Div().Column().Gap(space3).PaddingTop(space2).
-					Child(ui.Div().Row().Align(ui.Center).Gap(space4).
-						Child(ui.Div().Column().Gap(2).Grow(1).MinWidth(ui.Px(0)).
-							Child(ui.Text("Auto-merge").FontSize(13)).
-							Child(caption(ctx, "Turn on the forge's auto-merge when the pull request opens, so it merges once required checks and reviews pass."))).
-						Child(ui.Switch("Auto-merge", autoMerge))).
-					Child(ui.Div().Row().Gap(space4).
-						Child(ui.Div().Grow(1).Basis(ui.Px(0)).Child(field("Merge method", "How the pull request merges.",
-							ui.Select(mergeMethod, ui.Option[string]{Value: "squash", Label: "Squash"},
-								ui.Option[string]{Value: "merge", Label: "Merge commit"},
-								ui.Option[string]{Value: "rebase", Label: "Rebase"}).Width(ui.Full)))).
-						Child(ui.Div().Grow(1).Basis(ui.Px(0)).Child(field("When checks fail", "Solo can send the failure to the thread to fix.",
-							ui.Select(onFail, ui.Option[string]{Value: core.ChecksFix, Label: "Solo fixes it"},
-								ui.Option[string]{Value: core.ChecksNotify, Label: "Just notify me"}).Width(ui.Full)))))))
-
-		var body ui.Element
-		switch tab.Get() {
-		case "models":
-			body = modelsTab
-		case "git":
-			body = gitTab
-		case "history":
-			body = ui.Div().Column().Gap(space3).Width(ui.Full).
-				Child(caption(ctx, "Threads you marked done or discarded. Restoring one puts it back in your list with its worktree, so you can keep talking to it.")).
-				Child(a.historyList(ctx))
-		default:
-			body = general
-		}
-		body = ui.Div().Column().Gap(space4).Width(ui.Full).
-			Child(ui.Div().Row().BorderEdges(ui.Edges{Bottom: 1}, t.Border).
-				Child(ui.Tabs(tab,
-					ui.Tab[string]{Value: "general", Label: "General"},
-					ui.Tab[string]{Value: "models", Label: "Models"},
-					ui.Tab[string]{Value: "git", Label: "Git"},
-					ui.Tab[string]{Value: "history", Label: "History"}))).
-			Child(body)
-
-		save := ui.Button("Save").Primary().Key("settings-save").OnClick(func() {
-			apply := func(s *core.Settings) {
-				s.Folders, s.ShowCosts, s.ClaudePath = folders.Peek(), showCosts.Peek(), strings.TrimSpace(claudePath.Peek())
-				s.EditorCommand, s.TerminalCommand = strings.TrimSpace(editorCmd.Peek()), strings.TrimSpace(terminalCmd.Peek())
-				s.NoNotifications = !notifications.Peek()
-				s.NoResumeAfterRestart = !resume.Peek()
-				s.OrchestratorModel, s.WorkerModel, s.NamingModel = orchModel.Peek(), workerModel.Peek(), namingModel.Peek()
-				s.OrchestratorEffort, s.WorkerEffort, s.NamingEffort = orchEffort.Peek(), workerEffort.Peek(), namingEffort.Peek()
-				s.BranchRules, s.RepoBranchRules = strings.TrimSpace(branchRules.Peek()), repoRules.Peek()
-				s.AutoMerge, s.MergeMethod, s.OnChecksFail = autoMerge.Peek(), mergeMethod.Peek(), onFail.Peek()
-				s.PRModel, s.PREffort, s.PRRules, s.SkipPRDescription = prModel.Peek(), prEffort.Peek(), strings.TrimSpace(prRules.Peek()), !prDescribe.Peek()
+		// A helper's pickers stand alone, without the column labels of the Models page.
+		helperPickers := func(name string, model, effort *ui.Signal[string]) ui.Element {
+			efforts := effortChoices(models, model.Get(), effort.Get())
+			for i := range efforts {
+				efforts[i].Label += " effort"
 			}
-			a.settings.Set(false)
-			a.run("Saving settings", func(context.Context) error { return a.b.UpdateSettings(apply) })
-		})
-		return ui.Modal("Settings", body).Width(ui.Px(600)).MaxWidth(ui.Px(600)).
-			Footer(ui.Button("Cancel").Secondary().OnClick(func() { a.settings.Set(false) }), save).
-			Default(save).
-			OnClose(func() { a.settings.Set(false) }).Key("settings")
+			return ui.Div().Row().Gap(space2).
+				Child(ui.Select(model, modelChoices(models, model.Get())...).Width(ui.Px(modelPickW)).Label(name + " model")).
+				Child(ui.Select(effort, efforts...).Width(ui.Px(effortPickW + 30)).Label(name + " effort"))
+		}
+		modelsTab := settingsPage(ctx, "Models", "Effort is how long a model thinks before it acts; Default leaves it to Claude. Changes apply to new sessions.",
+			settingsSection(ctx, "Agents", "", pickerHeads(ctx),
+				settingRow(ctx, "Solo", "The lead agent you talk to. It plans, follows the threads and reviews their work.", pickers("Solo", orchModel, orchEffort)),
+				settingRow(ctx, "Threads", "The agents that do the work, one per task. Solo can pick another model when a task calls for it.", pickers("Threads", workerModel, workerEffort))),
+			settingsSection(ctx, "Helpers", "", nil,
+				settingRow(ctx, "Branch names and pull request text", "Small models that apply your rules, each set on its page.",
+					ui.Div().Row().Gap(space2).
+						Child(ui.Button("Branches").IconEnd(icons.ArrowRight).Ghost().Small().OnClick(func() { tab.Set("branches") })).
+						Child(ui.Button("Pull requests").IconEnd(icons.ArrowRight).Ghost().Small().OnClick(func() { tab.Set("prs") })))))
+
+		branchesTab := settingsPage(ctx, "Branches", "How Solo names the branch each thread works on.",
+			settingsSection(ctx, "Naming", "", nil,
+				settingBlock(ctx, "How to name branches", "In your words: a prefix, a ticket format, a length. Leave empty to name branches solo/<title>.",
+					ui.TextArea(branchRules).Placeholder("For example: feature/<ticket>-<short-summary>, lowercase, hyphens, under 50 characters. Use fix/ for bug fixes.").
+						Label("Branch naming rules").MinRows(1).MaxHeight(ui.Px(140)).Width(ui.Full).Key("branch-rules")),
+				settingRow(ctx, "Model", "Applies the rules. A small, fast model is enough.", helperPickers("Branch names", namingModel, namingEffort))),
+			a.repoRulesEditor(ctx, repoRules))
+
+		prsTab := settingsPage(ctx, "Pull requests", "Solo pushes a thread's branch and opens a pull request (GitHub, with gh) or merge request (GitLab, with glab). Repositories without a remote merge locally.",
+			settingsSection(ctx, "Title and description", "", nil,
+				settingRow(ctx, "Write a description", "Off: pull requests get a title only.", ui.Switch("Write a description", prDescribe)),
+				settingBlock(ctx, "How to write titles and descriptions", "A model applies this to the thread's commits, changes and summary.",
+					ui.TextArea(prRules).Placeholder("For example: Conventional Commit title with the ticket, like feat(auth): OW-123 refresh tokens. Description: Summary, Changes, Testing.").
+						Label("Pull request text rules").MinRows(1).MaxHeight(ui.Px(140)).Width(ui.Full).Key("pr-rules")),
+				settingRow(ctx, "Model", "Writes the title and description.", helperPickers("Pull request text", prModel, prEffort))),
+			settingsSection(ctx, "Merging", "", nil,
+				settingRow(ctx, "Auto-merge", "Merge once required checks and reviews pass, with the forge's auto-merge.", ui.Switch("Auto-merge", autoMerge)),
+				settingRow(ctx, "Merge method", "How the branch lands on its base.", ui.Select(mergeMethod, ui.Option[string]{Value: "squash", Label: "Squash"},
+					ui.Option[string]{Value: "merge", Label: "Merge commit"},
+					ui.Option[string]{Value: "rebase", Label: "Rebase"}).Width(ui.Px(180)).Label("Merge method")),
+				settingRow(ctx, "When checks fail", "Solo can send the failure to the thread to fix.", ui.Select(onFail,
+					ui.Option[string]{Value: core.ChecksFix, Label: "Solo fixes it"},
+					ui.Option[string]{Value: core.ChecksNotify, Label: "Just notify me"}).Width(ui.Px(180)).Label("When checks fail"))))
+
+		var page ui.Element
+		switch tab.Get() {
+		case "repos":
+			page = reposTab
+		case "models":
+			page = modelsTab
+		case "branches", "git":
+			page = branchesTab
+		case "prs":
+			page = prsTab
+		case "history":
+			page = settingsPage(ctx, "History", "Restoring a thread puts it back in your list with its worktree, so you can keep talking to it.",
+				a.historyList(ctx))
+		default:
+			page = general
+		}
+		// One height for every page, so the dialog doesn't move between them: the tallest page's, or what
+		// the window allows beside the title and footer. A longer page scrolls.
+		_, winH := ctx.WindowSize()
+		bodyH := min(max(winH-220, 360), 660)
+		body := ui.Div().Row().Width(ui.Full).Height(ui.Px(bodyH)).Gap(space6).
+			Child(settingsNav(ctx, tab)).
+			Child(ui.Div().Column().Grow(1).MinWidth(ui.Px(0)).ScrollY().PaddingRight(space4).PaddingBottom(space6).
+				Key("settings-page-" + tab.Get()).
+				Child(page))
+
+		status := "Changes save as you make them"
+		switch saved.Get() {
+		case "saving":
+			status = "Saving…"
+		case "saved":
+			status = "Saved"
+		}
+		doneFocus := ui.Local(ctx, "done-focus", ui.NewFocusHandle()).Peek()
+		done := ui.Button("Done").Secondary().Key("settings-done").FocusHandle(doneFocus).OnClick(closeDialog)
+		return ui.Modal("Settings", body).Width(ui.Px(900)).MaxWidth(ui.Px(900)).CloseButton(true).InitialFocus(doneFocus).
+			Footer(ui.Div().Row().Align(ui.Center).Gap(space1+2).Grow(1).
+				Child(ui.Icon(icons.Check).Size(13).Color(t.TextSubtle)).
+				Child(caption(ctx, status)), done).
+			Default(done).
+			OnClose(closeDialog).Key("settings")
 	})
 }
 
@@ -453,26 +666,27 @@ func (a *App) historyList(ctx *ui.Context) ui.Element {
 			done = append(done, th)
 		}
 	}
-	box := ui.Div().Column().Radius(radiusM).Border(1, t.Border).Background(t.Background).MaxHeight(ui.Px(208)).ScrollY()
 	if len(done) == 0 {
-		return box.Padding(space3).Child(caption(ctx, "Nothing yet. Threads you mark done show up here."))
+		return settingsSection(ctx, "Done and discarded", "", nil,
+			ui.Div().PaddingX(space4).PaddingY(space3).Child(caption(ctx, "Nothing yet. Threads you mark done show up here.")))
 	}
 	slices.SortFunc(done, func(x, y core.ThreadView) int { return y.DoneAt.Compare(x.DoneAt) })
-	for i, th := range done {
+	rows := make([]ui.Element, 0, len(done))
+	for _, th := range done {
 		id := th.ID
-		row := ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space3).PaddingY(space2).
-			Child(statusMark(ctx, shownStatus(th))).
-			Child(ui.Div().Column().Gap(2).Grow(1).MinWidth(ui.Px(0)).
-				Child(ui.Text(th.Title).FontSize(13).Truncate()).
-				Child(caption(ctx, repoLabel(th)+" · "+statusLabel(th)+" · "+doneAgo(th.DoneAt)).Truncate())).
-			Child(ui.Div().Shrink(0).Child(ui.Button("Restore").Icon(icons.RotateCcw).Secondary().Small().
-				Tooltip("Back to your list").OnClick(func() { a.restore(id) })))
-		if i > 0 {
-			row = row.BorderEdges(ui.Edges{Top: 1}, t.Border)
+		mark := statusMark(ctx, shownStatus(th))
+		if th.Status == core.StatusDiscarded {
+			mark = ui.Icon(icons.Trash).Size(15).Color(t.TextSubtle)
 		}
-		box = box.Child(row)
+		rows = append(rows, ui.Div().Row().Align(ui.Center).Gap(space3).PaddingX(space4).PaddingY(space3).
+			Child(mark).
+			Child(ui.Div().Column().Gap(2).Grow(1).MinWidth(ui.Px(0)).
+				Child(ui.Text(th.Title).FontSize(13).Medium().TextColor(t.Text).Truncate()).
+				Child(caption(ctx, repoLabel(th)+" · "+statusLabel(th)+" "+doneAgo(th.DoneAt)).Truncate())).
+			Child(ui.Div().Shrink(0).Child(ui.Button("Restore").Icon(icons.RotateCcw).Secondary().Small().
+				Tooltip("Back to your list").OnClick(func() { a.restore(id) }))))
 	}
-	return box
+	return settingsSection(ctx, "Done and discarded", "", nil, rows...)
 }
 
 // confirmDialog asks before a destructive action.
@@ -490,27 +704,12 @@ func (a *App) confirmDialog(ctx *ui.Context) ui.Element {
 		OnClose(func() { a.confirm.Set(nil) }).Key("confirm")
 }
 
+// doneAgo says when a thread was marked done, after its status: "Merged 20h ago".
 func doneAgo(t time.Time) string {
 	if s := shortAgo(t); s != "now" {
-		return "done " + s + " ago"
+		return s + " ago"
 	}
-	return "done just now"
-}
-
-// folderAdder is how a repository folder is added: chosen in the system's folder picker, or typed
-// when the user asks to (or the picker can't open).
-func folderAdder(path *ui.Signal[string], typing bool, pick, add, typeIt func()) ui.Element {
-	choose := ui.Button("Add folder…").Icon(icons.FolderPlus).Secondary().Small().OnClick(pick)
-	if !typing {
-		return ui.Div().Row().Align(ui.Center).Gap(space2).
-			Child(choose).
-			Child(ui.Button("Type a path").Ghost().Small().OnClick(typeIt))
-	}
-	return ui.Div().Row().Gap(space2).
-		Child(ui.TextInput(path).Placeholder("A folder, such as ~/projects").Label("Folder to add").Small().Width(ui.Full).
-			Key("new-folder").AutoFocus().OnSubmit(func(string) { add() })).
-		Child(ui.Button("Add").Icon(icons.Plus).Secondary().Small().OnClick(add)).
-		Child(ui.IconButton(icons.FolderOpen).Secondary().Small().Label("Choose a folder").OnClick(pick))
+	return "just now"
 }
 
 // tildePath writes a path in the home folder as ~/…, the way folders are shown.
@@ -529,14 +728,21 @@ func tildePath(p string) string {
 }
 
 // plainFolders lists the folders Solo found that aren't in git, each with a button that puts it in
-// git so threads can work there.
+// git so threads get their own copy and a diff.
 func (a *App) plainFolders(ctx *ui.Context, plain []string) ui.Element {
 	t := ctx.Theme()
 	busy := ui.Local(ctx, "init-busy", "")
-	rows := ui.Div().Column().Gap(space1).
-		Child(ui.Div().Row().Gap(space1 + 2).PaddingTop(space1).
-			Child(ui.Icon(icons.FolderX).Size(13).Color(t.TextSubtle)).
-			Child(caption(ctx, "Not in git: threads work directly in these, without their own copy or a diff. Putting one in git gives both; Solo adds a .gitignore if it has none and commits what's there.").Grow(1)))
+	rows := make([]ui.Element, 0, len(plain))
+	parent := filepath.Dir(plain[0])
+	for _, p := range plain {
+		if filepath.Dir(p) != parent {
+			parent = ""
+		}
+	}
+	help := "Threads work in these directly, with no copy of their own or diff. Put in git adds a .gitignore if there's none and commits what's there."
+	if parent != "" {
+		help = "Folders in " + tildePath(parent) + " without git. " + help
+	}
 	for _, p := range plain {
 		dir := p
 		name := filepath.Base(dir)
@@ -564,12 +770,13 @@ func (a *App) plainFolders(ctx *ui.Context, plain []string) ui.Element {
 				}()
 			})
 		}
-		rows = rows.Child(ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space3).Height(ui.Px(34)).
-			Radius(radiusM).Border(1, t.Border).
-			Child(ui.Icon(icons.Folder).Size(14).Color(t.TextMuted)).
-			Child(ui.Text(name).FontSize(13).Truncate().MinWidth(ui.Px(0))).
-			Child(caption(ctx, tildePath(filepath.Dir(dir))).TruncateHead().Grow(1).MinWidth(ui.Px(0))).
-			Child(btn))
+		row := ui.Div().Row().Align(ui.Center).Gap(space3).PaddingX(space4).Height(ui.Px(48)).
+			Child(ui.Icon(icons.FolderX).Size(15).Color(t.TextMuted)).
+			Child(ui.Text(name).FontSize(13).Medium())
+		if parent == "" {
+			row = row.Child(caption(ctx, tildePath(filepath.Dir(dir))).TruncateHead())
+		}
+		rows = append(rows, row.Child(ui.Div().Grow(1)).Child(btn))
 	}
-	return rows
+	return settingsSection(ctx, "Not in git", help, nil, rows...)
 }
