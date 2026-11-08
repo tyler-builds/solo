@@ -106,6 +106,9 @@ type ThreadView struct {
 	// Dir is the folder it works in: its worktree, or for several repositories the folder that holds
 	// theirs. "" without a worktree.
 	Dir string
+	// InPlace: it works directly in a folder that isn't in git (Part.InPlace), so there is nothing to
+	// review or merge; the user marks it done when it has done its work.
+	InPlace bool
 	// Parts are the repositories it works in, each with its branch and pull request. The fields above
 	// sum them up: Changed adds them, the Can flags hold when any part can, and Forge and PR are the
 	// first part's, set only when there is one part.
@@ -172,6 +175,10 @@ func (t *thread) view() ThreadView {
 	v.NoChanges = settled && v.Changed == 0 && t.row.Status == StatusIdle
 	v.CanDone = v.IsWorker && t.row.DoneAt.IsZero() && !t.inTurn &&
 		(t.row.Status == StatusMerged || (settled && v.Changed == 0) || (allLanded && v.Changed > 0))
+	if t.inPlace() {
+		v.InPlace = true
+		v.CanDone = v.IsWorker && t.row.DoneAt.IsZero() && !t.inTurn && !Active(t.row.Status) && t.row.Status != StatusQueued
+	}
 	v.CanDiscard = v.IsWorker && !Finished(t.row.Status)
 	return v
 }
@@ -202,6 +209,9 @@ func (c *Core) Thread(id string) (ThreadView, bool) {
 // viewLocked is a thread's view with what only Core knows. Call with c.mu held.
 func (c *Core) viewLocked(t *thread) ThreadView {
 	v := t.view()
+	if v.InPlace {
+		v.Dir = v.Parts[0].Repo
+	}
 	if v.HasWorktree {
 		v.Dir = v.Parts[0].Worktree
 		if len(t.parts) > 1 {
@@ -239,13 +249,18 @@ type WorkerSpec struct {
 // CreateWorker creates a worker thread and starts it.
 func (c *Core) CreateWorker(ctx context.Context, spec WorkerSpec) (ThreadView, error) {
 	var repos []string
+	inPlace := "" // a folder outside git the thread works in directly
 	for _, name := range append([]string{spec.Repo}, spec.Repos...) {
 		if strings.TrimSpace(name) == "" {
 			continue
 		}
 		repo, err := c.ResolveRepo(name)
 		if err != nil {
-			return ThreadView{}, err
+			dir, ok := c.ResolvePlain(name)
+			if !ok {
+				return ThreadView{}, err
+			}
+			repo, inPlace = dir, dir
 		}
 		if !slices.Contains(repos, repo) {
 			repos = append(repos, repo)
@@ -253,6 +268,9 @@ func (c *Core) CreateWorker(ctx context.Context, spec WorkerSpec) (ThreadView, e
 	}
 	if len(repos) == 0 {
 		return ThreadView{}, errors.New("a worker needs a repository")
+	}
+	if inPlace != "" && len(repos) > 1 {
+		return ThreadView{}, fmt.Errorf("%s isn't in git, so a thread can only work in it alone; put it in git (init_repo) to include it with other repositories", filepath.Base(inPlace))
 	}
 	if strings.TrimSpace(spec.Prompt) == "" {
 		return ThreadView{}, errors.New("a worker needs a prompt")
@@ -282,7 +300,11 @@ func (c *Core) CreateWorker(ctx context.Context, spec WorkerSpec) (ThreadView, e
 		UpdatedAt:    ts,
 	}}
 	for _, r := range repos {
-		t.parts = append(t.parts, &part{Part: Part{Repo: r, Branch: "solo/" + slug, BaseBranch: spec.Base}, changed: -1})
+		p := Part{Repo: r, Branch: "solo/" + slug, BaseBranch: spec.Base}
+		if r == inPlace {
+			p = Part{Repo: r, InPlace: true}
+		}
+		t.parts = append(t.parts, &part{Part: p, changed: -1})
 	}
 	c.mu.Lock()
 	if c.closed {
@@ -356,13 +378,17 @@ func (c *Core) startWorker(id string) {
 	row := t.row
 	repos := t.repos()
 	started := len(t.parts) > 0 && t.parts[0].Worktree != ""
+	inPlace := t.inPlace()
 	parts := make([]Part, len(t.parts))
 	for i, p := range t.parts {
 		parts[i] = p.Part
 	}
 	c.mu.Unlock()
 
-	if !started {
+	if inPlace && !row.HasTranscript {
+		c.addNotice(id, "info", fmt.Sprintf("Working directly in %s. It isn't in git, so there's no separate copy, diff or merge.", tildeDir(repos[0])))
+	}
+	if !started && !inPlace {
 		// One branch name for every repository, from the latest commit of each one's default branch (or
 		// the one Solo named), fetched now.
 		branch := c.nameBranch(ctx, row, repos)
@@ -447,6 +473,20 @@ func workerInstructions(r store.Thread) string {
 	ps := loadParts(r)
 	where := fmt.Sprintf(`You work alone in a git worktree of %s on branch %s, created from %s. Other workers may be changing
 other branches of the same repository at the same time; stay on your branch and in this worktree.`, r.RepoPath, r.Branch, r.BaseBranch)
+	if len(ps) == 1 && ps[0].InPlace {
+		return `You are a thread in Solo. Solo is the lead agent the user talks to; it gave you this task.
+You work directly in ` + ps[0].Repo + `, which isn't a git repository: your edits change the user's own
+files at once, with no branch or copy to review first, and other threads may work in the same folder.
+
+- Do the task you were given completely, verifying your work (build, tests) where the project allows.
+- You own the whole task. When parts of it are independent and large, run them in parallel with
+  subagents (the Agent tool), and always when Solo or the user asks you to.
+- Change only what the task needs, and be careful with deleting or overwriting files: there is no undo.
+  Don't run git init; the user decides whether this folder goes in git.
+- End with a short summary of what you changed (each file) and anything left undone, for the user and
+  Solo.
+- If you need a decision only the user can make, ask with AskUserQuestion.`
+	}
 	if len(ps) > 1 {
 		var b strings.Builder
 		b.WriteString("This task spans several repositories. Your working directory holds a git worktree of each, all on\nbranch " + r.Branch + ":\n")
@@ -513,7 +553,7 @@ func (c *Core) send(ctx context.Context, threadID, text string, images []string,
 		c.mu.Unlock()
 		return fmt.Errorf("thread %q is %s", t.row.Title, t.row.Status)
 	}
-	if t.row.Kind == store.KindWorker && t.row.WorktreePath == "" {
+	if t.row.Kind == store.KindWorker && t.row.WorktreePath == "" && !t.inPlace() {
 		c.mu.Unlock()
 		return fmt.Errorf("thread %q has not started yet", t.row.Title)
 	}
@@ -867,7 +907,7 @@ func (c *Core) removeWorktrees(ctx context.Context, id string) {
 	dir := c.threadDir(t.row)
 	c.mu.Unlock()
 	for _, p := range ps {
-		if p.Worktree == "" && p.Branch == "" {
+		if p.InPlace || (p.Worktree == "" && p.Branch == "") { // never touch a folder worked in directly
 			continue
 		}
 		if err := git.RemoveWorktree(ctx, p.Repo, p.Worktree, p.Branch, true); err != nil {
@@ -926,7 +966,7 @@ func (c *Core) Done(ctx context.Context, threadID string) error {
 		}
 		return fmt.Errorf("thread %q can't be marked done while it is %s", v.Title, v.Status)
 	}
-	if v.HasWorktree {
+	if v.HasWorktree || v.InPlace {
 		c.closeSession(ctx, threadID)
 		c.removeWorktrees(ctx, threadID)
 	}
@@ -971,6 +1011,9 @@ func (c *Core) Restore(ctx context.Context, threadID string) error {
 		if _, err := os.Stat(p.Repo); err != nil {
 			return fmt.Errorf("%s is gone: %w", p.Repo, err)
 		}
+		if p.InPlace {
+			continue // it works in the folder itself
+		}
 		path := p.Worktree
 		if path == "" {
 			path = c.partWorktreePath(v.Thread, repos, i)
@@ -994,6 +1037,9 @@ func (c *Core) Restore(ctx context.Context, threadID string) error {
 		return fmt.Errorf("no thread %s", threadID)
 	}
 	for i, p := range t.parts {
+		if p.InPlace {
+			continue
+		}
 		p.Worktree, p.changed = made[i].Path, -1
 		if made[i].BaseCommit != "" {
 			p.BaseCommit = made[i].BaseCommit
@@ -1215,4 +1261,14 @@ func clipText(s string, n int) string {
 		return s
 	}
 	return s[:n] + "…"
+}
+
+// tildeDir writes a folder in the home folder as ~/….
+func tildeDir(dir string) string {
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		if rest, ok := strings.CutPrefix(dir, home+string(filepath.Separator)); ok {
+			return "~" + string(filepath.Separator) + rest
+		}
+	}
+	return dir
 }

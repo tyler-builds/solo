@@ -218,9 +218,10 @@ func TestLostSessionRecovers(t *testing.T) {
 	})
 }
 
-// A folder that isn't in git shows in list_repos, a thread can't start there, and init_repo puts it in
-// git so one can.
-func TestInitRepo(t *testing.T) {
+// A folder that isn't in git shows in list_repos and takes a thread that works directly in it, as
+// t3code does: its edits land in the folder, and marking it done leaves the folder alone. init_repo
+// puts the folder in git.
+func TestFolderOutsideGit(t *testing.T) {
 	c, o := setup(t)
 	vfl := filepath.Join(c.Settings().Folders[0], "vfl")
 	os.MkdirAll(vfl, 0o755)
@@ -231,9 +232,34 @@ func TestInitRepo(t *testing.T) {
 	if out := call(t, o, "list_repos", nil); !strings.Contains(out, "Not in git") || !strings.Contains(out, "- vfl ("+vfl+")") {
 		t.Fatalf("list_repos:\n%s", out)
 	}
-	raw, _ := json.Marshal(map[string]any{"repo": "vfl", "title": "Subs", "prompt": "write a.txt x"})
+	raw, _ := json.Marshal(map[string]any{"repos": []string{"vfl", "web"}, "title": "Both", "prompt": "write a.txt x"})
 	if out, isErr := o.handleTool(context.Background(), core.OrchestratorID, "spawn_thread", raw); !isErr || !strings.Contains(out, "init_repo") {
-		t.Fatalf("spawn_thread in a plain folder: %v %s", isErr, out)
+		t.Fatalf("spawn_thread across vfl and web: %v %s", isErr, out)
+	}
+	if out := call(t, o, "spawn_thread", map[string]any{"repo": "vfl", "title": "Subs", "prompt": "write a.txt x"}); !strings.Contains(out, "works directly in the folder") {
+		t.Fatalf("spawn_thread: %s", out)
+	}
+	eventually(t, "the thread to finish", func() bool { return onlyWorker(c).Status == core.StatusIdle })
+	v := onlyWorker(c)
+	if !v.InPlace || v.Dir != vfl || v.HasWorktree || v.Branch != "" || !v.CanDone || v.CanMerge || v.CanOpenPR {
+		t.Fatalf("in-place thread view: %+v", v)
+	}
+	if b, err := os.ReadFile(filepath.Join(vfl, "a.txt")); err != nil || !strings.Contains(string(b), "x") {
+		t.Fatalf("the thread's edit isn't in the folder: %q %v", b, err)
+	}
+	if err := c.Done(context.Background(), v.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Restore(context.Background(), v.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Discard(context.Background(), v.ID); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{"index.html", "a.txt"} {
+		if _, err := os.Stat(filepath.Join(vfl, f)); err != nil {
+			t.Fatalf("%s went away: %v", f, err)
+		}
 	}
 	if out := call(t, o, "init_repo", map[string]any{"folder": "vfl"}); !strings.Contains(out, "is a git repository now") {
 		t.Fatalf("init_repo: %s", out)
@@ -241,6 +267,4 @@ func TestInitRepo(t *testing.T) {
 	if out := call(t, o, "list_repos", nil); strings.Contains(out, "Not in git") || !strings.Contains(out, "vfl ("+vfl+")") {
 		t.Fatalf("list_repos after init:\n%s", out)
 	}
-	call(t, o, "spawn_thread", map[string]any{"repo": "vfl", "title": "Subs", "prompt": "write a.txt x"})
-	eventually(t, "the thread to finish", func() bool { return onlyWorker(c).Status == core.StatusIdle })
 }

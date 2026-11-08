@@ -529,7 +529,7 @@ func (a *App) plainFolders(ctx *ui.Context, plain []string) ui.Element {
 	rows := ui.Div().Column().Gap(space1).
 		Child(ui.Div().Row().Gap(space1 + 2).PaddingTop(space1).
 			Child(ui.Icon(icons.FolderX).Size(13).Color(t.TextSubtle)).
-			Child(caption(ctx, "Not in git, so threads can't work in these yet. Putting a folder in git adds a .gitignore if it has none and commits what's there.").Grow(1)))
+			Child(caption(ctx, "Not in git: threads work directly in these, without their own copy or a diff. Putting one in git gives both; Solo adds a .gitignore if it has none and commits what's there.").Grow(1)))
 	for _, p := range plain {
 		dir := p
 		name := filepath.Base(dir)

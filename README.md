@@ -18,8 +18,8 @@ cd sidecar && bun install && cd ..
 go run ./cmd/solo
 ```
 
-Open Settings and add the folders that hold your repositories. A project that isn't in git shows there with a
-"Put in git" button, since threads need git. Data lives in `~/.local/share/solo`
+Open Settings and add the folders that hold your repositories. A project that isn't in git works too:
+its threads edit the folder directly, without their own copy or a diff, until you click "Put in git". Data lives in `~/.local/share/solo`
 (`%LOCALAPPDATA%\Solo` on Windows); `SOLO_DEBUG=1` also records raw SDK messages under `logs/` there.
 
 ## Package

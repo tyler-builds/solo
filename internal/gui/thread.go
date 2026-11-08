@@ -374,6 +374,10 @@ func (a *App) threadPanel(ctx *ui.Context) ui.Element {
 		repo = repo.Tooltip(branchLabel(th) + " → " + th.BaseBranch)
 	}
 	meta := ui.Div().Row().Align(ui.Center).Gap(space2).Wrap().MinWidth(ui.Px(0)).Child(repo)
+	if th.InPlace {
+		meta = meta.Child(ui.Div().Tooltip("This folder isn't in git, so the thread edits it directly: no separate copy, diff or merge. Settings › General can put it in git.").
+			Child(subtle(ctx, "not in git")))
+	}
 	if th.MultiRepo() {
 		meta = ui.Div().Row().Align(ui.Center).Gap(space2).Wrap().MinWidth(ui.Px(0)).Child(a.repoChips(ctx, th))
 	}
@@ -395,12 +399,13 @@ func (a *App) threadPanel(ctx *ui.Context) ui.Element {
 	if n := len(res.Data.files); n > 0 {
 		changesLabel = fmt.Sprintf("Changes · %d", n)
 	}
+	tabList := []ui.Tab[string]{{Value: "conversation", Label: "Conversation"}}
+	if !th.InPlace { // nothing to diff against outside git
+		tabList = append(tabList, ui.Tab[string]{Value: "changes", Label: changesLabel, Disabled: !th.HasWorktree})
+	}
 	tabs := ui.Div().Row().Align(ui.Center).PaddingX(space4).Shrink(0).
 		BorderEdges(ui.Edges{Bottom: 1}, t.Border).
-		Child(ui.Tabs(a.openTab,
-			ui.Tab[string]{Value: "conversation", Label: "Conversation"},
-			ui.Tab[string]{Value: "changes", Label: changesLabel, Disabled: !th.HasWorktree},
-		))
+		Child(ui.Tabs(a.openTab, tabList...))
 
 	var content ui.Element
 	if tab == "changes" && th.HasWorktree {
@@ -488,7 +493,7 @@ func (a *App) confirmDiscard(th core.ThreadView) {
 	id := th.ID
 	a.confirm.Set(&confirmation{
 		title:  "Discard this thread?",
-		body:   fmt.Sprintf("This stops %q and deletes its worktree and branch %s, with any work not merged.", th.Title, th.Branch),
+		body:   discardText(th),
 		action: "Discard",
 		run: func() {
 			if a.openID.Peek() == id {
@@ -497,6 +502,14 @@ func (a *App) confirmDiscard(th core.ThreadView) {
 			a.run("Discard", func(ctx context.Context) error { return a.b.Discard(ctx, id) })
 		},
 	})
+}
+
+// discardText says what discarding a thread loses.
+func discardText(th core.ThreadView) string {
+	if th.InPlace {
+		return fmt.Sprintf("This stops %q. Its edits stay in %s: the folder isn't in git, so there is nothing to throw away.", th.Title, filepath.Base(th.RepoPath))
+	}
+	return fmt.Sprintf("This stops %q and deletes its worktree and branch %s, with any work not merged.", th.Title, th.Branch)
 }
 
 func (a *App) composerFor(ctx *ui.Context, th core.ThreadView) ui.Element {

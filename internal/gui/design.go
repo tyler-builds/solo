@@ -157,6 +157,10 @@ func subtle(ctx *ui.Context, s string) *ui.TextElement {
 // statusNoChanges is shown for a worker that finished with nothing to merge (ThreadView.NoChanges).
 const statusNoChanges = "no-changes"
 
+// statusFinished is shown for a thread that worked directly in a folder outside git and finished: its
+// edits are already in place, so there is nothing to review or merge (ThreadView.InPlace).
+const statusFinished = "finished"
+
 // Statuses the UI shows for a worker with an open pull request.
 const (
 	statusInReview     = "in-review"
@@ -168,6 +172,9 @@ const (
 func shownStatus(v core.ThreadView) string {
 	if v.NoChanges {
 		return statusNoChanges
+	}
+	if v.InPlace && v.Status == core.StatusIdle {
+		return statusFinished
 	}
 	if open := openPRs(v); len(open) > 0 && !core.Active(v.Status) && v.Status != core.StatusFailed {
 		for _, pr := range open {
@@ -222,6 +229,8 @@ func statusColor(ctx *ui.Context, status string) ui.Color {
 	switch status {
 	case statusNoChanges:
 		return t.TextMuted
+	case statusFinished:
+		return t.Success
 	case statusInReview:
 		return ui.Hex(pal(t).info)
 	case statusChecksFailed:
@@ -264,6 +273,8 @@ func statusLabel(v core.ThreadView) string {
 		switch {
 		case v.NoChanges:
 			return "No changes"
+		case v.InPlace:
+			return "Finished"
 		case v.CanOpenPR:
 			return "Ready for a " + v.Forge.Noun()
 		case v.IsWorker:
@@ -361,7 +372,7 @@ func statusMark(ctx *ui.Context, status string) ui.Element {
 		return box.Child(dot(c, 8).Play("pulse", []ui.Keyframe{
 			{At: 0.5, Motion: ui.Grow(1.35).Opacity(0.45)},
 		}, ui.Animation{Duration: 1200 * time.Millisecond, Repeat: true}))
-	case core.StatusIdle, statusNoChanges:
+	case core.StatusIdle, statusNoChanges, statusFinished:
 		return box.Child(ui.Icon(icons.CircleCheck).Size(14).Color(c))
 	case statusInReview:
 		return box.Child(ui.Icon(icons.GitPullRequest).Size(13).Color(c))
@@ -390,7 +401,7 @@ func statusIcon(status string) *icons.Icon {
 		return icons.MessageCircleQuestionMark
 	case core.StatusFailed:
 		return icons.CircleAlert
-	case core.StatusIdle, statusNoChanges:
+	case core.StatusIdle, statusNoChanges, statusFinished:
 		return icons.CircleCheck
 	case statusInReview:
 		return icons.GitPullRequest

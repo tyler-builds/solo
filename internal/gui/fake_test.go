@@ -303,6 +303,10 @@ func demoBackend() *fakeBackend {
 	bump.CanMerge, bump.CanDiscard, bump.CanDone = false, false, true
 	old := worker("f1f1f1f1-old", "Rename the config loader", repos[0], core.StatusMerged, 26*time.Hour, 0.2)
 	old.CanMerge, old.CanDiscard, old.DoneAt = false, false, ago(20*time.Hour)
+	subs := worker("a7a7a7a7-subs", "Swap players in from the sideline", "/home/dev/code/vfl", core.StatusIdle, 3*time.Minute, 0.38)
+	subs.WorktreePath, subs.Branch, subs.BaseBranch, subs.BaseCommit, subs.HasWorktree = "", "", "", "", false
+	subs.InPlace, subs.Dir, subs.CanMerge, subs.CanDone = true, "/home/dev/code/vfl", false, true
+	subs.Summary = "Players leaving the field now jog to their bench between plays and the new personnel run on.\n\n- Changed `js/engine.js` and `js/stadium.js`."
 	gone := worker("f2f2f2f2-gone", "Try a WASM build", repos[3], core.StatusDiscarded, 50*time.Hour, 0.4)
 	gone.CanMerge, gone.CanDiscard, gone.DoneAt = false, false, ago(48*time.Hour)
 	orch := core.ThreadView{Thread: store.Thread{ID: core.OrchestratorID, Kind: store.KindOrchestrator, Title: "Orchestrator",
@@ -310,7 +314,7 @@ func demoBackend() *fakeBackend {
 		ActualModel: "claude-opus-5-5"}
 
 	f := &fakeBackend{
-		threads: []core.ThreadView{orch, oauth, limiter, forms, review, ci, export, landing, audit, flaky, readme, bump, old, gone},
+		threads: []core.ThreadView{orch, oauth, limiter, forms, review, ci, export, landing, audit, subs, flaky, readme, bump, old, gone},
 		items:   map[string][]core.Item{},
 		repos:   repos,
 		plain:   []string{"/home/dev/code/vfl"},
@@ -341,6 +345,9 @@ func demoBackend() *fakeBackend {
 	}
 
 	o := core.OrchestratorID
+	f.add("a7a7a7a7-subs", core.ItemNotice, core.NoticeData{Level: "info", Text: "Working directly in ~/code/vfl. It isn't in git, so there's no separate copy, diff or merge."})
+	f.add("a7a7a7a7-subs", core.ItemUser, core.UserData{Text: "Between plays, send the players who are leaving to their sideline and bring the new personnel on."})
+	f.add("a7a7a7a7-subs", core.ItemAssistant, core.TextData{Text: subs.Summary})
 	f.add(o, core.ItemUser, core.UserData{Text: "Three things today: the OAuth refresh bug in web, rate limiting on uploads in api, and finish moving the settings page to the new form components."})
 	f.add(o, core.ItemThinking, core.TextData{Text: "Three independent tasks in two repos. I'll check the auth module first so the worker prompt is specific."})
 	f.add(o, core.ItemTool, tool("t1", "Grep", map[string]any{"pattern": "refreshToken", "path": "/home/dev/code/web/src"}, "src/auth/session.ts:88\nsrc/auth/refresh.ts:12"))

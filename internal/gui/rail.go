@@ -25,6 +25,7 @@ var railGroups = []struct {
 	{"Failed", []string{core.StatusFailed, statusChecksFailed}},
 	{"Ready", []string{core.StatusIdle}},
 	{"In review", []string{statusInReview}},
+	{"Finished", []string{statusFinished}},
 	{"No changes", []string{statusNoChanges}},
 	{"Merged", []string{core.StatusMerged}},
 	{"Stopped", []string{core.StatusInterrupted}},

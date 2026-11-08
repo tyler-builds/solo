@@ -190,6 +190,9 @@ func (o *Orchestrator) handleTool(ctx context.Context, threadID, name string, ra
 		if v, err = o.c.CreateWorker(ctx, core.WorkerSpec{Repo: a.Repo, Repos: a.Repos, Title: a.Title, Prompt: a.Prompt, Model: a.Model, Effort: a.Effort, Base: a.Base, Images: a.Images}); err == nil {
 			out = fmt.Sprintf("Started thread %s %q in %s (status: %s). You'll get a thread update when it finishes or needs input.",
 				short(v.ID), v.Title, repoList(v), v.Status)
+			if v.InPlace {
+				out += " It works directly in the folder, which isn't in git: no branch, diff or merge."
+			}
 		}
 	case "message_thread":
 		var v core.ThreadView
@@ -276,7 +279,7 @@ func plainList(dirs []string) string {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString("\nNot in git (threads can't work here until init_repo, with the user's yes):\n")
+	b.WriteString("\nNot in git (a thread works directly in the folder, alone, with no diff or merge; init_repo puts one in git, with the user's yes):\n")
 	for _, d := range dirs {
 		fmt.Fprintf(&b, "- %s (%s)\n", filepath.Base(d), d)
 	}
@@ -288,7 +291,11 @@ func (o *Orchestrator) listThreads(repo string, includeClosed bool) (string, err
 	if repo != "" {
 		p, err := o.c.ResolveRepo(repo)
 		if err != nil {
-			return "", err
+			dir, ok := o.c.ResolvePlain(repo)
+			if !ok {
+				return "", err
+			}
+			p = dir
 		}
 		repoPath = p
 	}
@@ -325,6 +332,9 @@ func statusText(t core.ThreadView) string {
 	if t.NoChanges {
 		s += " (finished; it changed no files, so there is nothing to merge)"
 	}
+	if t.InPlace {
+		s += " (works directly in a folder outside git: its edits are already in the user's files; nothing to review or merge)"
+	}
 	if !t.DoneAt.IsZero() {
 		s += " (the user marked it done)"
 	}
@@ -335,7 +345,11 @@ func (o *Orchestrator) describe(ctx context.Context, v core.ThreadView) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Thread %s %q\n", v.ID, v.Title)
 	fmt.Fprintf(&b, "Status: %s\n", statusText(v))
-	fmt.Fprintf(&b, "Repository: %s\n", v.RepoPath)
+	if v.InPlace {
+		fmt.Fprintf(&b, "Folder: %s (not in git; the thread edits it directly)\n", v.RepoPath)
+	} else {
+		fmt.Fprintf(&b, "Repository: %s\n", v.RepoPath)
+	}
 	if v.Branch != "" {
 		fmt.Fprintf(&b, "Branch: %s (from %s)\n", v.Branch, v.BaseBranch)
 	}

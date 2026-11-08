@@ -20,6 +20,9 @@ type Part struct {
 	BaseBranch string    `json:"baseBranch,omitempty"`
 	BaseCommit string    `json:"baseCommit,omitempty"`
 	PR         *forge.PR `json:"pr,omitempty"`
+	// InPlace: Repo isn't in git, so the worker works directly in it, as t3code does: no worktree,
+	// branch, diff or merge, and nothing of it is ever removed.
+	InPlace bool `json:"inPlace,omitempty"`
 }
 
 // part is a Part with what Solo learns at run time.
@@ -153,5 +156,11 @@ func (c *Core) sessionDir(row store.Thread) string {
 	if len(ps) > 1 {
 		return c.threadDir(row)
 	}
+	if len(ps) == 1 && ps[0].InPlace {
+		return ps[0].Repo
+	}
 	return row.WorktreePath
 }
+
+// inPlace reports whether a thread works directly in a folder that isn't in git.
+func (t *thread) inPlace() bool { return len(t.parts) == 1 && t.parts[0].InPlace }
