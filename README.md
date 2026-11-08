@@ -21,17 +21,22 @@ go run ./cmd/solo
 Open Settings and add the folders that hold your repositories. Data lives in `~/.local/share/solo`
 (`%LOCALAPPDATA%\Solo` on Windows); `SOLO_DEBUG=1` also records raw SDK messages under `logs/` there.
 
-## Package (Linux)
+## Package
 
 ```
-./scripts/appimage.sh        # dist/Solo-x86_64.AppImage, with the sidecar bundled
-uas add dist/Solo-x86_64.AppImage   # optional: install it with uas
+./scripts/appimage.sh                 # dist/Solo-x86_64.AppImage (Linux)
+VERSION=0.2.0 ./scripts/windows.sh    # dist/Solo-0.2.0-windows-amd64.zip (builds from Linux too)
+uas add dist/Solo-x86_64.AppImage     # optional: install the AppImage with uas
 ```
 
-Needs Go, Bun, `mksquashfs` and ImageMagick. The AppImage runtime is downloaded once into
-`~/.cache/solo-build`. The app needs only Claude Code installed and signed in: the sidecar is a
-compiled binary with Bun inside, and Solo finds `claude` on PATH or where its installer puts it
-(Settings shows what it found and takes a path to use instead).
+Both need Go and Bun; the AppImage also needs `mksquashfs`, and the Windows zip `zip`. The app needs
+only Claude Code installed and signed in: the sidecar is a compiled binary with Bun inside, and Solo
+finds `claude` on PATH or where its installer puts it (Settings shows what it found and takes a path
+to use instead).
+
+Releases: push a tag such as `v0.2.0` and `.github/workflows/release.yml` tests, builds both and
+publishes them as a GitHub release (a tag with a suffix, such as `v0.2.0-beta.1`, is a pre-release).
+Running the workflow by hand builds them as an artifact without releasing.
 
 ## Develop
 

@@ -1,0 +1,10 @@
+{
+  "name": "solo",
+  "displayName": "Solo",
+  "description": "Code with Claude agents",
+  "version": "0.1.0",
+  "publisher": "Tyler Carr",
+  "publisherSubject": "CN=Tyler Carr",
+  "identityName": "Solo.TylerBuilds",
+  "icon": "icon.png"
+}
