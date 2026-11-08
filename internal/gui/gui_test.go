@@ -250,3 +250,20 @@ func TestFocusClearsNotifications(t *testing.T) {
 	case <-time.After(50 * time.Millisecond):
 	}
 }
+
+// A working thread's panel says it is working once, in the line pinned above its composer, not again
+// at the end of its transcript.
+func TestThreadPanelShowsWorkingOnce(t *testing.T) {
+	f := demoBackend()
+	for i := range f.threads {
+		if f.threads[i].ID == "a1f3c9d2-oauth" {
+			f.threads[i].Live, f.threads[i].Step = nil, nil // between steps, nothing streaming
+		}
+	}
+	a, u := newUI(t, f)
+	a.openThread("a1f3c9d2-oauth", "conversation")
+	u.Frame()
+	if u.HasRole(access.RoleProgressBar, "Working") {
+		t.Fatal("the transcript repeats the working line")
+	}
+}

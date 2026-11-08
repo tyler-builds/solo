@@ -160,7 +160,8 @@ func (a *App) transcript(ctx *ui.Context, v core.ThreadView, items []core.Item, 
 	for i := range v.Live {
 		rows = append(rows, row{key: fmt.Sprintf("live%d", i), live: &v.Live[i]})
 	}
-	if v.InTurn && (len(v.Live) == 0 || v.Live[len(v.Live)-1].Thinking) {
+	// A thread's panel pins its working line above the composer; only Solo's transcript says it in line.
+	if v.InTurn && !v.IsWorker && (len(v.Live) == 0 || v.Live[len(v.Live)-1].Thinking) {
 		rows = append(rows, row{key: "busy", busy: true})
 	}
 	h := ui.Local(ctx, scope+"-list", ui.NewListHandle()).Peek()
@@ -558,11 +559,15 @@ func thinkingView(ctx *ui.Context, text string, live bool) ui.Element {
 	return ui.Component(func(ctx *ui.Context) ui.Element {
 		t := ctx.Theme()
 		open := ui.Local(ctx, "open", live)
+		label := "Thought" // a finished thought; "Thinking" is only what is happening now
+		if live {
+			label = "Thinking"
+		}
 		head := ui.Div().Row().Align(ui.Center).Gap(6).PaddingX(space2).Height(ui.Px(26)).Cursor(ui.CursorPointer).
-			Role(access.RoleButton).Label("Thinking").TabIndex(0).
+			Role(access.RoleButton).Label(label).TabIndex(0).
 			OnClick(func() { open.Update(func(o bool) bool { return !o }) }).
 			Child(ui.Icon(icons.Brain).Size(13).Color(t.TextSubtle)).
-			Child(subtle(ctx, "Thinking")).
+			Child(subtle(ctx, label)).
 			Child(ui.Icon(map[bool]*icons.Icon{true: icons.ChevronDown, false: icons.ChevronRight}[open.Get()]).Size(12).Color(t.TextSubtle))
 		col := ui.Div().Column().Gap(space1).Child(head)
 		if open.Get() {
