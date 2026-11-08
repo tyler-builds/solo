@@ -648,7 +648,7 @@ func (a *App) describeTool(d core.ToolData) (*icons.Icon, string, string) {
 	}
 	switch strings.TrimPrefix(d.Name, "mcp__solo__") {
 	case "spawn_thread":
-		return icons.Plus, "Started thread", fmt.Sprintf("%s · %s", str("title"), str("repo"))
+		return icons.CirclePlay, "Started thread", fmt.Sprintf("%s · %s", str("title"), str("repo"))
 	case "message_thread":
 		return icons.MessageSquare, "Messaged", threadName()
 	case "get_thread":
@@ -1097,7 +1097,7 @@ func (a *App) composer(ctx *ui.Context, v core.ThreadView, key, placeholder stri
 			})
 		}
 		empty := strings.TrimSpace(draft.Get()) == "" && len(images.Get()) == 0
-		sendBtn := ui.IconButton(icons.ArrowUp).Small().Label("Send").Tooltip("Send (Enter) · Shift+Enter for a new line").OnClick(submit)
+		sendBtn := ui.IconButton(icons.ArrowUp).Small().Style(ui.Style{Radius: 999}).Label("Send").Tooltip("Send (Enter) · Shift+Enter for a new line").OnClick(submit)
 		if empty {
 			sendBtn = sendBtn.Secondary().Disabled(true)
 		} else {
