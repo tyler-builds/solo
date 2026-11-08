@@ -28,6 +28,7 @@ func TestShots(t *testing.T) {
 	}
 	useBundledFont(t)
 	light, dark := Themes()
+	typing := map[string]string{"search": "token"} // typed once the window is up
 	shots := []struct {
 		name  string
 		setup func(a *App, f *fakeBackend)
@@ -79,6 +80,7 @@ func TestShots(t *testing.T) {
 		{"multi-prs", func(a *App, f *fakeBackend) { a.openThread("e5e6e7e8-landing", "conversation") }},
 		{"multi-changes", func(a *App, f *fakeBackend) { diffSplit.Set(false); a.openThread("d1d2d3d4-export", "changes") }},
 		{"filter", func(a *App, f *fakeBackend) { a.railQuery.Set("audit"); a.openThread("c3d4e5f6-forms", "conversation") }},
+		{"search", func(a *App, f *fakeBackend) { a.palette.Set(true) }},
 		{"empty", nil},
 	}
 	for _, theme := range []struct {
@@ -105,6 +107,12 @@ func TestShots(t *testing.T) {
 			for i := 0; i < 10; i++ {
 				u.Advance(100 * time.Millisecond)
 				time.Sleep(20 * time.Millisecond)
+			}
+			if text := typing[sh.name]; text != "" {
+				u.Type(text)
+				for i := 0; i < 5; i++ {
+					u.Advance(100 * time.Millisecond)
+				}
 			}
 			u.Settle()
 			file, err := os.Create(filepath.Join(out, theme.name+"-"+sh.name+".png"))
