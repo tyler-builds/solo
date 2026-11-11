@@ -1149,6 +1149,13 @@ func (a *App) proposalCard(ctx *ui.Context, d core.ProposalData, steps []*core.I
 					if narrow {
 						items = append(items, ui.MenuItem{Label: "Request changes", Icon: icons.MessageSquare, OnClick: requestChanges})
 					}
+					if th.CanDone {
+						label := "Done"
+						if th.Unlanded {
+							label = "Mark done…"
+						}
+						items = append(items, ui.MenuItem{Label: label, Icon: icons.Check, OnClick: func() { a.markDone(th) }})
+					}
 					return append(items, ui.MenuItem{Label: "Discard thread…", Icon: icons.Trash, OnClick: func() { a.confirmDiscard(th) }})
 				}))
 		}

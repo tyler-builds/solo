@@ -143,7 +143,7 @@ type Change struct {
 	ThreadID string
 	// For ChangeThread: the status before and after, equal when something else changed.
 	PrevStatus, Status string
-	// PREvent is set when something happened to one of the thread's pull requests: PROpened,
+	// PREvent is set when something happened to one of the thread's pull requests: PROpened, PRFound,
 	// PRChecksFailed, PRChecksPassed, PRMerged or PRClosed. Repo is its repository.
 	PREvent string
 	Repo    string
@@ -152,6 +152,7 @@ type Change struct {
 // Pull request events (Change.PREvent).
 const (
 	PROpened       = "opened"
+	PRFound        = "found" // opened outside Solo (by the thread itself, say), and now followed
 	PRChecksFailed = "checks_failed"
 	PRChecksPassed = "checks_passed"
 	PRMerged       = "merged"
@@ -185,6 +186,8 @@ type Core struct {
 	forges     map[string]forge.Kind // by repository
 	stop       chan struct{}         // closed by Close
 	pollNow    chan struct{}         // asks the pull request watcher to look now
+	fetched    map[string]time.Time  // when each "repo\x00branch" was last fetched to look for landed work
+	lastSweep  time.Time             // when the PR watcher last looked for work landed outside Solo
 	// resume are the threads that were working when Solo last closed, for ResumeInterrupted.
 	resume []resumeInfo
 	todos  []Todo // the user's to-do list, oldest first (todos.go)
@@ -243,6 +246,7 @@ func New(cfg Config) (*Core, error) {
 		forges:    map[string]forge.Kind{},
 		stop:      make(chan struct{}),
 		pollNow:   make(chan struct{}, 1),
+		fetched:   map[string]time.Time{},
 	}
 	if _, err := db.GetSetting("settings", &c.settings); err != nil {
 		cfg.Log.Warn("core: settings unreadable; using defaults", "err", err)

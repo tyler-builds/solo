@@ -292,6 +292,11 @@ func (o *Orchestrator) onChange(ch core.Change) {
 			if pr.AutoMerge {
 				line += " Auto-merge is on, so it merges once its required checks pass."
 			}
+		case core.PRFound:
+			line = fmt.Sprintf("%s: found %s, opened outside Solo (by the thread itself, say). Solo follows it now like one it opened: checks, merge.", label(v), noun)
+			if pr.AutoMerge {
+				line += " Auto-merge is on, so it merges once its required checks pass."
+			}
 		case core.PRChecksPassed:
 			line = fmt.Sprintf("%s: checks passed on %s.", label(v), noun)
 		case core.PRClosed:

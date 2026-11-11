@@ -32,3 +32,29 @@ func TestTallyChecks(t *testing.T) {
 		t.Errorf("no checks counted %+v", c)
 	}
 }
+
+func TestFindURLsAndSameRepo(t *testing.T) {
+	out := "Creating pull request for perf/text-draw-cache into main in acme/jamb\n\nhttps://github.com/acme/jamb/pull/93\n"
+	if got := FindURLs(out + out); len(got) != 1 || got[0] != "https://github.com/acme/jamb/pull/93" || Number(got[0]) != 93 {
+		t.Fatalf("FindURLs %v", got)
+	}
+	for _, c := range []struct {
+		pr, remote string
+		want       bool
+	}{
+		{"https://github.com/acme/jamb/pull/93", "git@github.com:acme/jamb.git", true},
+		{"https://github.com/acme/jamb/pull/93", "https://github.com/Acme/jamb", true},
+		{"https://github.com/acme/jamb/pull/93", "ssh://git@github.com/acme/jamb.git", true},
+		{"https://github.com/acme/jamb/pull/93", "git@github.com:acme/other.git", false},
+		{"https://github.com/upstream/jamb/pull/93", "git@github.com:acme/jamb.git", false},
+		{"https://gitlab.com/g/sub/proj/-/merge_requests/4", "git@gitlab.com:g/sub/proj.git", true},
+		{"https://github.com/acme/jamb/pull/93", "/srv/git/jamb.git", false},
+	} {
+		if got := SameRepo(c.pr, c.remote); got != c.want {
+			t.Errorf("SameRepo(%s, %s) = %v", c.pr, c.remote, got)
+		}
+	}
+	if KnownRemote("/srv/git/jamb.git") || !KnownRemote("git@github.com:acme/jamb.git") {
+		t.Fatal("KnownRemote")
+	}
+}

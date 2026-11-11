@@ -458,11 +458,9 @@ func TestDoneRestoreAndDiscardCleanup(t *testing.T) {
 	if err := e.c.Send(ctx, v.ID, "write b.txt more"); err != nil {
 		t.Fatal(err)
 	}
-	if v = counted(v.ID); v.Changed != 1 || !v.CanMerge || v.CanDone {
+	// With changes that haven't landed it can still be marked done, after the user confirms.
+	if v = counted(v.ID); v.Changed != 1 || !v.CanMerge || !v.CanDone || !v.Unlanded {
 		t.Fatalf("after more work %+v", v)
-	}
-	if err := e.c.Done(ctx, v.ID); err == nil {
-		t.Fatal("marked a thread with unmerged changes done")
 	}
 
 	// A merged thread stays in the rail until marked done.
@@ -705,7 +703,7 @@ func TestPullRequestFlow(t *testing.T) {
 	if remote := run(e.repo, "ls-remote", "origin", v.Branch); remote == "" {
 		t.Fatal("branch not pushed")
 	}
-	if v, _ = e.c.Thread(v.ID); v.CanOpenPR || v.CanMerge || v.CanDone {
+	if v, _ = e.c.Thread(v.ID); v.CanOpenPR || v.CanMerge || !v.CanDone || !v.Unlanded {
 		t.Fatalf("with the PR open %+v", v)
 	}
 
@@ -1288,7 +1286,7 @@ func TestWorkCommittedToBaseLands(t *testing.T) {
 		t.Fatal(err)
 	}
 	go e.c.countChanges(v.ID) // as at the end of a turn
-	if v = waitStatus(t, e.c, v.ID, StatusMerged); !v.CanDone {
+	if v = waitStatus(t, e.c, v.ID, StatusMerged); !v.CanDone || v.Unlanded {
 		t.Fatalf("status %s, can done %v", v.Status, v.CanDone)
 	}
 }

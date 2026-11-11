@@ -13,8 +13,10 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Kind is a forge.
@@ -116,6 +118,8 @@ type PR struct {
 	// Mergeable is true when it can merge now; Blocked says why not ("waiting for review", say).
 	Mergeable bool   `json:"mergeable,omitempty"`
 	Blocked   string `json:"blocked,omitempty"`
+	// Head is the branch it merges from, as the forge reports it ("" before Solo read it).
+	Head string `json:"head,omitempty"`
 }
 
 // Client drives one forge's CLI.
@@ -176,6 +180,144 @@ func (c *Client) run(ctx context.Context, dir string, args ...string) (string, e
 }
 
 var urlRE = regexp.MustCompile(`https?://\S+/(?:pull|merge_requests)/(\d+)`)
+
+// FindURLs finds the pull and merge request addresses in text, such as what `gh pr create` printed,
+// each once, in order.
+func FindURLs(text string) []string {
+	var out []string
+	for _, m := range urlRE.FindAllString(text, -1) {
+		if !slices.Contains(out, m) {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// Number is the number at the end of a pull request's address, or 0.
+func Number(prURL string) int {
+	m := urlRE.FindStringSubmatch(prURL)
+	if m == nil {
+		return 0
+	}
+	n, _ := strconv.Atoi(m[1])
+	return n
+}
+
+// SameRepo reports whether a pull request's address belongs to the repository at remoteURL (origin's
+// URL in any of its forms: https, ssh:// or git@host:path).
+func SameRepo(prURL, remoteURL string) bool {
+	pr := prRepo(prURL)
+	return pr != "" && pr == remoteRepo(remoteURL)
+}
+
+// KnownRemote reports whether a remote URL names its repository (host and path), so SameRepo can
+// tell; a local path or a file:// remote doesn't.
+func KnownRemote(remoteURL string) bool { return remoteRepo(remoteURL) != "" }
+
+// prRepo is "host/owner/name" of a pull request's address.
+func prRepo(prURL string) string {
+	u, err := url.Parse(strings.TrimSpace(prURL))
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	path := u.Path
+	for _, sep := range []string{"/-/merge_requests/", "/merge_requests/", "/pull/"} {
+		if i := strings.Index(path, sep); i >= 0 {
+			path = path[:i]
+			return strings.ToLower(u.Hostname() + "/" + strings.Trim(path, "/"))
+		}
+	}
+	return ""
+}
+
+// remoteRepo is "host/owner/name" of a git remote URL.
+func remoteRepo(remote string) string {
+	remote = strings.TrimSpace(remote)
+	host := remoteHost(remote)
+	if host == "" {
+		return ""
+	}
+	var path string
+	if strings.Contains(remote, "://") {
+		u, err := url.Parse(remote)
+		if err != nil {
+			return ""
+		}
+		path = u.Path
+	} else if _, rest, ok := strings.Cut(remote, ":"); ok {
+		path = rest
+	}
+	path = strings.TrimSuffix(strings.Trim(path, "/"), ".git")
+	if path == "" {
+		return ""
+	}
+	return strings.ToLower(host + "/" + path)
+}
+
+// Listed is a pull request found by its branch, with when it was opened.
+type Listed struct {
+	PR
+	Created time.Time
+}
+
+// ByHead lists the pull requests from branch head, in any state, newest first.
+func (c *Client) ByHead(ctx context.Context, dir, head string) ([]Listed, error) {
+	if c.Kind == GitLab {
+		out, err := c.run(ctx, dir, "mr", "list", "--source-branch", head, "--all", "--output", "json")
+		if err != nil {
+			return nil, err
+		}
+		var v []struct {
+			IID     int       `json:"iid"`
+			WebURL  string    `json:"web_url"`
+			State   string    `json:"state"`
+			Draft   bool      `json:"draft"`
+			Source  string    `json:"source_branch"`
+			Created time.Time `json:"created_at"`
+		}
+		if err := json.Unmarshal([]byte(out), &v); err != nil {
+			return nil, fmt.Errorf("reading glab's answer: %w", err)
+		}
+		var prs []Listed
+		for _, m := range v {
+			prs = append(prs, Listed{PR: PR{Kind: GitLab, URL: m.WebURL, Number: m.IID, State: gitlabState[m.State],
+				Draft: m.Draft, Head: m.Source}, Created: m.Created})
+		}
+		return newestFirst(prs), nil
+	}
+	out, err := c.run(ctx, dir, "pr", "list", "--head", head, "--state", "all", "--limit", "10",
+		"--json", "number,url,state,isDraft,headRefName,createdAt")
+	if err != nil {
+		return nil, err
+	}
+	var v []struct {
+		Number  int       `json:"number"`
+		URL     string    `json:"url"`
+		State   string    `json:"state"`
+		IsDraft bool      `json:"isDraft"`
+		Head    string    `json:"headRefName"`
+		Created time.Time `json:"createdAt"`
+	}
+	if err := json.Unmarshal([]byte(out), &v); err != nil {
+		return nil, fmt.Errorf("reading gh's answer: %w", err)
+	}
+	var prs []Listed
+	for _, p := range v {
+		prs = append(prs, Listed{PR: PR{Kind: GitHub, URL: p.URL, Number: p.Number, State: githubState[p.State],
+			Draft: p.IsDraft, Head: p.Head}, Created: p.Created})
+	}
+	return newestFirst(prs), nil
+}
+
+func newestFirst(prs []Listed) []Listed {
+	slices.SortStableFunc(prs, func(a, b Listed) int { return b.Created.Compare(a.Created) })
+	return prs
+}
+
+var (
+	githubState = map[string]string{"OPEN": StateOpen, "MERGED": StateMerged, "CLOSED": StateClosed}
+	gitlabState = map[string]string{"opened": StateOpen, "merged": StateMerged, "closed": StateClosed, "locked": StateOpen}
+)
 
 // Open opens a pull request from head into base, from the worktree dir; draft opens it as a draft.
 func (c *Client) Open(ctx context.Context, dir, base, head, title, body string, draft bool) (PR, error) {
@@ -277,7 +419,7 @@ func (c *Client) View(ctx context.Context, dir string, pr PR) (PR, error) {
 		return c.viewGitLab(ctx, dir, pr)
 	}
 	out, err := c.run(ctx, dir, "pr", "view", pr.URL, "--json",
-		"number,url,state,isDraft,statusCheckRollup,autoMergeRequest,mergeStateStatus,reviewDecision")
+		"number,url,state,isDraft,statusCheckRollup,autoMergeRequest,mergeStateStatus,reviewDecision,headRefName")
 	if err != nil {
 		return pr, err
 	}
@@ -289,13 +431,17 @@ func (c *Client) View(ctx context.Context, dir string, pr PR) (PR, error) {
 		AutoMergeRequest json.RawMessage `json:"autoMergeRequest"`
 		MergeStateStatus string          `json:"mergeStateStatus"`
 		ReviewDecision   string          `json:"reviewDecision"`
+		Head             string          `json:"headRefName"`
 		Rollup           []rollupEntry   `json:"statusCheckRollup"`
 	}
 	if err := json.Unmarshal([]byte(out), &v); err != nil {
 		return pr, fmt.Errorf("reading gh's answer: %w", err)
 	}
 	pr.Kind, pr.Number, pr.URL = GitHub, v.Number, v.URL
-	pr.State = map[string]string{"OPEN": StateOpen, "MERGED": StateMerged, "CLOSED": StateClosed}[v.State]
+	pr.State = githubState[v.State]
+	if v.Head != "" {
+		pr.Head = v.Head
+	}
 	pr.AutoMerge = len(v.AutoMergeRequest) > 0 && string(v.AutoMergeRequest) != "null"
 	pr.Draft = v.IsDraft
 	failed, counts := tallyChecks(v.Rollup)
@@ -388,6 +534,7 @@ func (c *Client) viewGitLab(ctx context.Context, dir string, pr PR) (PR, error) 
 		Draft               bool   `json:"draft"`
 		MergeWhenPipeline   bool   `json:"merge_when_pipeline_succeeds"`
 		DetailedMergeStatus string `json:"detailed_merge_status"`
+		Source              string `json:"source_branch"`
 		HeadPipeline        *struct {
 			Status string `json:"status"`
 			WebURL string `json:"web_url"`
@@ -397,7 +544,10 @@ func (c *Client) viewGitLab(ctx context.Context, dir string, pr PR) (PR, error) 
 		return pr, fmt.Errorf("reading glab's answer: %w", err)
 	}
 	pr.Kind, pr.Number, pr.URL = GitLab, v.IID, v.WebURL
-	pr.State = map[string]string{"opened": StateOpen, "merged": StateMerged, "closed": StateClosed, "locked": StateOpen}[v.State]
+	pr.State = gitlabState[v.State]
+	if v.Source != "" {
+		pr.Head = v.Source
+	}
 	pr.AutoMerge = v.MergeWhenPipeline
 	pr.Draft = v.Draft
 	pr.Failed, pr.Counts = nil, CheckCounts{}

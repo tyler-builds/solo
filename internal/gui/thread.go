@@ -414,12 +414,12 @@ func (a *App) threadPanel(ctx *ui.Context) ui.Element {
 	switch land := a.landAction(ctx, th); {
 	case land != nil:
 		actions = actions.Child(land)
-	case th.CanDone:
+	case th.CanDone && !th.Unlanded:
 		actions = actions.Child(ui.Button("Done").Icon(icons.Check).Primary().Small().
 			Tooltip("Take it out of your list. Settings › History can restore it.").
 			OnClick(func() { a.markDone(th) }))
 	}
-	if th.CanDiscard || th.CanInterrupt || th.CanMergeLocal || th.Dir != "" {
+	if th.CanDiscard || th.CanInterrupt || th.CanMergeLocal || th.Unlanded || th.Dir != "" {
 		actions = actions.Child(ui.DropdownMenu(
 			ui.IconButton(icons.Ellipsis).Ghost().Small().Label("More actions").Tooltip("More"),
 			func() []ui.MenuItem {
@@ -436,7 +436,9 @@ func (a *App) threadPanel(ctx *ui.Context) ui.Element {
 				if th.CanMergeLocal && th.Forge != forge.None {
 					items = append(items, ui.MenuItem{Label: "Merge locally instead", Icon: icons.GitMerge, OnClick: func() { a.mergeLocal(id) }})
 				}
-				if th.CanDone && (th.CanOpenPR || th.CanMerge || th.PR != nil) {
+				if th.CanDone && th.Unlanded {
+					items = append(items, ui.MenuItem{Label: "Mark done…", Icon: icons.Check, OnClick: func() { a.markDone(th) }})
+				} else if th.CanDone && (th.CanOpenPR || th.CanMerge || th.PR != nil) {
 					items = append(items, ui.MenuItem{Label: "Done", Icon: icons.Check, OnClick: func() { a.markDone(th) }})
 				}
 				if th.Dir != "" {
