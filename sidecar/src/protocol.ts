@@ -156,7 +156,16 @@ export type AgentEvent = { sessionId: string; seq: number } & (
   | { kind: "compact"; trigger: "manual" | "auto"; preTokens: number; postTokens?: number }
   | { kind: "state"; state: "idle" | "running" | "requires_action" }
   | { kind: "api_retry"; attempt: number; maxRetries: number; delayMs: number; error: string }
-  | { kind: "rate_limit"; status: string; resetsAt?: number; rateLimitType?: string; utilization?: number }
+  | {
+      kind: "rate_limit";
+      /** status, resetsAt, rateLimitType and utilization describe only the limit that binds right now. */
+      status: string;
+      resetsAt?: number;
+      rateLimitType?: string;
+      utilization?: number;
+      /** Every subscription window Claude Code tracks (5-hour, weekly, …), whichever binds. */
+      windows?: RateLimitWindow[];
+    }
   | {
       kind: "turn_end";
       uuids: string[];
@@ -180,6 +189,15 @@ export type AgentEvent = { sessionId: string; seq: number } & (
   /** The session's claude process is gone. A later send reopens it with resume. */
   | { kind: "exited"; error?: string }
 );
+
+/** One subscription rate-limit window, from rate_limit_info.unifiedWindows. */
+export interface RateLimitWindow {
+  rateLimitType: string;
+  /** Fraction of the window used; can pass 1 when usage runs past the cap. */
+  utilization: number;
+  resetsAt?: number;
+  status?: string;
+}
 
 export type AgentEventBody = AgentEvent extends infer E ? (E extends AgentEvent ? Omit<E, "sessionId" | "seq"> : never) : never;
 

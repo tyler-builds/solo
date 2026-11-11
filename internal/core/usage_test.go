@@ -53,6 +53,39 @@ func TestRateLimitKeepsKnownUtilization(t *testing.T) {
 	}
 }
 
+// The top level of an event names only the limit that binds now; its windows carry the others, so the
+// 5-hour limit shows while the weekly one binds. The top level wins for its own kind.
+func TestRateLimitWindows(t *testing.T) {
+	e := newEnv(t)
+	ev := rateEvent("seven_day", "allowed_warning", used(0.76))
+	ev.Windows = []agent.RateLimitWindow{
+		{RateLimitType: "five_hour", Utilization: 0.67, ResetsAt: 1_800_000_000, Status: "allowed"},
+		{RateLimitType: "seven_day", Utilization: 0.75, ResetsAt: 1_900_000_000, Status: "allowed"},
+	}
+	e.c.onEvent(ev)
+	got := e.c.RateLimits()
+	if len(got) != 2 {
+		t.Fatalf("got %d limits, want 2: %v", len(got), got)
+	}
+	if u, _ := UsedFraction(got[0]); got[0].RateLimitType != "five_hour" || got[0].Status != "allowed" || u != 0.67 ||
+		got[0].ResetsAt != 1_800_000_000 {
+		t.Errorf("five_hour = %+v (used %v)", got[0], u)
+	}
+	if u, _ := UsedFraction(got[1]); got[1].RateLimitType != "seven_day" || got[1].Status != "allowed_warning" || u != 0.76 {
+		t.Errorf("seven_day = %+v (used %v)", got[1], u)
+	}
+	if got[0].Windows != nil || got[1].Windows != nil {
+		t.Error("stored readings keep their event's windows")
+	}
+
+	// A later event naming only the weekly limit leaves the 5-hour reading as it was.
+	e.c.onEvent(rateEvent("seven_day", "allowed_warning", used(0.8)))
+	got = e.c.RateLimits()
+	if u, _ := UsedFraction(got[0]); len(got) != 2 || got[0].RateLimitType != "five_hour" || u != 0.67 {
+		t.Errorf("after a weekly-only event: %+v", got)
+	}
+}
+
 func TestUsedFraction(t *testing.T) {
 	for _, c := range []struct {
 		in   *float64
@@ -63,7 +96,7 @@ func TestUsedFraction(t *testing.T) {
 		{used(0), 0, true},
 		{used(0.72), 0.72, true},
 		{used(1), 1, true},
-		{used(72), 0.72, true}, // a percent
+		{used(1.05), 1, true}, // past the cap
 		{used(140), 1, true},
 		{used(-0.1), 0, true},
 	} {

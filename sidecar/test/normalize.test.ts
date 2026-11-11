@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { SDKMessage, SDKResultMessage } from "@anthropic-ai/claude-agent-sdk";
-import { Normalizer, turnStatus } from "../src/normalize";
+import { Normalizer, rateLimitWindows, turnStatus } from "../src/normalize";
 import type { AgentEventBody } from "../src/protocol";
 
 // A recorded worker session (claude 2.1.x, haiku): a plain turn, an interrupted turn, a turn killed by
@@ -171,5 +171,51 @@ describe("recorded orchestrator turn with thinking", () => {
     expect(deltas.map((d) => d.text).join("")).toBe((done.blocks[0] as { text: string }).text);
     expect(new Set(deltas.map((d) => d.messageId))).toEqual(new Set([done.messageId]));
     expect(events.indexOf(deltas[deltas.length - 1])).toBeLessThan(events.indexOf(done));
+  });
+});
+
+describe("rate_limit_event", () => {
+  // As claude 2.1.321 sends it: the top level names only the binding (weekly) limit; the 5-hour window
+  // is only in unifiedWindows.
+  const msg = {
+    type: "rate_limit_event",
+    rate_limit_info: {
+      status: "allowed_warning",
+      resetsAt: 1794448800,
+      rateLimitType: "seven_day",
+      utilization: 0.76,
+      overageStatus: "rejected",
+      surpassedThreshold: 0.75,
+      unifiedWindows: {
+        five_hour: { utilization: 0.67, resetsAt: 1794387600, status: "allowed" },
+        seven_day: { utilization: 0.76, resetsAt: 1794448800, status: "allowed_warning", surpassedThreshold: 0.75 },
+      },
+    },
+    uuid: "u",
+    session_id: "s",
+  } as unknown as SDKMessage;
+
+  test("carries every window, not just the binding one", () => {
+    expect(new Normalizer().push(msg)).toEqual([
+      {
+        kind: "rate_limit",
+        status: "allowed_warning",
+        resetsAt: 1794448800,
+        rateLimitType: "seven_day",
+        utilization: 0.76,
+        windows: [
+          { rateLimitType: "five_hour", utilization: 0.67, resetsAt: 1794387600, status: "allowed" },
+          { rateLimitType: "seven_day", utilization: 0.76, resetsAt: 1794448800, status: "allowed_warning" },
+        ],
+      },
+    ]);
+  });
+
+  test("skips windows it can't read, and is absent without any", () => {
+    expect(rateLimitWindows({ status: "allowed" })).toEqual({});
+    expect(rateLimitWindows({ unifiedWindows: { five_hour: { resetsAt: 1 }, x: null } })).toEqual({});
+    expect(rateLimitWindows({ unifiedWindows: { seven_day: { utilization: 0.1 } } })).toEqual({
+      windows: [{ rateLimitType: "seven_day", utilization: 0.1 }],
+    });
   });
 });

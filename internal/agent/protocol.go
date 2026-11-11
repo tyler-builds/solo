@@ -226,12 +226,14 @@ type Event struct {
 	MaxRetries int `json:"maxRetries,omitempty"`
 	DelayMs    int `json:"delayMs,omitempty"`
 
-	// rate_limit
+	// rate_limit. Status, ResetsAt, RateLimitType and Utilization describe only the limit that binds
+	// now; Windows has every subscription window Claude Code tracks.
 	ResetsAt      float64 `json:"resetsAt,omitempty"`      // Unix seconds
 	RateLimitType string  `json:"rateLimitType,omitempty"` // five_hour, seven_day, seven_day_opus, …
 	// Utilization is how much of the limit is used, as Claude Code reports it: a fraction, 0 to 1. Nil
 	// when the event doesn't say.
-	Utilization *float64 `json:"utilization,omitempty"`
+	Utilization *float64          `json:"utilization,omitempty"`
+	Windows     []RateLimitWindow `json:"windows,omitempty"`
 
 	// turn_end
 	Reason        string  `json:"reason,omitempty"`
@@ -248,6 +250,14 @@ type Event struct {
 
 	// notice
 	Level string `json:"level,omitempty"`
+}
+
+// RateLimitWindow is one subscription rate-limit window of a rate_limit event (five_hour, seven_day, …).
+type RateLimitWindow struct {
+	RateLimitType string  `json:"rateLimitType"`
+	Utilization   float64 `json:"utilization"`        // fraction used; can pass 1
+	ResetsAt      float64 `json:"resetsAt,omitempty"` // Unix seconds
+	Status        string  `json:"status,omitempty"`   // allowed, allowed_warning, rejected
 }
 
 // IsRoot reports whether the event comes from the main agent rather than a subagent.

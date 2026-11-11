@@ -2,7 +2,7 @@
 // state, so it is tested against recorded and synthetic message streams (normalize.test.ts).
 
 import type { SDKMessage, SDKResultMessage } from "@anthropic-ai/claude-agent-sdk";
-import type { AgentEventBody, Block, TurnStatus, Usage } from "./protocol";
+import type { AgentEventBody, Block, RateLimitWindow, TurnStatus, Usage } from "./protocol";
 
 const TOOL_RESULT_LIMIT = 16_000;
 
@@ -102,6 +102,7 @@ export class Normalizer {
           ...(i.resetsAt === undefined ? {} : { resetsAt: i.resetsAt }),
           ...(i.rateLimitType === undefined ? {} : { rateLimitType: i.rateLimitType }),
           ...(i.utilization === undefined ? {} : { utilization: i.utilization }),
+          ...rateLimitWindows(i),
         });
         break;
       }
@@ -355,4 +356,26 @@ function opt<K extends string, V>(key: K, value: V | undefined | null): { [P in 
 
 function zeroUsage(): Usage {
   return { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 };
+}
+
+/**
+ * The per-window usage of a rate_limit_info. Its top-level fields describe only the window that binds
+ * now (the weekly one, say, while it is the closer to its cap), so the 5-hour window would never show;
+ * Claude Code also reports every window it tracks in `unifiedWindows` (an internal field, absent for
+ * API-key sessions). Windows that don't parse are skipped.
+ */
+export function rateLimitWindows(info: unknown): { windows?: RateLimitWindow[] } {
+  const w = (info as { unifiedWindows?: unknown } | undefined)?.unifiedWindows;
+  if (!w || typeof w !== "object") return {};
+  const windows: RateLimitWindow[] = [];
+  for (const [rateLimitType, v] of Object.entries(w as Record<string, any>)) {
+    if (!v || typeof v !== "object" || typeof v.utilization !== "number") continue;
+    windows.push({
+      rateLimitType,
+      utilization: v.utilization,
+      ...(typeof v.resetsAt === "number" ? { resetsAt: v.resetsAt } : {}),
+      ...(typeof v.status === "string" ? { status: v.status } : {}),
+    });
+  }
+  return windows.length ? { windows } : {};
 }

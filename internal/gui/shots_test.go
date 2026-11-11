@@ -58,6 +58,9 @@ func TestShots(t *testing.T) {
 		// Claude's usage limits at the foot of the rail, and the notice when only a status is known.
 		{"usage", func(a *App, f *fakeBackend) { f.rate = demoLimits(); a.rate.Set(f.rate) }},
 		{"usage-narrow", func(a *App, f *fakeBackend) { f.rate = demoLimits(); a.rate.Set(f.rate) }},
+		// Many threads at work: the pinned Working group caps its height and scrolls within itself.
+		{"working-many", func(a *App, f *fakeBackend) { manyWorking(f); a.threads.Set(f.Threads()); f.rate = demoLimits(); a.rate.Set(f.rate) }},
+		{"working-many-narrow", func(a *App, f *fakeBackend) { manyWorking(f); a.threads.Set(f.Threads()); f.rate = demoLimits(); a.rate.Set(f.rate) }},
 		{"usage-notice", func(a *App, f *fakeBackend) {
 			f.rate = []agent.Event{{Kind: agent.EventRateLimit, RateLimitType: "five_hour", Status: "rejected",
 				ResetsAt: float64(time.Now().Add(time.Hour).Unix())}}
@@ -209,7 +212,7 @@ func TestShots(t *testing.T) {
 				sh.setup(a, f)
 			}
 			w := float32(1440)
-			if sh.name == "narrow-thread" || sh.name == "usage-narrow" {
+			if strings.HasSuffix(sh.name, "-narrow") || sh.name == "narrow-thread" {
 				w = 1000
 			}
 			h := float32(900)
@@ -242,6 +245,19 @@ func TestShots(t *testing.T) {
 			file.Close()
 			u.Close()
 		}
+	}
+}
+
+// manyWorking puts more threads to work than the rail's Working group has room for.
+func manyWorking(f *fakeBackend) {
+	for i, title := range []string{"Add retries to the webhook sender", "Cache the dashboard query",
+		"Split the billing worker", "Upgrade the date picker", "Lint the migrations folder",
+		"Profile the export job", "Translate the settings page", "Tidy the logging setup",
+		"Speed up the CI cache", "Retire the v1 endpoints", "Document the deploy steps"} {
+		th := f.threads[1] // a running worker to copy
+		th.ID, th.Title = fmt.Sprintf("w%07d-many", i), title
+		th.TurnStarted = time.Now().Add(-time.Duration(i+1) * 37 * time.Second)
+		f.threads = append(f.threads, th)
 	}
 }
 

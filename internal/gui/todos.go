@@ -94,8 +94,11 @@ func (a *App) todoRow(ctx *ui.Context, td core.Todo) ui.Element {
 		id, title := th.ID, th.Title
 		row = row.Cursor(ui.CursorPointer).Hover(ui.Style{Background: t.SurfaceHover}).
 			Tooltip(title).
-			OnClick(func() { a.openThread(id, "conversation") }).
-			Child(ui.Div().Height(ui.Px(20)).Row().Align(ui.Center).Child(statusMark(ctx, shownStatus(*th))))
+			OnClick(func() { a.openThread(id, "conversation") })
+		// A thread at work shows no mark here: its pulse would keep the list moving. The rail shows it.
+		if s := shownStatus(*th); s != core.StatusRunning && s != core.StatusStarting {
+			row = row.Child(ui.Div().Height(ui.Px(20)).Row().Align(ui.Center).Child(statusMark(ctx, s)))
+		}
 	}
 	return row
 }
