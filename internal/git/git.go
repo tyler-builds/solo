@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -453,6 +454,9 @@ func CommitAll(ctx context.Context, worktree, message string) (bool, error) {
 type MergeError struct {
 	Reason    string
 	Conflicts []string
+	// Local is set when the conflicts are with uncommitted changes in the checkout, not with the base
+	// branch: the branch merges cleanly, but not under the user's edits.
+	Local bool
 }
 
 func (e *MergeError) Error() string {
@@ -462,28 +466,132 @@ func (e *MergeError) Error() string {
 	return e.Reason
 }
 
-// Merge merges branch into base in the repository's main checkout, with a merge commit. The checkout
-// must be on base with no uncommitted changes to tracked files. On a conflict the merge is aborted and a
+// Merge merges branch into base with a merge commit and returns it. The merge is made without touching
+// any checkout, so it works whatever the checkout is on and whatever is uncommitted in it. When base is
+// checked out, the checkout then moves to the merge, and uncommitted changes there are kept (set aside
+// and put back if they touch the files the merge changes). On a conflict nothing changes and a
 // *MergeError lists the conflicting files.
 func Merge(ctx context.Context, repo, branch, base, message string) (string, error) {
-	cur, err := Run(ctx, repo, "symbolic-ref", "--short", "-q", "HEAD")
-	if err != nil || cur != base {
-		return "", &MergeError{Reason: fmt.Sprintf("%s is on %q, not %q; switch it to %s to merge", filepath.Base(repo), cur, base, base)}
+	ref := "refs/heads/" + base
+	old, err := Run(ctx, repo, "rev-parse", "--verify", "-q", ref)
+	if err != nil {
+		return "", &MergeError{Reason: fmt.Sprintf("%s has no branch %q", filepath.Base(repo), base)}
 	}
-	if st, err := Run(ctx, repo, "status", "--porcelain", "--untracked-files=no"); err != nil {
+	tree, conflicts, err := mergeTree(ctx, repo, "", old, branch)
+	if err != nil {
 		return "", err
-	} else if st != "" {
-		return "", &MergeError{Reason: fmt.Sprintf("%s has uncommitted changes; commit or stash them to merge", filepath.Base(repo))}
 	}
-	if _, err := Run(ctx, repo, "merge", "--no-ff", "--no-edit", "-m", message, branch); err != nil {
-		conflicts, _ := Run(ctx, repo, "diff", "--name-only", "--diff-filter=U")
-		_, _ = Run(ctx, repo, "merge", "--abort")
-		if conflicts != "" {
-			return "", &MergeError{Reason: "the branch conflicts with " + base, Conflicts: strings.Split(conflicts, "\n")}
+	if len(conflicts) > 0 {
+		return "", &MergeError{Reason: "the branch conflicts with " + base, Conflicts: conflicts}
+	}
+	commit, err := Run(ctx, repo, "commit-tree", tree, "-p", old, "-p", branch, "-m", message)
+	if err != nil {
+		return "", err
+	}
+	dir, err := checkedOutAt(ctx, repo, ref)
+	if err != nil {
+		return "", err
+	}
+	if dir == "" { // no checkout to update: move the branch
+		if _, err := Run(ctx, repo, "update-ref", "-m", "merge "+branch, ref, commit, old); err != nil {
+			return "", err
 		}
+		return commit, nil
+	}
+	return commit, fastForward(ctx, dir, old, commit, branch)
+}
+
+// fastForward moves the checkout in dir from old to the merge commit, keeping its uncommitted changes.
+func fastForward(ctx context.Context, dir, old, commit, branch string) error {
+	if _, err := Run(ctx, dir, "merge", "--ff-only", "-q", commit); err == nil {
+		return nil // git keeps uncommitted changes to files the merge doesn't touch
+	}
+	// The uncommitted changes touch files the merge changes. Put them aside, move, and put them back,
+	// once it's clear they go back cleanly.
+	edits, err := Run(ctx, dir, "stash", "create")
+	if err != nil {
+		return err
+	}
+	if edits == "" {
+		_, err := Run(ctx, dir, "merge", "--ff-only", "-q", commit)
+		return err
+	}
+	if _, conflicts, err := mergeTree(ctx, dir, old, commit, edits); err != nil {
+		return err
+	} else if len(conflicts) > 0 {
+		return &MergeError{Reason: fmt.Sprintf("uncommitted changes in %s overlap the merge", filepath.Base(dir)),
+			Conflicts: conflicts, Local: true}
+	}
+	if _, err := Run(ctx, dir, "stash", "push", "-q", "-m", "Solo: uncommitted changes, set aside to merge "+branch); err != nil {
+		return err
+	}
+	_, ffErr := Run(ctx, dir, "merge", "--ff-only", "-q", commit)
+	if _, err := Run(ctx, dir, "stash", "pop", "-q"); err != nil {
+		return fmt.Errorf("your uncommitted changes in %s are kept in git stash: %w", filepath.Base(dir), err)
+	}
+	return ffErr
+}
+
+// mergeTree merges b into a without a checkout (from base when set, else their merge base), and
+// returns the merged tree, or the files that conflict.
+func mergeTree(ctx context.Context, dir, base, a, b string) (string, []string, error) {
+	args := []string{"merge-tree", "--write-tree", "--name-only", "--no-messages"}
+	if base != "" {
+		args = append(args, "--merge-base="+base)
+	}
+	cmd := exec.CommandContext(ctx, "git", append(args, a, b)...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0")
+	var out, errb bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &errb
+	err := cmd.Run()
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	var ee *exec.ExitError
+	switch {
+	case err == nil:
+		return lines[0], nil, nil
+	case errors.As(err, &ee) && ee.ExitCode() == 1 && len(lines) > 1: // conflicts
+		var files []string
+		for _, f := range lines[1:] {
+			if f = strings.TrimSpace(f); f != "" && !slices.Contains(files, f) {
+				files = append(files, f)
+			}
+		}
+		return "", files, nil
+	}
+	return "", nil, fmt.Errorf("git merge-tree: %w: %s", err, strings.TrimSpace(errb.String()))
+}
+
+// checkedOutAt returns the checkout (the main one or a worktree) that has ref checked out, or "".
+func checkedOutAt(ctx context.Context, repo, ref string) (string, error) {
+	out, err := Run(ctx, repo, "worktree", "list", "--porcelain")
+	if err != nil {
 		return "", err
 	}
-	return Run(ctx, repo, "rev-parse", "HEAD")
+	dir := ""
+	for _, l := range strings.Split(out, "\n") {
+		switch {
+		case strings.HasPrefix(l, "worktree "):
+			dir = strings.TrimPrefix(l, "worktree ")
+		case l == "branch "+ref:
+			return dir, nil
+		}
+	}
+	return "", nil
+}
+
+// InBase reports whether a worktree's work is already in base: nothing uncommitted, and its commit
+// is in the local base branch or origin's copy of it (the thread pushed or merged it there itself).
+func InBase(ctx context.Context, worktree, base string) bool {
+	if st, err := Run(ctx, worktree, "status", "--porcelain"); err != nil || st != "" {
+		return false
+	}
+	for _, ref := range []string{"refs/remotes/origin/" + base, "refs/heads/" + base} {
+		if _, err := Run(ctx, worktree, "merge-base", "--is-ancestor", "HEAD", ref); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // IsRepo reports whether dir is inside a git work tree.

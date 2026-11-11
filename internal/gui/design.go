@@ -367,10 +367,10 @@ func Fonts() []Font {
 
 // statusMark is a thread status's mark: a pulsing crimson dot while it works, a check when it is ready,
 // and a plain dot otherwise (amber, red, or grey), so no two states look alike.
-func statusMark(ctx *ui.Context, status string) ui.Element {
+func statusMark(ctx *ui.Context, status string) *ui.DivElement {
 	t := ctx.Theme()
 	c := statusColor(ctx, status)
-	box := ui.Div().Size(ui.Px(14), ui.Px(14)).Center().Shrink(0)
+	box := ui.Div().Size(ui.Px(14), ui.Px(14)).Center().Shrink(0).Tooltip(statusMeaning(status))
 	switch status {
 	case core.StatusRunning, core.StatusStarting:
 		return box.Child(dot(c, 8).Play("pulse", []ui.Keyframe{
@@ -396,6 +396,39 @@ func statusMark(ctx *ui.Context, status string) ui.Element {
 		return box.Child(ui.Icon(icons.CircleStop).Size(13).Color(c))
 	}
 	return box.Child(dot(c, 8))
+}
+
+// statusMeaning says what a status mark means, for its tooltip.
+func statusMeaning(status string) string {
+	switch status {
+	case core.StatusQueued:
+		return "Starting"
+	case core.StatusStarting:
+		return "Starting: setting up its worktree"
+	case core.StatusRunning:
+		return "Working"
+	case core.StatusWaiting:
+		return "Needs your answer"
+	case core.StatusIdle:
+		return "Ready: its work is done, to merge or open a pull request"
+	case statusNoChanges, core.StatusArchived:
+		return "Finished with no changes to merge"
+	case statusFinished:
+		return "Finished: its edits are already in place"
+	case statusInReview:
+		return "In review: its pull request is open"
+	case statusChecksFailed:
+		return "Checks failed on its pull request"
+	case core.StatusMerged:
+		return "Merged"
+	case core.StatusFailed:
+		return "Failed"
+	case core.StatusInterrupted:
+		return "Stopped"
+	case core.StatusDiscarded:
+		return "Discarded"
+	}
+	return status
 }
 
 // statusIcon is a status as a single icon, for places that take an icon (menus, the palette).

@@ -246,6 +246,33 @@ func (a *App) md(ctx *ui.Context, text string, bases []string) ui.Element {
 	return a.withPathMenu(view, text, bases)
 }
 
+// hardBreaks keeps each line of what the user typed on its own line: markdown would join a line
+// to the one before it. Fenced code is left as it is.
+func hardBreaks(s string) string {
+	lines := strings.Split(s, "\n")
+	fence := ""
+	for i, l := range lines[:len(lines)-1] {
+		t := strings.TrimSpace(l)
+		switch {
+		case fence != "":
+			if strings.HasPrefix(t, fence) {
+				fence = ""
+			}
+			continue
+		case strings.HasPrefix(t, "```"):
+			fence = "```"
+			continue
+		case strings.HasPrefix(t, "~~~"):
+			fence = "~~~"
+			continue
+		}
+		if t != "" && strings.TrimSpace(lines[i+1]) != "" {
+			lines[i] = strings.TrimRight(l, " \t") + "  "
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
 // pathText is plain text with its paths as links.
 func (a *App) pathText(s string, bases []string) *ui.TextElement {
 	ps := findPaths(s, bases)

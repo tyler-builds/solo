@@ -93,6 +93,11 @@ func (t *thread) syncRow() {
 // saveLocked saves a thread. Call with c.mu held.
 func (c *Core) saveLocked(t *thread) error {
 	t.syncRow()
+	if c.closed {
+		// Closing stops the sessions; what that does to a thread (a question cancelled, a turn cut off)
+		// isn't its real state, which load works out from what was saved before.
+		return nil
+	}
 	return c.db.SaveThread(&t.row)
 }
 

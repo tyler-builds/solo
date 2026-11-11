@@ -148,6 +148,16 @@ func (c *Core) AddProposal(workerID, summary string) error {
 // ResetSession starts the thread on a new Claude session the next time it is used. The transcript
 // shown in Solo is kept.
 func (c *Core) ResetSession(ctx context.Context, threadID string) error {
+	return c.resetSession(ctx, threadID, "Started a new conversation with Claude.")
+}
+
+// RotateSession moves the thread to a fresh Claude session, as ResetSession does, saying so with the
+// notice ("" for none).
+func (c *Core) RotateSession(ctx context.Context, threadID, notice string) error {
+	return c.resetSession(ctx, threadID, notice)
+}
+
+func (c *Core) resetSession(ctx context.Context, threadID, notice string) error {
 	c.mu.Lock()
 	t := c.threads[threadID]
 	if t == nil {
@@ -165,11 +175,13 @@ func (c *Core) ResetSession(ctx context.Context, threadID string) error {
 	t.row.SessionID = agent.NewUUID()
 	t.row.HasTranscript = false
 	t.row.ContextTokens = 0
-	t.row.CostUSD = 0
+	t.row.CostBase = t.row.CostUSD // the thread's cost runs on across sessions
 	c.bySession[t.row.SessionID] = t
 	ch := c.setStatusLocked(t, StatusIdle, "")
 	c.mu.Unlock()
-	c.addNotice(threadID, "info", "Started a new conversation with Claude.")
+	if notice != "" {
+		c.addNotice(threadID, "info", notice)
+	}
 	c.notify(ch)
 	return nil
 }
@@ -213,11 +225,7 @@ func (c *Core) recoverLostSession(threadID, failedUUID string) {
 	if text == "" {
 		return
 	}
-	msg := text
-	if r != "" {
-		msg = r + "\n\n---\n\n" + text
-	}
-	if err := c.SendSynthetic(ctx, threadID, msg); err != nil {
+	if err := c.SendSyntheticWithContext(ctx, threadID, r, text); err != nil {
 		c.addNotice(threadID, "error", "Could not restart the conversation: "+err.Error())
 	}
 }

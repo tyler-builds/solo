@@ -131,7 +131,7 @@ func (a *App) rail(ctx *ui.Context) ui.Element {
 				Hover(ui.Style{Opacity: 1}).Transition(150 * time.Millisecond).
 				Child(groupHeader(ctx, g.title, len(group), g.statuses[0]))
 			for _, th := range group {
-				col = col.Child(a.threadRow(ctx, th))
+				col = col.Child(a.workingRow(ctx, th))
 			}
 			working = ui.Div().Column().Shrink(0).MaxHeight(ui.Percent(45)).ScrollY().
 				BorderEdges(ui.Edges{Top: 1}, t.Border).Child(col)
@@ -143,6 +143,7 @@ func (a *App) rail(ctx *ui.Context) ui.Element {
 		}
 	}
 	rail := ui.Div().Column().Size(ui.Full, ui.Full).Background(t.Panel).
+		Child(ui.Component(a.todoList)).
 		Child(head).
 		Child(a.railFilterInput(ctx)).
 		Child(ui.Div().Column().Grow(1).MinHeight(ui.Px(0)).ScrollY().Child(list))
@@ -244,6 +245,38 @@ func (a *App) threadRow(ctx *ui.Context, th core.ThreadView) ui.Element {
 			Child(a.rowEnd(ctx, th, when, whenColor))).
 		Child(a.rowDetail(ctx, repo, line, lineColor))
 	if selected {
+		row = row.Background(t.SurfaceActive)
+	}
+	return row
+}
+
+// workingRow is a thread at work, in one line: its pulse, repository, title and time running. Work in
+// progress needs nothing from the user, so it takes little room.
+func (a *App) workingRow(ctx *ui.Context, th core.ThreadView) ui.Element {
+	t := ctx.Theme()
+	when, whenColor := shortAgo(th.UpdatedAt), t.TextSubtle
+	if th.InTurn && !th.TurnStarted.IsZero() {
+		when, whenColor = elapsed(th.TurnStarted), ui.Hex(pal(t).brand)
+	}
+	row := ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space2 + 2).Height(ui.Px(28)).Radius(radiusM).
+		Cursor(ui.CursorPointer).Hover(ui.Style{Background: t.SurfaceHover}).
+		Role(access.RoleButton).Label(th.Title).TabIndex(0).Key("card-" + th.ID).
+		Tooltip(a.activityLine(th)).
+		ContextMenu(func() []ui.MenuItem { return a.folderMenu(th) }).
+		OnClick(func() {
+			if a.openID.Peek() == th.ID {
+				a.closeThread()
+			} else {
+				a.openThread(th.ID, "conversation")
+			}
+		}).
+		Child(statusMark(ctx, shownStatus(th)))
+	if a.repoFilter() == "" {
+		row = row.Child(ui.Text(repoLabel(th)).FontSize(12).TextColor(t.TextSubtle).NoWrap().Shrink(0))
+	}
+	row = row.Child(ui.Text(th.Title).FontSize(13).Medium().Truncate().Grow(1).MinWidth(ui.Px(0))).
+		Child(ui.Text(when).FontSize(11).TextColor(whenColor).NoWrap().Shrink(0))
+	if a.openID.Get() == th.ID {
 		row = row.Background(t.SurfaceActive)
 	}
 	return row

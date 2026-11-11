@@ -24,6 +24,8 @@ github.com/tetratelabs/wazero v1.12.0 h1:DuWcpNu/FzgEXgGBDp8J1Spc+CWOvvtvVyjKlaZ
 github.com/tetratelabs/wazero v1.12.0/go.mod h1:LvKtzl2RqO4gyF27BiXU+nKAjcV8f38U+kP/q2vgxh0=
 github.com/tyler-builds/jamb v0.8.2 h1:Ha/1BFUqyApQv/n6oTFCZe05T0pwMUNqK1JiuTwaqRU=
 github.com/tyler-builds/jamb v0.8.2/go.mod h1:7UE6puOA4wE0/LYLfcIgL6VJRiA3rYI5ZrED0gb6nlk=
+github.com/tyler-builds/jamb v0.8.3 h1:3fmr3WOAaGO0rfBr45BjjcjCVs6cM92DVuIjmOleIPE=
+github.com/tyler-builds/jamb v0.8.3/go.mod h1:7UE6puOA4wE0/LYLfcIgL6VJRiA3rYI5ZrED0gb6nlk=
 github.com/yuin/goldmark v1.8.7 h1:XT/tNqCIbabh0ln675w4x3dv04kQBKi8NwYqi9IJaxI=
 github.com/yuin/goldmark v1.8.7/go.mod h1:ip/1k0VRfGynBgxOz0yCqHrbZXhcjxyuS66Brc7iBKg=
 golang.org/x/image v0.47.0 h1:za/8gVz++PPZqmZJBNSISICN5Rrj5zixP/8K++fgmqo=

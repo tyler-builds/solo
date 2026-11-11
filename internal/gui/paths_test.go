@@ -72,3 +72,18 @@ func TestLinkMarkdown(t *testing.T) {
 		t.Error("a web link read as a path")
 	}
 }
+func TestHardBreaks(t *testing.T) {
+	cases := map[string]string{
+		"one":                    "one",
+		"a\nb":                   "a  \nb",
+		"a \t\nb":                "a  \nb",
+		"a\n\nb":                 "a\n\nb",
+		"x\n```\nc\nd\n```\ny":   "x  \n```\nc\nd\n```\ny",
+		"**A** one\n**B** two\n": "**A** one  \n**B** two\n",
+	}
+	for in, want := range cases {
+		if got := hardBreaks(in); got != want {
+			t.Errorf("hardBreaks(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

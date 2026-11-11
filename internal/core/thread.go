@@ -67,6 +67,10 @@ type thread struct {
 	parts []*part
 	// reopen asks for the session to restart at the end of the turn, to take a new effort level.
 	reopen bool
+	// resolving is set while the worker resolves merge conflicts it was handed; its branch merges when
+	// the turn ends. resolveTries counts the hand-offs, so a merge that keeps conflicting stops.
+	resolving    bool
+	resolveTries int
 }
 
 type liveKey struct {
@@ -83,6 +87,8 @@ type ThreadView struct {
 	ActualModel  string
 	Retry        string
 	PendingAsk   bool
+	// Resolving: the worker is resolving merge conflicts, and its branch merges when it finishes.
+	Resolving bool
 	Live         []LiveBlock
 	IsWorker     bool
 	HasWorktree  bool
@@ -130,6 +136,7 @@ func (t *thread) view() ThreadView {
 		ActualModel: t.model,
 		Retry:       t.retry,
 		PendingAsk:  len(t.asks)+len(t.staleAsks) > 0,
+		Resolving:   t.resolving,
 		IsWorker:    t.row.Kind == store.KindWorker,
 	}
 	for _, k := range t.live {
@@ -439,7 +446,7 @@ func (c *Core) startWorker(id string) {
 		}
 	}
 	// Workers are started by the orchestrator, which wrote the prompt.
-	if err := c.send(ctx, id, row.Prompt, row.PromptImages, false, FromOrchestrator); err != nil {
+	if err := c.send(ctx, id, row.Prompt, row.PromptImages, false, FromOrchestrator, ""); err != nil {
 		fail(err)
 	}
 }
@@ -519,20 +526,33 @@ branch and in these worktrees. Change only the repositories the task needs; comm
 // Send sends the user's message, with any images (see ImportImage), to a thread, starting its session
 // if needed. Sent while the thread is working, it steers: Claude stops what it is doing and reads it.
 func (c *Core) Send(ctx context.Context, threadID, text string, images ...string) error {
-	return c.send(ctx, threadID, text, images, false, FromUser)
+	return c.send(ctx, threadID, text, images, false, FromUser, "")
+}
+
+// SendWithContext sends the user's message as Send does, with hidden context before it: Claude reads
+// both, and the transcript shows only the message.
+func (c *Core) SendWithContext(ctx context.Context, threadID, hidden, text string, images ...string) error {
+	return c.send(ctx, threadID, text, images, false, FromUser, hidden)
 }
 
 // SendFromOrchestrator sends the orchestrator's message to a worker.
 func (c *Core) SendFromOrchestrator(ctx context.Context, threadID, text string, images ...string) error {
-	return c.send(ctx, threadID, text, images, false, FromOrchestrator)
+	return c.send(ctx, threadID, text, images, false, FromOrchestrator, "")
 }
 
 // SendSynthetic sends text the app composed (for example a thread update to the orchestrator).
 func (c *Core) SendSynthetic(ctx context.Context, threadID, text string) error {
-	return c.send(ctx, threadID, text, nil, true, FromSolo)
+	return c.send(ctx, threadID, text, nil, true, FromSolo, "")
 }
 
-func (c *Core) send(ctx context.Context, threadID, text string, images []string, synthetic bool, from string) error {
+// SendSyntheticWithContext sends app-composed text with hidden context before it, which Claude reads
+// and the transcript leaves out.
+func (c *Core) SendSyntheticWithContext(ctx context.Context, threadID, hidden, text string) error {
+	return c.send(ctx, threadID, text, nil, true, FromSolo, hidden)
+}
+
+// send records text as the message and sends it to Claude, after hidden when that isn't empty.
+func (c *Core) send(ctx context.Context, threadID, text string, images []string, synthetic bool, from, hidden string) error {
 	if strings.TrimSpace(text) == "" && len(images) == 0 {
 		return errors.New("empty message")
 	}
@@ -545,6 +565,9 @@ func (c *Core) send(ctx context.Context, threadID, text string, images []string,
 	if threadID == OrchestratorID && len(images) > 0 {
 		sent = strings.TrimSpace(text + "\n\n[Attached images, saved at: " + strings.Join(images, ", ") +
 			". To give them to a thread, pass these paths in images when you call spawn_thread or message_thread.]")
+	}
+	if hidden != "" {
+		sent = hidden + "\n\n---\n\n" + sent
 	}
 	c.mu.Lock()
 	t := c.threads[threadID]
@@ -861,6 +884,14 @@ func (c *Core) mergeLocalParts(ctx context.Context, v ThreadView, todo []PartVie
 		var err error
 		commit, err = git.Merge(ctx, p.Repo, p.Branch, p.BaseBranch, fmt.Sprintf("Merge %s: %s", p.Branch, v.Title))
 		if err != nil {
+			var me *git.MergeError
+			if errors.As(err, &me) && len(me.Conflicts) > 0 && !me.Local {
+				if err := c.handConflicts(ctx, v, p, me.Conflicts); err != nil {
+					c.addNotice(v.ID, "error", "Merge failed in "+p.Name+": "+err.Error())
+					return "", err
+				}
+				return "", &ResolvingError{Title: v.Title}
+			}
 			c.addNotice(v.ID, "error", "Merge failed in "+p.Name+": "+err.Error())
 			return "", err
 		}
@@ -883,6 +914,75 @@ func (c *Core) mergeLocalParts(ctx context.Context, v ThreadView, todo []PartVie
 	}
 	c.finishIfLanded(v.ID)
 	return commit, nil
+}
+
+// ResolvingError is a merge that conflicted and went back to its worker to resolve; the branch merges
+// on its own once the worker finishes.
+type ResolvingError struct{ Title string }
+
+func (e *ResolvingError) Error() string {
+	return fmt.Sprintf("%q conflicts with newer work; its thread is resolving that and merges when done", e.Title)
+}
+
+// maxResolveTries is how many times a merge goes back to the worker before the user is told.
+const maxResolveTries = 2
+
+// handConflicts asks the worker to resolve the conflicts between its branch and the base branch; the
+// branch merges when its turn ends (see mergeResolved).
+func (c *Core) handConflicts(ctx context.Context, v ThreadView, p PartView, files []string) error {
+	c.mu.Lock()
+	t := c.threads[v.ID]
+	if t == nil {
+		c.mu.Unlock()
+		return fmt.Errorf("no thread %s", v.ID)
+	}
+	if t.resolveTries >= maxResolveTries {
+		c.mu.Unlock()
+		return fmt.Errorf("%s still conflicts with %s after %d tries to resolve it: %s", p.Branch, p.BaseBranch,
+			maxResolveTries, strings.Join(files, ", "))
+	}
+	t.resolveTries++
+	t.resolving = true
+	ch := Change{Kind: ChangeThread, ThreadID: v.ID}
+	c.mu.Unlock()
+	c.notify(ch)
+	where := ""
+	if v.MultiRepo() {
+		where = " in " + p.Name
+	}
+	msg := fmt.Sprintf("Merging your branch into %s%s conflicts with work that landed since you started, in: %s.\n\n"+
+		"Merge %s into your branch (`git merge %s`), resolve each conflict so both changes still do what they meant to, "+
+		"run the checks that cover them, and commit. Solo merges your branch as soon as you finish; don't merge it yourself.",
+		p.BaseBranch, where, strings.Join(files, ", "), p.BaseBranch, p.BaseBranch)
+	if err := c.SendFromOrchestrator(ctx, v.ID, msg); err != nil {
+		c.mu.Lock()
+		t.resolving = false
+		c.mu.Unlock()
+		c.notify(ch)
+		return err
+	}
+	c.addNotice(v.ID, "info", "Merging conflicted with newer work in "+p.BaseBranch+"; resolving it, then merging.")
+	return nil
+}
+
+// mergeResolved merges a worker's branch after it resolved conflicts.
+func (c *Core) mergeResolved(id string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	_, err := c.MergeLocal(ctx, id)
+	var re *ResolvingError
+	if errors.As(err, &re) {
+		return // back to the worker, still resolving
+	}
+	if err != nil {
+		c.log.Warn("core: merging after resolving conflicts", "thread", id, "err", err)
+	}
+	c.mu.Lock()
+	if t := c.threads[id]; t != nil {
+		t.resolving = false
+	}
+	c.mu.Unlock()
+	c.notify(Change{Kind: ChangeThread, ThreadID: id})
 }
 
 // finishIfLanded closes a thread once each of its repositories with changes has landed (merged
@@ -1154,6 +1254,7 @@ func (c *Core) countChanges(id string) {
 	defer cancel()
 	counts := map[string]int{}
 	kinds := map[string]forge.Kind{}
+	var landed []PartView
 	for _, p := range v.Parts {
 		if p.Worktree == "" || p.BaseCommit == "" {
 			continue
@@ -1169,6 +1270,12 @@ func (c *Core) countChanges(id string) {
 		counts[p.Repo], kinds[p.Repo] = len(files), c.forgeFor(p.Repo)
 		if p.PR != nil && p.PR.State == forge.StateOpen && !v.InTurn {
 			c.pushPR(ctx, v, p)
+		}
+		// The thread put its work in the base branch itself (asked to commit straight to main, say):
+		// nothing is left to land.
+		if len(files) > 0 && p.PR == nil && !v.InTurn && v.Status == StatusIdle && git.InBase(ctx, p.Worktree, p.BaseBranch) {
+			counts[p.Repo] = 0
+			landed = append(landed, p)
 		}
 	}
 	c.mu.Lock()
@@ -1189,6 +1296,16 @@ func (c *Core) countChanges(id string) {
 	if changed {
 		nv, _ := c.Thread(id)
 		c.notify(Change{Kind: ChangeThread, ThreadID: id, PrevStatus: nv.Status, Status: nv.Status})
+	}
+	if len(landed) > 0 {
+		for _, p := range landed {
+			where := p.BaseBranch
+			if v.MultiRepo() {
+				where += " in " + p.Name
+			}
+			c.addNotice(id, "info", "Already in "+where+": the thread committed its work there itself.")
+		}
+		c.finishIfLanded(id)
 	}
 }
 

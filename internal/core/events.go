@@ -208,7 +208,7 @@ func (c *Core) onEvent(e agent.Event) {
 		c.addItemTurnLocked(t, turnUUID, TurnData{Status: e.Status, Reason: e.Reason, Error: e.Error,
 			DurationMs: e.DurationMs, CostUSD: e.TotalCostUSD})
 		if e.TotalCostUSD > 0 {
-			t.row.CostUSD = e.TotalCostUSD
+			t.row.CostUSD = t.row.CostBase + e.TotalCostUSD
 		}
 		if e.ContextTokens > 0 {
 			t.row.ContextTokens = e.ContextTokens
@@ -237,6 +237,13 @@ func (c *Core) onEvent(e agent.Event) {
 		}
 		if !Finished(t.row.Status) {
 			changes = append(changes, c.setStatusLocked(t, status, errText))
+		}
+		if t.resolving {
+			if status == StatusIdle {
+				go c.mergeResolved(id) // Resolving stays set until it has merged
+			} else {
+				t.resolving = false
+			}
 		}
 
 	case agent.EventExited:
@@ -372,6 +379,11 @@ func (c *Core) onAsk(ctx context.Context, p agent.AskParams) (agent.AskResult, e
 	c.mu.Lock()
 	delete(t.asks, key)
 	delete(t.askQs, key)
+	if c.closed && res.Cancelled {
+		// Solo is closing, not the user skipping: the question stays open for after the restart.
+		c.mu.Unlock()
+		return res, nil
+	}
 	c.updateItemLocked(itemID, func(raw json.RawMessage) any {
 		var d QuestionData
 		_ = json.Unmarshal(raw, &d)

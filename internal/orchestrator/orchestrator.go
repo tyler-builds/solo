@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -23,17 +24,42 @@ import (
 // UpdateDelay batches thread updates that happen close together into one message.
 var UpdateDelay = 1500 * time.Millisecond
 
+// Solo's Claude session is replaced, between turns, once its context reaches RotateTokens (or the
+// size in Settings), or when the user comes back after RotateIdle with at least RotateIdleTokens of
+// context (the prompt cache has gone cold by then, so the next message is read in full anyway). The
+// fresh session gets a recap; what lasts longer is in Solo's memory. The user sees one conversation
+// throughout.
+//
+// The default is a balance for subscription plans, where every turn's whole context counts against the
+// 5-hour and weekly limits (cached context counts less): a longer session keeps more detail but uses
+// the plan faster, and Claude's own compaction, far later, is lossier than a recap and memory.
+var (
+	RotateTokens     = 120_000
+	RotateIdle       = 3 * time.Hour
+	RotateIdleTokens = 15_000
+)
+
+const rotateNotice = "Solo started a fresh session. Its memory and this conversation carry over."
+
+// carryKey is where a recap waiting for Solo's next message is kept, so a restart doesn't lose it.
+const carryKey = "orchestrator_carry"
+
 // Orchestrator wires the orchestrator thread into a Core.
 type Orchestrator struct {
 	c       *core.Core
 	log     *slog.Logger
 	workDir string
 
-	mu      sync.Mutex
-	pending []string // thread updates not yet delivered
-	timer   *time.Timer
-	paused  bool   // proactive updates are off (SetUpdates)
-	carry   string // a recap for the next message, after NewConversation
+	mu       sync.Mutex
+	pending  []string // thread updates not yet delivered
+	timer    *time.Timer
+	paused   bool   // proactive updates are off (SetUpdates)
+	carry    string // a recap for the next message, after NewConversation or a rotation (saved)
+	rotating bool
+	rotateAt int // overrides the size in Settings, for tests; 0 uses Settings
+	// recalls counts recall calls in the turn that began at recallTurn (takeRecall).
+	recallTurn time.Time
+	recalls    int
 }
 
 // New sets up the orchestrator on c: its session parameters, tools and thread updates. dataDir holds
@@ -52,6 +78,7 @@ func New(c *core.Core, dataDir string, log *slog.Logger) (*Orchestrator, error) 
 	c.SetOrchestratorSpec(o.openParams)
 	c.SetToolHandler(o.handleTool)
 	c.SetRecap(o.recap)
+	c.State(carryKey, &o.carry)
 	c.Subscribe(o.onChange)
 	return o, nil
 }
@@ -61,20 +88,16 @@ func (o *Orchestrator) ID() string { return core.OrchestratorID }
 
 // Send sends the user's message, with any images (attachment paths), to the orchestrator.
 func (o *Orchestrator) Send(ctx context.Context, text string, images ...string) error {
-	if carry := o.takeCarry(); carry != "" && len(images) > 0 {
-		// The recap goes first on its own; the user's message with its images queues behind it.
-		if err := o.c.SendSynthetic(ctx, core.OrchestratorID, carry); err != nil {
+	o.rotateIfIdle(ctx)
+	carry := o.takeCarry()
+	// A recap waiting from a fresh session goes before the message, out of the transcript.
+	if err := o.c.SendWithContext(ctx, core.OrchestratorID, carry, text, images...); err != nil {
+		if carry != "" {
 			o.putCarry(carry)
-			return err
 		}
-	} else if carry != "" {
-		if err := o.c.SendSynthetic(ctx, core.OrchestratorID, carry+"\n\n---\n\n"+text); err != nil {
-			o.putCarry(carry)
-			return err
-		}
-		return nil
+		return err
 	}
-	return o.c.Send(ctx, core.OrchestratorID, text, images...)
+	return nil
 }
 
 // NewConversation starts the orchestrator on a fresh Claude session; its next message carries a recap of
@@ -93,14 +116,80 @@ func (o *Orchestrator) takeCarry() string {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	c := o.carry
-	o.carry = ""
+	if c != "" {
+		o.carry = ""
+		o.saveCarry("")
+	}
 	return c
 }
 
 func (o *Orchestrator) putCarry(c string) {
 	o.mu.Lock()
 	o.carry = c
+	o.saveCarry(c)
 	o.mu.Unlock()
+}
+
+func (o *Orchestrator) saveCarry(c string) {
+	if err := o.c.SetState(carryKey, c); err != nil {
+		o.log.Warn("orchestrator: saving the recap", "err", err)
+	}
+}
+
+// rotate moves Solo to a fresh Claude session, with a recap for its next message. It does nothing while
+// Solo is in a turn or waits on the user.
+func (o *Orchestrator) rotate(ctx context.Context) {
+	o.mu.Lock()
+	if o.rotating {
+		o.mu.Unlock()
+		return
+	}
+	o.rotating = true
+	o.mu.Unlock()
+	defer func() {
+		o.mu.Lock()
+		o.rotating = false
+		o.mu.Unlock()
+	}()
+	v, ok := o.c.Thread(core.OrchestratorID)
+	if !ok || v.InTurn || v.PendingAsk || core.Active(v.Status) || !v.HasTranscript {
+		return
+	}
+	recap := o.recap(v)
+	if err := o.c.RotateSession(ctx, core.OrchestratorID, rotateNotice); err != nil {
+		o.log.Warn("orchestrator: starting a fresh session", "err", err)
+		return
+	}
+	if prev := o.takeCarry(); prev != "" {
+		recap = prev + "\n\n---\n\n" + recap // a recap Solo hadn't read yet
+	}
+	o.putCarry(recap)
+	o.log.Info("orchestrator: fresh session", "context_tokens", v.ContextTokens)
+}
+
+// rotateLimit is the context size that starts a fresh session, or 0 for never.
+func (o *Orchestrator) rotateLimit() int {
+	o.mu.Lock()
+	n := o.rotateAt
+	o.mu.Unlock()
+	if n == 0 {
+		n = o.c.Settings().SoloSessionTokens
+	}
+	switch {
+	case n < 0:
+		return 0
+	case n == 0:
+		return RotateTokens
+	}
+	return n
+}
+
+// rotateIfIdle starts a fresh session before a message that comes after a long quiet spell.
+func (o *Orchestrator) rotateIfIdle(ctx context.Context) {
+	v, ok := o.c.Thread(core.OrchestratorID)
+	if ok && o.rotateLimit() > 0 && v.ContextTokens >= RotateIdleTokens && time.Since(v.UpdatedAt) > RotateIdle {
+		o.rotate(ctx)
+	}
 }
 
 // SetUpdates turns proactive thread updates on or off.
@@ -125,7 +214,7 @@ func (o *Orchestrator) openParams() agent.OpenParams {
 		AdditionalDirectories: dirs,
 		PermissionMode:        agent.PermissionDefault,
 		ToolPolicy:            agent.ToolPolicyReadOnly,
-		Tools:                 []string{"Read", "Grep", "Glob", "Bash", "WebFetch", "WebSearch", "TodoWrite", "AskUserQuestion"},
+		Tools:                 []string{"Read", "Grep", "Glob", "Bash", "WebFetch", "WebSearch", "AskUserQuestion"}, // the user's to-do list (add_todo) takes the place of TodoWrite,
 		BashAllow:             bashAllow,
 		MCPServerName:         "solo",
 		MCPTools:              toolSpecs,
@@ -146,8 +235,12 @@ func (o *Orchestrator) onChange(ch core.Change) {
 		return
 	}
 	if ch.ThreadID == core.OrchestratorID {
-		// The orchestrator finished a turn: deliver what waited for it.
+		// The orchestrator finished a turn: deliver what waited for it, and start a fresh session if
+		// this one has grown long.
 		if v, ok := o.c.Thread(core.OrchestratorID); ok && !v.InTurn {
+			if limit := o.rotateLimit(); limit > 0 && v.ContextTokens >= limit {
+				go o.rotate(context.Background())
+			}
 			o.schedule()
 		}
 		return
@@ -201,6 +294,9 @@ func (o *Orchestrator) onChange(ch core.Change) {
 	switch ch.Status {
 	case core.StatusIdle:
 		line = fmt.Sprintf("%s finished its turn. Summary: %s", label(v), clip(oneLine(v.Summary), 600))
+		if v.Resolving {
+			line = fmt.Sprintf("%s resolved the conflicts its merge had; Solo is merging it now, so don't propose it again.", label(v))
+		}
 	case core.StatusFailed:
 		line = fmt.Sprintf("%s failed: %s", label(v), clip(oneLine(v.Error), 400))
 	case core.StatusWaiting:
@@ -208,7 +304,7 @@ func (o *Orchestrator) onChange(ch core.Change) {
 	case core.StatusInterrupted:
 		line = fmt.Sprintf("%s was interrupted.", label(v))
 	case core.StatusMerged:
-		line = fmt.Sprintf("%s was merged into %s by the user.", label(v), v.BaseBranch)
+		line = fmt.Sprintf("%s is merged into %s.", label(v), v.BaseBranch)
 		if v.PR != nil {
 			line = fmt.Sprintf("%s: %s #%d merged into %s.", label(v), v.PR.Kind.Noun(), v.PR.Number, v.BaseBranch)
 		} else if v.MultiRepo() {
@@ -247,6 +343,7 @@ func (o *Orchestrator) deliver() {
 	lines := o.pending
 	o.pending = nil
 	o.mu.Unlock()
+	o.rotateIfIdle(context.Background())
 
 	var b strings.Builder
 	b.WriteString("[thread update from Solo, not from the user]\n")
@@ -254,12 +351,12 @@ func (o *Orchestrator) deliver() {
 		b.WriteString("- " + l + "\n")
 	}
 	b.WriteString("Tell the user what matters in a sentence or two, and act if your instructions call for it (review finished work, relay or answer questions). If nothing needs saying, reply with just \"(noted)\".")
+	if todos := o.openTodos(); todos != "" {
+		b.WriteString("\n\nThe user's open todos, to tick off with update_todo any this update finishes (ones with threads tick off when those threads' work lands):\n" + todos)
+	}
 	text := b.String()
 	carry := o.takeCarry()
-	if carry != "" {
-		text = carry + "\n\n---\n\n" + text
-	}
-	if err := o.c.SendSynthetic(context.Background(), core.OrchestratorID, text); err != nil {
+	if err := o.c.SendSyntheticWithContext(context.Background(), core.OrchestratorID, carry, text); err != nil {
 		if carry != "" {
 			o.putCarry(carry)
 		}
@@ -270,33 +367,77 @@ func (o *Orchestrator) deliver() {
 	}
 }
 
-// recap catches a fresh orchestrator session up on the conversation so far.
+// recap catches a fresh orchestrator session up: what's open now, from the app's state, and the last
+// few messages. Older conversation is a recall away.
 func (o *Orchestrator) recap(v core.ThreadView) string {
 	if v.ID != core.OrchestratorID {
 		return ""
 	}
-	items, err := o.c.Items(context.Background(), core.OrchestratorID, 60)
-	if err != nil {
-		return ""
-	}
 	var b strings.Builder
-	b.WriteString("[Solo: this is a fresh session; your earlier conversation with the user is summarized below. Thread state is current through your tools.]\n")
-	for _, it := range items {
-		switch it.Kind {
+	b.WriteString("[Solo: this is a fresh Claude session; the user sees one continuous conversation. Your memories are in your system prompt, and recall searches them, the earlier conversation and past threads. Here is what's open now, and the last few messages.]\n")
+	var threads []string
+	for _, t := range o.c.Threads() {
+		if t.IsWorker && t.DoneAt.IsZero() && t.Status != core.StatusDiscarded {
+			threads = append(threads, fmt.Sprintf("- %s: %s", label(t), statusText(t)))
+		}
+	}
+	if len(threads) > 0 {
+		b.WriteString("\nOpen threads:\n" + strings.Join(threads, "\n") + "\n")
+	}
+	if todos := o.openTodos(); todos != "" {
+		b.WriteString("\nOpen todos:\n" + todos + "\n")
+	}
+	items, err := o.c.Items(context.Background(), core.OrchestratorID, 80)
+	if err != nil {
+		return b.String()
+	}
+	// The newest messages, up to recapLines lines and recapChars characters, then in order.
+	var lines []string
+	size := 0
+	for i := len(items) - 1; i >= 0 && len(lines) < recapLines && size < recapChars; i-- {
+		var line string
+		switch it := items[i]; it.Kind {
 		case core.ItemUser:
 			var d core.UserData
-			if it.Decode(&d) == nil && !d.Synthetic {
-				fmt.Fprintf(&b, "User: %s\n", clip(oneLine(d.Text), 400))
+			if it.Decode(&d) != nil {
+				continue
+			}
+			if !d.Synthetic {
+				line = "User: " + clip(oneLine(d.Text), 400)
+				break
+			}
+			var updates []string
+			for _, l := range strings.Split(d.Text, "\n") {
+				if strings.HasPrefix(l, "- Thread ") && len(updates) < 3 {
+					updates = append(updates, clip(strings.TrimPrefix(l, "- "), 200))
+				}
+			}
+			if len(updates) > 0 {
+				line = "App: " + strings.Join(updates, " / ")
 			}
 		case core.ItemAssistant:
 			var d core.TextData
-			if it.Decode(&d) == nil {
-				fmt.Fprintf(&b, "You: %s\n", clip(oneLine(d.Text), 400))
+			if it.Decode(&d) == nil && strings.TrimSpace(d.Text) != "(noted)" {
+				line = "You: " + clip(oneLine(d.Text), 400)
 			}
 		}
+		if line != "" {
+			lines = append(lines, line)
+			size += len(line)
+		}
+	}
+	if len(lines) > 0 {
+		slices.Reverse(lines)
+		b.WriteString("\nLast messages:\n" + strings.Join(lines, "\n") + "\n")
 	}
 	return b.String()
 }
+
+// The recap's share of the conversation: enough to carry on mid-topic.
+const (
+	recapLines = 12
+	recapChars = 4000
+)
 
 func label(v core.ThreadView) string {
 	return fmt.Sprintf("Thread %s %q (%s)", short(v.ID), v.Title, repoList(v))

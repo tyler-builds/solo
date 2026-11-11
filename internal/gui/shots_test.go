@@ -14,6 +14,7 @@ import (
 	"github.com/tyler-builds/jamb/ui/uitest"
 
 	"github.com/tyler-builds/solo/internal/core"
+	"github.com/tyler-builds/solo/internal/forge"
 )
 
 // TestShots renders the main views to PNGs for design review:
@@ -73,11 +74,46 @@ func TestShots(t *testing.T) {
 				": `" + filepath.Join(dir, "preview-orbit.png") + "` and " + filepath.Join(dir, "preview-branch.png") + "."})
 			a.items = map[string]*ui.Signal[[]core.Item]{}
 		}},
+		{"calm", func(a *App, f *fakeBackend) {
+			// A busy turn: thoughts, tool calls and words between them fold into one line above the reply.
+			o := core.OrchestratorID
+			f.add(o, core.ItemUser, core.UserData{Text: "Can you update my local Solo to match main?"})
+			f.add(o, core.ItemThinking, core.TextData{Text: "Check the branch first."})
+			f.add(o, core.ItemTool, tool("c1", "Bash", map[string]any{"command": "git status"}, "On branch main"))
+			f.add(o, core.ItemAssistant, core.TextData{Text: "It's on main. Let me find the install script."})
+			f.add(o, core.ItemTool, tool("c2", "mcp__solo__list_repos", map[string]any{}, "solo"))
+			f.add(o, core.ItemTool, tool("c3", "mcp__solo__spawn_thread", map[string]any{"repo": "web", "title": "Install Solo from main"}, "Started thread a1f3c9d2"))
+			f.add(o, core.ItemAssistant, core.TextData{Text: "The repo is already on `main`, so I started **Install Solo from main** to rebuild the AppImage and install it."})
+			a.items = map[string]*ui.Signal[[]core.Item]{}
+		}},
+		{"land-cards", func(a *App, f *fakeBackend) {
+			// Merge cards in each checks state, a local merge, and one whose Merge is under way.
+			o := core.OrchestratorID
+			f.items[o] = nil
+			for i := range f.threads {
+				th := &f.threads[i]
+				switch th.ID {
+				case "c3d4e5f6-forms": // local: no remote
+					th.Forge, th.CanOpenPR, th.CanMerge = forge.None, false, true
+				case "a1f3c9d2-oauth": // passed, and merging now
+					th.Status, th.InTurn, th.Forge, th.CanMerge = core.StatusIdle, false, forge.GitHub, true
+					th.PR = &forge.PR{Kind: forge.GitHub, Number: 61, State: forge.StateOpen, Checks: forge.ChecksPassing, Mergeable: true}
+					a.busy.Set(map[string]bool{th.ID: true})
+				}
+			}
+			for _, id := range []string{"c3d4e5f6-forms", "a1f3c9d2-oauth", "b1b2b3b4-paginate", "c1c2c3c4-csv"} {
+				f.add(o, core.ItemProposal, core.ProposalData{ThreadID: id, Summary: "Ready to land."})
+			}
+			a.threads.Set(f.Threads())
+			a.items = map[string]*ui.Signal[[]core.Item]{}
+		}},
 		{"lightbox", func(a *App, f *fakeBackend) {
 			a.lightbox.Set(sampleScreenshot(t.TempDir(), color.RGBA{47, 214, 193, 255}))
 		}},
 		{"done", func(a *App, f *fakeBackend) { a.openThread("a0b1c2d3-audit", "conversation") }},
 		{"in-place", func(a *App, f *fakeBackend) { a.openThread("a7a7a7a7-subs", "conversation") }},
+		// Markdown in the composer, formatted: its syntax shows only where the caret is.
+		{"composer-markdown", func(a *App, f *fakeBackend) { a.orchDraft.Set(composerMarkdown) }},
 		{"history", func(a *App, f *fakeBackend) { a.settingsTab = "history"; a.settings.Set(true) }},
 		{"settings-repos", func(a *App, f *fakeBackend) { a.settingsTab = "repos"; a.settings.Set(true) }},
 		// Settings pages at full height, for review.
@@ -176,3 +212,7 @@ func useBundledFont(t *testing.T) {
 	}
 	t.Setenv("FONTCONFIG_FILE", conf)
 }
+
+// composerMarkdown is a draft with each kind of inline Markdown the composer formats.
+const composerMarkdown = "Can you check these?\n\n**Skip writes** that change nothing: `Signal.Set` re-renders.\n" +
+	"**A benchmark:** time a ~~write~~ *change* among 3,000 rows.\n**A clock:** see [the post](https://example.com/post)."

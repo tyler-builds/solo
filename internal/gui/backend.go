@@ -18,6 +18,9 @@ type Backend interface {
 	Items(ctx context.Context, threadID string, limit int) ([]core.Item, error)
 	PendingQuestions(threadID string) []core.PendingQuestion
 	Subscribe(f func(core.Change)) func()
+	Todos(done bool) []core.Todo
+	CompleteTodo(id string) error
+	UpdateTodo(id string, ch core.TodoChange) (core.Todo, error)
 
 	SendToOrchestrator(ctx context.Context, text string, images ...string) error
 	Send(ctx context.Context, threadID, text string, images ...string) error

@@ -39,6 +39,7 @@ type fakeBackend struct {
 	merged   []string
 	opened   []string
 	nextID   int64
+	todos    []core.Todo
 }
 
 func (f *fakeBackend) Threads() []core.ThreadView {
@@ -64,6 +65,41 @@ func (f *fakeBackend) Items(_ context.Context, id string, _ int) ([]core.Item, e
 
 func (f *fakeBackend) PendingQuestions(id string) []core.PendingQuestion { return f.pending[id] }
 func (f *fakeBackend) Subscribe(func(core.Change)) func()                { return func() {} }
+
+func (f *fakeBackend) Todos(done bool) []core.Todo {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []core.Todo
+	for _, td := range f.todos {
+		if done || !td.Done() {
+			out = append(out, td)
+		}
+	}
+	return out
+}
+
+func (f *fakeBackend) CompleteTodo(id string) error {
+	done := true
+	_, err := f.UpdateTodo(id, core.TodoChange{Done: &done, By: core.TodoByUser})
+	return err
+}
+
+func (f *fakeBackend) UpdateTodo(id string, ch core.TodoChange) (core.Todo, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := range f.todos {
+		if f.todos[i].ID == id {
+			if ch.Done != nil {
+				f.todos[i].DoneAt = time.Time{}
+				if *ch.Done {
+					f.todos[i].DoneAt, f.todos[i].DoneBy = time.Now(), ch.By
+				}
+			}
+			return f.todos[i], nil
+		}
+	}
+	return core.Todo{}, fmt.Errorf("no todo %q", id)
+}
 
 func (f *fakeBackend) SendToOrchestrator(_ context.Context, text string, images ...string) error {
 	f.mu.Lock()
@@ -319,7 +355,15 @@ func demoBackend() *fakeBackend {
 		Status: core.StatusIdle, ContextTokens: 61000, CostUSD: 2.14, CreatedAt: ago(5 * time.Hour), UpdatedAt: ago(time.Minute)},
 		ActualModel: "claude-opus-5-5"}
 
+	todos := []core.Todo{
+		{ID: "t1", Text: "Fix OAuth token refresh", Threads: []string{oauth.ID}},
+		{ID: "t2", Text: "Rate limit uploads in api", Threads: []string{limiter.ID}},
+		{ID: "t3", Text: "Finish moving the settings page to the new form components", Threads: []string{forms.ID}},
+		{ID: "t4", Text: "Look into the slow dashboard query"},
+		{ID: "t5", Text: "Rename the config loader", Threads: []string{old.ID}, DoneAt: ago(20 * time.Hour), DoneBy: core.TodoByThread},
+	}
 	f := &fakeBackend{
+		todos:   todos,
 		threads: []core.ThreadView{orch, oauth, limiter, forms, review, ci, export, landing, audit, subs, flaky, readme, bump, old, gone},
 		items:   map[string][]core.Item{},
 		repos:   repos,
@@ -354,7 +398,7 @@ func demoBackend() *fakeBackend {
 	f.add("a7a7a7a7-subs", core.ItemNotice, core.NoticeData{Level: "info", Text: "Working directly in ~/code/vfl. It isn't in git, so there's no separate copy, diff or merge."})
 	f.add("a7a7a7a7-subs", core.ItemUser, core.UserData{Text: "Between plays, send the players who are leaving to their sideline and bring the new personnel on."})
 	f.add("a7a7a7a7-subs", core.ItemAssistant, core.TextData{Text: subs.Summary})
-	f.add(o, core.ItemUser, core.UserData{Text: "Three things today: the OAuth refresh bug in web, rate limiting on uploads in api, and finish moving the settings page to the new form components."})
+	f.add(o, core.ItemUser, core.UserData{Text: "Three things today:\n**OAuth:** the refresh bug in `web`\n**Uploads:** rate limiting in `api`\n**Settings:** finish moving the page to the new form components"})
 	f.add(o, core.ItemThinking, core.TextData{Text: "Three independent tasks in two repos. I'll check the auth module first so the worker prompt is specific."})
 	f.add(o, core.ItemTool, tool("t1", "Grep", map[string]any{"pattern": "refreshToken", "path": "/home/dev/code/web/src"}, "src/auth/session.ts:88\nsrc/auth/refresh.ts:12"))
 	f.add(o, core.ItemTool, tool("t2", "Read", map[string]any{"file_path": "/home/dev/code/web/src/auth/refresh.ts"}, "…"))

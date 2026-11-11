@@ -1180,3 +1180,79 @@ func TestOrchestratorAskRefusedWhileWorkerAsks(t *testing.T) {
 		}
 	}
 }
+
+// A merge that conflicts goes back to the worker to resolve, and merges when its turn ends; one that
+// keeps conflicting stops after maxResolveTries and says so.
+func TestMergeConflictGoesToTheWorker(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	v, err := e.c.CreateWorker(ctx, WorkerSpec{Repo: "proj", Title: "Add hello", Prompt: "write hello.txt hi there"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	v = waitStatus(t, e.c, v.ID, StatusIdle)
+	if err := os.WriteFile(filepath.Join(e.repo, "hello.txt"), []byte("other\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"add", "-A"}, {"commit", "-qm", "other hello"}} {
+		if _, err := git.Run(ctx, e.repo, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, err = e.c.Merge(ctx, v.ID)
+	var re *ResolvingError
+	if !errors.As(err, &re) {
+		t.Fatalf("want the conflict handed to the worker, got %v", err)
+	}
+	// The fake worker only echoes, so the conflict stays; after the second hand-off, it stops.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		v, _ = e.c.Thread(v.ID)
+		if !v.Resolving && !v.InTurn {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("still resolving")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	items, _ := e.c.Items(ctx, v.ID, 0)
+	asked, failed := 0, false
+	for _, it := range items {
+		var u UserData
+		if it.Kind == ItemUser && it.Decode(&u) == nil && strings.Contains(u.Text, "git merge main") {
+			asked++
+		}
+		var n NoticeData
+		if it.Kind == ItemNotice && it.Decode(&n) == nil && strings.Contains(n.Text, "still conflicts") {
+			failed = true
+		}
+	}
+	if asked != maxResolveTries || !failed || v.Status != StatusIdle {
+		t.Fatalf("asked %d times, failure noticed %v, status %s", asked, failed, v.Status)
+	}
+}
+
+// A worker that commits its work straight into the base branch has nothing left to land: the thread is
+// merged, ready for Done.
+func TestWorkCommittedToBaseLands(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	v, err := e.c.CreateWorker(ctx, WorkerSpec{Repo: "proj", Title: "Add hello", Prompt: "write hello.txt hi there"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	v = waitStatus(t, e.c, v.ID, StatusIdle)
+	for _, args := range [][]string{{"add", "-A"}, {"commit", "-qm", "hello"}} {
+		if _, err := git.Run(ctx, v.WorktreePath, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := git.Run(ctx, e.repo, "merge", "-q", "--ff-only", v.Branch); err != nil {
+		t.Fatal(err)
+	}
+	go e.c.countChanges(v.ID) // as at the end of a turn
+	if v = waitStatus(t, e.c, v.ID, StatusMerged); !v.CanDone {
+		t.Fatalf("status %s, can done %v", v.Status, v.CanDone)
+	}
+}

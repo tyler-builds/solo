@@ -139,18 +139,89 @@ func TestMergeConflictIsAborted(t *testing.T) {
 	}
 }
 
-func TestMergeRefusesWrongBranchOrDirty(t *testing.T) {
+// branchWith makes a branch off main whose commit writes the files.
+func branchWith(t *testing.T, repo, name string, files map[string]string) {
+	t.Helper()
+	wt := filepath.Join(t.TempDir(), "wt")
+	must(t, repo, "worktree", "add", "-q", "-b", name, wt, "main")
+	for f, body := range files {
+		write(t, filepath.Join(wt, f), body)
+	}
+	must(t, wt, "add", "-A")
+	must(t, wt, "commit", "-q", "-m", "branch change")
+	must(t, repo, "worktree", "remove", "--force", wt)
+}
+
+// The user's uncommitted edits stay put, whether or not they touch the files the merge changes.
+func TestMergeKeepsUncommittedChanges(t *testing.T) {
 	ctx := context.Background()
 	repo := newRepo(t, filepath.Join(t.TempDir(), "repo"))
-	must(t, repo, "branch", "solo/y")
-	write(t, filepath.Join(repo, "a.txt"), "dirty\n")
-	if _, err := Merge(ctx, repo, "solo/y", "main", "m"); err == nil || !strings.Contains(err.Error(), "uncommitted") {
-		t.Fatalf("dirty: %v", err)
+	write(t, filepath.Join(repo, "a.txt"), "one\ntwo\nthree\nfour\nfive\nsix\n")
+	must(t, repo, "commit", "-qam", "longer")
+	branchWith(t, repo, "solo/other-file", map[string]string{"b.txt": "b\n"})
+	branchWith(t, repo, "solo/same-file", map[string]string{"a.txt": "one\ntwo\nthree\nfour\nfive\nSIX\n"})
+
+	write(t, filepath.Join(repo, "a.txt"), "ONE\ntwo\nthree\nfour\nfive\nsix\n") // the user's edit
+	write(t, filepath.Join(repo, "notes.txt"), "untracked\n")
+	if _, err := Merge(ctx, repo, "solo/other-file", "main", "m1"); err != nil {
+		t.Fatal(err)
 	}
-	must(t, repo, "checkout", "-q", "--", "a.txt")
+	if _, err := Merge(ctx, repo, "solo/same-file", "main", "m2"); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(repo, "a.txt")); string(b) != "ONE\ntwo\nthree\nfour\nfive\nSIX\n" {
+		t.Fatalf("a.txt %q: want the user's edit on top of the merge", b)
+	}
+	if st := must(t, repo, "status", "--porcelain"); st != "M a.txt\n?? notes.txt" && st != " M a.txt\n?? notes.txt" {
+		t.Fatalf("status %q", st)
+	}
+	if out := must(t, repo, "show", "HEAD:b.txt"); out != "b" {
+		t.Fatalf("b.txt not merged: %q", out)
+	}
+	if out := must(t, repo, "stash", "list"); out != "" {
+		t.Fatalf("stash left behind: %q", out)
+	}
+}
+
+// Uncommitted edits that clash with the merge stop it, and nothing changes.
+func TestMergeStopsOnClashingEdits(t *testing.T) {
+	ctx := context.Background()
+	repo := newRepo(t, filepath.Join(t.TempDir(), "repo"))
+	branchWith(t, repo, "solo/y", map[string]string{"a.txt": "one\nbranch\n"})
+	head := must(t, repo, "rev-parse", "HEAD")
+	write(t, filepath.Join(repo, "a.txt"), "one\nmine\n")
+	_, err := Merge(ctx, repo, "solo/y", "main", "m")
+	var me *MergeError
+	if !errors.As(err, &me) || !me.Local || len(me.Conflicts) != 1 || me.Conflicts[0] != "a.txt" {
+		t.Fatalf("want a local clash on a.txt, got %v", err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(repo, "a.txt")); string(b) != "one\nmine\n" {
+		t.Fatalf("the user's edit changed: %q", b)
+	}
+	if h := must(t, repo, "rev-parse", "HEAD"); h != head {
+		t.Fatal("main moved")
+	}
+}
+
+// With another branch checked out, main moves and the checkout is left alone.
+func TestMergeIntoBranchNotCheckedOut(t *testing.T) {
+	ctx := context.Background()
+	repo := newRepo(t, filepath.Join(t.TempDir(), "repo"))
+	branchWith(t, repo, "solo/y", map[string]string{"b.txt": "b\n"})
 	must(t, repo, "checkout", "-q", "-b", "other")
-	if _, err := Merge(ctx, repo, "solo/y", "main", "m"); err == nil || !strings.Contains(err.Error(), "not \"main\"") {
-		t.Fatalf("wrong branch: %v", err)
+	write(t, filepath.Join(repo, "a.txt"), "dirty\n")
+	commit, err := Merge(ctx, repo, "solo/y", "main", "m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h := must(t, repo, "rev-parse", "main"); h != commit {
+		t.Fatalf("main at %s, want %s", h, commit)
+	}
+	if cur := must(t, repo, "symbolic-ref", "--short", "HEAD"); cur != "other" {
+		t.Fatalf("checkout moved to %s", cur)
+	}
+	if _, err := os.Stat(filepath.Join(repo, "b.txt")); !os.IsNotExist(err) {
+		t.Fatal("the checkout changed")
 	}
 }
 

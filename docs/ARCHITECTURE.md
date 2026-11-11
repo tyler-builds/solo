@@ -12,7 +12,7 @@ Claude **worker threads**, each working in its own git worktree.
 | Orchestrator | One **global** session, resumed across restarts. Knowledge of live state comes from tools, not its transcript. |
 | Repos | Settings hold a list of folders; every git repo found under them is known to the orchestrator. A folder there that isn't in git (and holds no repo) is listed too and takes threads the way t3code does: the thread works directly in the folder (`Part.InPlace`), with no worktree, branch, diff or merge, alone (not with other repos), and Done or Discard never touch the folder. Settings or Solo's `init_repo` tool can put the folder in git instead: `git init` on main, a default `.gitignore` if it has none, and a first commit. |
 | Workers | One git worktree + branch per thread, `bypassPermissions`, no sandbox. |
-| Landing | Solo proposes; **you** click Open PR (GitHub via `gh`, GitLab via `glab`), then Merge once checks pass, or the forge auto-merges. Repos without a remote merge locally. |
+| Landing | Solo proposes; **you** click Open PR (GitHub via `gh`, GitLab via `glab`), then Merge once checks pass, or the forge auto-merges. Repos without a remote merge locally ("Merge locally"): `git merge-tree` builds the merge without touching a checkout, so it works with uncommitted changes or another branch checked out; a checkout on the base branch then fast-forwards, keeping your edits. A conflict goes back to the thread to resolve ("Resolving conflicts"), and the branch merges when it finishes (at most twice). A thread that commits its work straight into the base branch itself (clean worktree, its commit already in `main` or `origin/main`) is marked merged, ready for Done. |
 | Layout | Title bar (go-to-thread, settings) · thread rail on the left · orchestrator chat · a thread panel that slides in from the right (50/50, resizable). The rail filters by repository when threads span several. |
 | Persistence | SQLite (`modernc.org/sqlite`, no cgo), owned by Go. Claude's own transcripts are used only for `resume`. |
 
@@ -120,9 +120,22 @@ Raw `SDKMessage`s are also appended to a per-session JSONL file for debugging an
 - **Proactive updates:** when a worker finishes, fails, or asks a question, Go queues a synthetic
   `[thread update]` message. Updates are batched while the orchestrator is busy and delivered when
   it's idle, so it reports without being asked. These render as small status chips, not user bubbles.
-- **Memory:** SDK auto-compaction handles length. Nothing critical lives only in its context
-  because state is always re-queryable. If `resume` fails, Go starts a new session seeded with a
-  ledger (repos, open threads, recent decisions); the UI history stays continuous.
+- **To-do list:** `add_todo`, `update_todo`, `remove_todo`, `list_todos` (core/todos.go). Solo judges
+  what's a todo; most have no thread. A todo linked to threads is ticked off when their work lands
+  (a pull request opened or merged, a merge, or the thread marked done). Thread updates list the open
+  todos so Solo can tick off the rest.
+- **Sessions rotate; the chat doesn't:** once a turn ends with its context at 120k tokens (Settings:
+  60k, 120k, 250k or never), or the user returns after 3 hours with 15k or more, Go starts Solo on a fresh Claude session (between turns
+  only) rather than letting the SDK compact. The next message carries a recap built in Go: open
+  threads, open todos, the last dozen messages. It goes as hidden context, not in the transcript, and
+  is saved so a restart doesn't lose it. Cost runs on across sessions (`cost_base`).
+- **Memory:** `remember(text, keywords, repo?, replaces?)`, `recall(queries[])`, `forget(id)` over a
+  SQLite FTS5 table (BM25, Porter stemming; store/memory.go). Each memory is one fact of at most 400
+  characters; replacing one keeps the old row, marked superseded. The newest memories, up to about
+  1.5k tokens, load into the system prompt at session open, so most need no search. `recall` merges
+  several phrasings by reciprocal rank across memories, Solo's own earlier messages and worker
+  threads' title, task and summary, returning a few one-line results. It is capped at two calls a
+  turn. Deferred: per-message auto-injection, model-distilled memories, embeddings, a memory UI.
 
 ## Worker threads
 

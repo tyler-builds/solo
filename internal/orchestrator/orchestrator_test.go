@@ -268,3 +268,153 @@ func TestFolderOutsideGit(t *testing.T) {
 		t.Fatalf("list_repos after init:\n%s", out)
 	}
 }
+
+func TestTodoTools(t *testing.T) {
+	c, o := setup(t)
+	out := call(t, o, "add_todo", map[string]any{"text": "Add a readme"})
+	todos := c.Todos(false)
+	if len(todos) != 1 || !strings.Contains(out, todos[0].ID) {
+		t.Fatalf("add_todo: %s %+v", out, todos)
+	}
+	id := todos[0].ID
+	out = call(t, o, "spawn_thread", map[string]any{"repo": "web", "title": "Add readme", "prompt": "write README.md hello", "todo": id})
+	if !strings.Contains(out, "linked to todo") {
+		t.Fatalf("spawn with todo: %s", out)
+	}
+	w := onlyWorker(c)
+	if got := call(t, o, "list_todos", map[string]any{}); !strings.Contains(got, `"Add a readme"`) || !strings.Contains(got, w.ID[:8]) {
+		t.Fatalf("list_todos: %s", got)
+	}
+	call(t, o, "update_todo", map[string]any{"id": id, "text": "Add a README", "done": true})
+	if len(c.Todos(false)) != 0 {
+		t.Fatalf("still open: %+v", c.Todos(false))
+	}
+	if got := call(t, o, "list_todos", map[string]any{}); !strings.Contains(got, "(none)") || !strings.Contains(got, `"Add a README", threads`) || !strings.Contains(got, "by you") {
+		t.Fatalf("list_todos after done: %s", got)
+	}
+	call(t, o, "remove_todo", map[string]any{"id": id})
+	if len(c.Todos(true)) != 0 {
+		t.Fatal("remove_todo left it")
+	}
+}
+
+func TestUpdatesListOpenTodos(t *testing.T) {
+	c, o := setup(t)
+	call(t, o, "add_todo", map[string]any{"text": "Decide on Redis"})
+	call(t, o, "spawn_thread", map[string]any{"repo": "web", "title": "Add readme", "prompt": "write README.md hello"})
+	eventually(t, "update with todos", func() bool {
+		for _, m := range syntheticMessages(c) {
+			if strings.Contains(m, "finished its turn") && strings.Contains(m, `"Decide on Redis"`) {
+				return true
+			}
+		}
+		return false
+	})
+}
+
+func TestMemoryTools(t *testing.T) {
+	c, o := setup(t)
+	out := call(t, o, "remember", map[string]any{"text": "The user prefers squash merges.", "keywords": "merge method pull request"})
+	if !strings.Contains(out, "#1") {
+		t.Fatalf("remember: %s", out)
+	}
+	if p := systemPrompt(c); !strings.Contains(p, "#1") || !strings.Contains(p, "squash merges") {
+		t.Fatalf("memory missing from the system prompt:\n%s", p)
+	}
+	if out := call(t, o, "remember", map[string]any{"text": "The user prefers squash merges for pull requests.", "keywords": "merge"}); !strings.Contains(out, "Similar") || !strings.Contains(out, "#1") {
+		t.Fatalf("near duplicate not flagged: %s", out)
+	}
+	if _, isErr := o.handleTool(context.Background(), core.OrchestratorID, "remember", []byte(`{"text":"`+strings.Repeat("x", core.MaxMemoryLen+1)+`","keywords":""}`)); !isErr {
+		t.Fatal("saved an overlong memory")
+	}
+
+	// recall finds memories by their keywords and stems, and the earlier conversation.
+	if err := o.Send(context.Background(), "Our deploy window is Fridays after 4pm."); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "reply", func() bool {
+		v, _ := c.Thread(core.OrchestratorID)
+		return !v.InTurn && strings.HasPrefix(v.Summary, "echo:")
+	})
+	got := call(t, o, "recall", map[string]any{"queries": []string{"merging strategy", "how should PRs land"}})
+	if !strings.Contains(got, "#1") || !strings.Contains(got, "#2") {
+		t.Fatalf("recall memories: %s", got)
+	}
+	if got := call(t, o, "recall", map[string]any{"queries": []string{"deploy schedule friday"}}); !strings.Contains(got, "Earlier conversation") || !strings.Contains(got, "User:") || strings.Contains(got, "Threads:") {
+		t.Fatalf("recall conversation: %s", got)
+	}
+	// The third search in one turn is refused.
+	if out, isErr := o.handleTool(context.Background(), core.OrchestratorID, "recall", []byte(`{"queries":["deploy"]}`)); !isErr {
+		t.Fatalf("third recall allowed: %s", out)
+	}
+	call(t, o, "forget", map[string]any{"memory_id": 1})
+	if p := systemPrompt(c); strings.Contains(p, "#1 ") {
+		t.Fatal("forgotten memory still in the prompt")
+	}
+}
+
+func TestFreshSessionCarriesARecap(t *testing.T) {
+	c, o := setup(t)
+	o.mu.Lock()
+	o.rotateAt = 500 // the fake reports 1000 tokens of context a turn
+	o.mu.Unlock()
+	call(t, o, "add_todo", map[string]any{"text": "Decide on Redis"})
+	before, _ := c.Thread(core.OrchestratorID)
+	if err := o.Send(context.Background(), "hello there"); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "fresh session", func() bool {
+		v, _ := c.Thread(core.OrchestratorID)
+		var carry string
+		return v.SessionID != before.SessionID && !v.InTurn && c.State(carryKey, &carry) && carry != ""
+	})
+	var carry string
+	c.State(carryKey, &carry)
+	for _, want := range []string{"fresh Claude session", "Decide on Redis", "User: hello there"} {
+		if !strings.Contains(carry, want) {
+			t.Fatalf("recap lacks %q:\n%s", want, carry)
+		}
+	}
+	// A restart keeps the recap for the next message.
+	o2, err := New(c, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o2.carry != carry {
+		t.Fatal("recap lost on restart")
+	}
+	o.mu.Lock()
+	o.rotateAt = 1 << 30
+	o.mu.Unlock()
+	if err := o.Send(context.Background(), "next one"); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "reply", func() bool {
+		items, _ := c.Items(context.Background(), core.OrchestratorID, 0)
+		for _, it := range items {
+			var d core.TextData
+			if it.Kind == core.ItemAssistant && it.Decode(&d) == nil && strings.Contains(d.Text, "next one") {
+				return strings.Contains(d.Text, "fresh Claude session")
+			}
+		}
+		return false
+	})
+	// The transcript shows the user's words only, and the recap is spent.
+	items, _ := c.Items(context.Background(), core.OrchestratorID, 0)
+	var last core.UserData
+	notices := 0
+	for _, it := range items {
+		switch it.Kind {
+		case core.ItemUser:
+			it.Decode(&last)
+		case core.ItemNotice:
+			notices++
+		}
+	}
+	if last.Text != "next one" || last.Synthetic || notices != 1 {
+		t.Fatalf("last message %+v, %d notices", last, notices)
+	}
+	if c.State(carryKey, &carry); carry != "" {
+		t.Fatalf("recap not cleared: %q", carry)
+	}
+}

@@ -4,7 +4,7 @@ go 1.27.3
 
 require (
 	github.com/godbus/dbus/v5 v5.2.4
-	github.com/tyler-builds/jamb v0.8.2
+	github.com/tyler-builds/jamb v0.8.3
 	golang.org/x/image v0.47.0
 	modernc.org/sqlite v1.61.1
 )

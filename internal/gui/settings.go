@@ -9,6 +9,7 @@ import (
 	"github.com/tyler-builds/solo/internal/launch"
 	"maps"
 	"os"
+	"strconv"
 
 	"github.com/tyler-builds/jamb/dialog"
 	"path/filepath"
@@ -338,6 +339,7 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 		workerModel := ui.Local(ctx, "worker-model", initial.WorkerModel)
 		namingModel := ui.Local(ctx, "naming-model", initial.NamingModel)
 		orchEffort := ui.Local(ctx, "orch-effort", initial.OrchestratorEffort)
+		soloSession := ui.Local(ctx, "solo-session", fmt.Sprint(initial.SoloSessionTokens))
 		workerEffort := ui.Local(ctx, "worker-effort", initial.WorkerEffort)
 		namingEffort := ui.Local(ctx, "naming-effort", initial.NamingEffort)
 		branchRules := ui.Local(ctx, "branch-rules", initial.BranchRules)
@@ -367,6 +369,7 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 			s.NoResumeAfterRestart = !resume.Get()
 			s.OrchestratorModel, s.WorkerModel, s.NamingModel = orchModel.Get(), workerModel.Get(), namingModel.Get()
 			s.OrchestratorEffort, s.WorkerEffort, s.NamingEffort = orchEffort.Get(), workerEffort.Get(), namingEffort.Get()
+			s.SoloSessionTokens, _ = strconv.Atoi(soloSession.Get())
 			s.BranchRules, s.RepoBranchRules = strings.TrimSpace(branchRules.Get()), repoRules.Get()
 			s.AutoMerge, s.MergeMethod, s.OnChecksFail = autoMerge.Get(), mergeMethod.Get(), onFail.Get()
 			s.PRModel, s.PREffort, s.PRRules, s.SkipPRDescription = prModel.Get(), prEffort.Get(), strings.TrimSpace(prRules.Get()), !prDescribe.Get()
@@ -403,6 +406,7 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 				s.NoNotifications, s.NoResumeAfterRestart = snap.NoNotifications, snap.NoResumeAfterRestart
 				s.OrchestratorModel, s.WorkerModel, s.NamingModel = snap.OrchestratorModel, snap.WorkerModel, snap.NamingModel
 				s.OrchestratorEffort, s.WorkerEffort, s.NamingEffort = snap.OrchestratorEffort, snap.WorkerEffort, snap.NamingEffort
+				s.SoloSessionTokens = snap.SoloSessionTokens
 				s.BranchRules, s.RepoBranchRules = snap.BranchRules, snap.RepoBranchRules
 				s.AutoMerge, s.MergeMethod, s.OnChecksFail = snap.AutoMerge, snap.MergeMethod, snap.OnChecksFail
 				s.PRModel, s.PREffort, s.PRRules, s.SkipPRDescription = snap.PRModel, snap.PREffort, snap.PRRules, snap.SkipPRDescription
@@ -583,6 +587,13 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 			settingsSection(ctx, "Agents", "", pickerHeads(ctx),
 				settingRow(ctx, "Solo", "The lead agent you talk to. It plans, follows the threads and reviews their work.", pickers("Solo", orchModel, orchEffort)),
 				settingRow(ctx, "Threads", "The agents that do the work, one per task. Solo can pick another model when a task calls for it.", pickers("Threads", workerModel, workerEffort))),
+			settingsSection(ctx, "Long conversations", "", nil,
+				settingRow(ctx, "Fresh session for Solo after", "Solo moves to a new Claude session at this much context, with a recap and its memory; your chat stays whole. Longer keeps more detail, but every message uses more of your plan.",
+					ui.Select(soloSession,
+						ui.Option[string]{Value: "60000", Label: "60k tokens"},
+						ui.Option[string]{Value: "0", Label: "120k tokens"},
+						ui.Option[string]{Value: "250000", Label: "250k tokens"},
+						ui.Option[string]{Value: "-1", Label: "Never"}).Width(ui.Px(modelPickW)).Label("Fresh session after"))),
 			settingsSection(ctx, "Helpers", "", nil,
 				settingRow(ctx, "Branch names and pull request text", "Small models that apply your rules, each set on its page.",
 					ui.Div().Row().Gap(space2).
@@ -674,9 +685,9 @@ func (a *App) historyList(ctx *ui.Context) ui.Element {
 	rows := make([]ui.Element, 0, len(done))
 	for _, th := range done {
 		id := th.ID
-		mark := statusMark(ctx, shownStatus(th))
+		var mark ui.Element = statusMark(ctx, shownStatus(th))
 		if th.Status == core.StatusDiscarded {
-			mark = ui.Icon(icons.Trash).Size(15).Color(t.TextSubtle)
+			mark = ui.Div().Tooltip("Discarded").Child(ui.Icon(icons.Trash).Size(15).Color(t.TextSubtle))
 		}
 		rows = append(rows, ui.Div().Row().Align(ui.Center).Gap(space3).PaddingX(space4).PaddingY(space3).
 			Child(mark).

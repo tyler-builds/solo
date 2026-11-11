@@ -4,8 +4,10 @@ package gui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"github.com/tyler-builds/solo/internal/launch"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -32,6 +34,7 @@ type App struct {
 	b Backend
 
 	threads *ui.Signal[[]core.ThreadView]
+	todos   *ui.Signal[[]core.Todo] // the open todos
 	repos   *ui.Signal[[]string]
 	plain   *ui.Signal[[]string] // searched folders that aren't in git
 	rate    *ui.Signal[agent.Event]
@@ -56,6 +59,7 @@ type App struct {
 	lightbox    *ui.Signal[string]          // the image shown full size, or ""
 	settingsTab string                      // the tab Settings opens on
 	orchImages  *ui.Signal[[]string]        // images attached to the message being written to Solo
+	busy        *ui.Signal[map[string]bool] // threads with a landing action under way (merge, open PR)
 	railQuery   *ui.Signal[string]          // the rail's filter
 	imgs        map[string]*ui.ImageSource  // decoded attachments, by path (UI thread only)
 
@@ -93,6 +97,7 @@ func New(b Backend) *App {
 	a := &App{
 		b:          b,
 		threads:    ui.NewSignal(b.Threads()),
+		todos:      ui.NewSignal(b.Todos(false)),
 		repos:      ui.NewSignal(b.RepoPaths()),
 		plain:      ui.NewSignal(b.PlainFolders()),
 		rate:       ui.NewSignal(b.RateLimit()),
@@ -113,6 +118,7 @@ func New(b Backend) *App {
 		foldedAsks: ui.NewSignal(map[string]bool{}),
 		lightbox:   ui.NewSignal(""),
 		orchImages: ui.NewSignal([]string(nil)),
+		busy:       ui.NewSignal(map[string]bool{}),
 		railQuery:  ui.NewSignal(""),
 		imgs:       map[string]*ui.ImageSource{},
 		items:      map[string]*ui.Signal[[]core.Item]{},
@@ -174,6 +180,7 @@ func (a *App) refresh() {
 	a.mu.Unlock()
 
 	var threads []core.ThreadView
+	var todos []core.Todo
 	var repos, plain []string
 	var rate agent.Event
 	var pending map[string][]core.PendingQuestion
@@ -181,6 +188,7 @@ func (a *App) refresh() {
 	if all || len(dirty) > 0 {
 		cfg = a.b.Settings()
 		threads = a.b.Threads()
+		todos = a.b.Todos(false)
 		repos = a.b.RepoPaths()
 		plain = a.b.PlainFolders()
 		rate = a.b.RateLimit()
@@ -195,6 +203,7 @@ func (a *App) refresh() {
 	post(func() {
 		if threads != nil {
 			a.threads.Set(threads)
+			a.todos.Set(todos)
 			if !slices.Equal(repos, a.repos.Peek()) {
 				a.repos.Set(repos)
 			}
@@ -242,10 +251,34 @@ func (a *App) run(what string, f func(ctx context.Context) error) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
-		if err := f(ctx); err != nil {
+		var resolving *core.ResolvingError
+		if err := f(ctx); errors.As(err, &resolving) {
+			a.notify(ui.ToastInfo, "Resolving conflicts first", "“"+resolving.Title+"” conflicts with newer work. Its thread is resolving that, then it merges.")
+		} else if err != nil {
 			a.notify(ui.ToastError, what+" failed", err.Error())
 		}
 	}()
+}
+
+// runBusy is run for a landing action on a thread: until it finishes, the thread's land button shows
+// it is busy, so a slow forge still shows that the click took.
+func (a *App) runBusy(id, what string, f func(ctx context.Context) error) {
+	set := func(on bool) {
+		a.busy.Update(func(m map[string]bool) map[string]bool {
+			next := maps.Clone(m)
+			if on {
+				next[id] = true
+			} else {
+				delete(next, id)
+			}
+			return next
+		})
+	}
+	set(true) // called from a click, on the UI thread
+	a.run(what, func(ctx context.Context) error {
+		defer a.onUI(func() { set(false) })
+		return f(ctx)
+	})
 }
 
 // markDone takes a thread out of the rail into History, with an Undo.

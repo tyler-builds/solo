@@ -73,7 +73,8 @@ var toolSpecs = []agent.ToolSpec{
 			"model":{"type":"string","description":"Optional model alias (opus, sonnet, haiku) or ID."},
 			"effort":{"type":"string","description":"Optional effort level (low, medium, high, xhigh, max); default from Settings."},
 			"base":{"type":"string","description":"Optional branch to start from; default is the repository's current branch."},
-			"images":{"type":"array","items":{"type":"string"},"description":"Optional paths of image files to send with it, such as the attached images the user gave you."}},
+			"images":{"type":"array","items":{"type":"string"},"description":"Optional paths of image files to send with it, such as the attached images the user gave you."},
+			"todo":{"type":"string","description":"Optional ID of a todo (from add_todo or list_todos) that this thread's work finishes: the app ticks it off when the work lands. Leave it out when the thread does only part of the todo."}},
 			"required":["repo","title","prompt"]}`),
 	},
 	{
@@ -106,6 +107,74 @@ var toolSpecs = []agent.ToolSpec{
 	},
 }
 
+// todoSpecs keep the user's to-do list, which the app pins beside the conversation.
+var todoSpecs = []agent.ToolSpec{
+	{
+		Name:        "list_todos",
+		Description: "The user's to-do list: open todos with their ID, text and the threads that finish them, and the ones completed lately.",
+		InputSchema: schema(`{"type":"object","properties":{}}`),
+		ReadOnly:    true,
+	},
+	{
+		Name: "add_todo",
+		Description: "Add a todo to the user's list: an outcome they want done, with or without a thread. " +
+			"Pass threads only for threads whose work landing finishes it; the app then ticks it off when that work lands. Returns its ID.",
+		InputSchema: schema(`{"type":"object","properties":{
+			"text":{"type":"string","description":"A few words in the imperative, as the user would write it: \"Fix OAuth token refresh\"."},
+			"threads":{"type":"array","items":{"type":"string"},"description":"Optional IDs or short IDs of the threads whose work finishes it, all of them needed."}},"required":["text"]}`),
+	},
+	{
+		Name:        "update_todo",
+		Description: "Change a todo: its text, the threads that finish it, or whether it is done. Tick one off when the conversation or a thread update shows it's done.",
+		InputSchema: schema(`{"type":"object","properties":{
+			"id":{"type":"string","description":"The todo's ID."},
+			"text":{"type":"string"},
+			"threads":{"type":"array","items":{"type":"string"},"description":"Replaces the threads that finish it; [] unlinks them."},
+			"done":{"type":"boolean"}},"required":["id"]}`),
+	},
+	{
+		Name:        "remove_todo",
+		Description: "Delete a todo the user no longer wants (not one that is done: mark that done instead).",
+		InputSchema: schema(`{"type":"object","properties":{"id":{"type":"string","description":"The todo's ID."}},"required":["id"]}`),
+	},
+}
+
+// memorySpecs are Solo's long-term memory, which outlasts its Claude sessions.
+var memorySpecs = []agent.ToolSpec{
+	{
+		Name: "remember",
+		Description: "Save one durable fact, decision or preference to your memory, which outlasts this conversation. " +
+			"Your current memories are listed in your system prompt; to change one, save the new version with replaces.",
+		InputSchema: schema(`{"type":"object","properties":{
+			"text":{"type":"string","description":"One self-contained fact in a sentence or two (at most 400 characters), with the names it's about, readable with no other context."},
+			"keywords":{"type":"string","description":"Other words someone might search for it by: synonyms, related terms, names. Space separated."},
+			"repo":{"type":"string","description":"The repository it is about, when it holds only there."},
+			"replaces":{"type":"array","items":{"type":"integer"},"description":"IDs of memories this one replaces (outdated or merged into it)."}},"required":["text","keywords"]}`),
+	},
+	{
+		Name: "recall",
+		Description: "Search your memories, your earlier conversation with the user, and past threads. " +
+			"Pass two or three phrasings in one call (different words for the same thing); results come back ranked, one line each. " +
+			"At most twice a turn.",
+		InputSchema: schema(`{"type":"object","properties":{
+			"queries":{"type":"array","items":{"type":"string"},"description":"Two or three short searches in the words the answer would contain: names, terms, synonyms."}},"required":["queries"]}`),
+		ReadOnly: true,
+	},
+	{
+		Name:        "forget",
+		Description: "Delete a memory that is wrong or that the user asks you to forget. To change one, use remember with replaces instead.",
+		InputSchema: schema(`{"type":"object","properties":{"memory_id":{"type":"integer"}},"required":["memory_id"]}`),
+	},
+}
+
+// recallsPerTurn caps recall calls in one turn of Solo's, so a search can't turn into a hunt.
+const recallsPerTurn = 2
+
+func init() {
+	toolSpecs = append(toolSpecs, todoSpecs...)
+	toolSpecs = append(toolSpecs, memorySpecs...)
+}
+
 // handleTool runs one orchestrator tool. Errors go back to the model as error results.
 func (o *Orchestrator) handleTool(ctx context.Context, threadID, name string, raw []byte) (string, bool) {
 	if threadID != core.OrchestratorID {
@@ -128,6 +197,13 @@ func (o *Orchestrator) handleTool(ctx context.Context, threadID, name string, ra
 		Repos         []string          `json:"repos"`
 		Effort        string            `json:"effort"`
 		Folder        string            `json:"folder"`
+		Todo          string            `json:"todo"`
+		Threads       *[]string         `json:"threads"`
+		Done          *bool             `json:"done"`
+		Keywords      string            `json:"keywords"`
+		Replaces      []int64           `json:"replaces"`
+		Queries       []string          `json:"queries"`
+		MemoryID      int64             `json:"memory_id"`
 	}
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &a); err != nil {
@@ -193,6 +269,14 @@ func (o *Orchestrator) handleTool(ctx context.Context, threadID, name string, ra
 			if v.InPlace {
 				out += " It works directly in the folder, which isn't in git: no branch, diff or merge."
 			}
+			if a.Todo != "" {
+				if err = o.linkTodo(a.Todo, v.ID); err != nil {
+					out += " Linking the todo failed: " + err.Error()
+					err = nil
+				} else {
+					out += " It's linked to todo " + a.Todo + "."
+				}
+			}
 		}
 	case "message_thread":
 		var v core.ThreadView
@@ -228,6 +312,55 @@ func (o *Orchestrator) handleTool(ctx context.Context, threadID, name string, ra
 			if err = o.c.AddProposal(v.ID, a.Summary); err == nil {
 				out = "The user now sees a Merge card for " + short(v.ID) + "."
 			}
+		}
+	case "remember":
+		var m core.Memory
+		var similar []core.Memory
+		if m, similar, err = o.c.Remember(ctx, a.Text, a.Keywords, a.Repo, a.Replaces); err == nil {
+			out = fmt.Sprintf("Saved memory #%d.", m.ID)
+			if len(similar) > 0 {
+				out += " Similar memories; if one says the same, forget it, or save again with replaces:\n" + memoryLines(similar)
+			}
+		}
+	case "recall":
+		if !o.takeRecall() {
+			err = fmt.Errorf("you've searched %d times this turn; answer with what you found, or ask the user", recallsPerTurn)
+			break
+		}
+		var r core.Recalled
+		if r, err = o.c.Recall(ctx, a.Queries); err == nil {
+			out = o.recalled(r)
+		}
+	case "forget":
+		if err = o.c.Forget(a.MemoryID); err == nil {
+			out = fmt.Sprintf("Forgot memory #%d.", a.MemoryID)
+		}
+	case "list_todos":
+		out = o.listTodos()
+	case "add_todo":
+		var threads []string
+		if a.Threads != nil {
+			threads = *a.Threads
+		}
+		var td core.Todo
+		if td, err = o.c.AddTodo(a.Text, threads); err == nil {
+			out = fmt.Sprintf("Added todo %s %q.", td.ID, td.Text)
+			if td.Done() {
+				out += " Its work has already landed, so it's done."
+			}
+		}
+	case "update_todo":
+		ch := core.TodoChange{Threads: a.Threads, Done: a.Done, By: core.TodoBySolo}
+		if a.Text != "" {
+			ch.Text = &a.Text
+		}
+		var td core.Todo
+		if td, err = o.c.UpdateTodo(a.ID, ch); err == nil {
+			out = fmt.Sprintf("Updated todo %s %q (%s).", td.ID, td.Text, map[bool]string{true: "done", false: "open"}[td.Done()])
+		}
+	case "remove_todo":
+		if err = o.c.RemoveTodo(a.ID); err == nil {
+			out = "Removed todo " + a.ID + "."
 		}
 	default:
 		err = fmt.Errorf("unknown tool %s", name)
@@ -535,4 +668,129 @@ func repoList(v core.ThreadView) string {
 		names[i] = p.Name
 	}
 	return strings.Join(names, ", ")
+}
+
+// linkTodo adds a thread to a todo's linked threads.
+func (o *Orchestrator) linkTodo(id, threadID string) error {
+	for _, td := range o.c.Todos(true) {
+		if td.ID == id {
+			threads := append(td.Threads, threadID)
+			_, err := o.c.UpdateTodo(id, core.TodoChange{Threads: &threads})
+			return err
+		}
+	}
+	return fmt.Errorf("no todo %q", id)
+}
+
+// listTodos describes the to-do list for list_todos.
+func (o *Orchestrator) listTodos() string {
+	var open, done []string
+	for _, td := range o.c.Todos(true) {
+		line := fmt.Sprintf("- %s %q", td.ID, td.Text)
+		var threads []string
+		for _, id := range td.Threads {
+			if v, ok := o.c.Thread(id); ok {
+				threads = append(threads, fmt.Sprintf("%s %q (%s)", short(v.ID), v.Title, statusText(v)))
+			}
+		}
+		if len(threads) > 0 {
+			line += ", threads: " + strings.Join(threads, "; ")
+		}
+		if td.Done() {
+			by := map[string]string{core.TodoByUser: "by the user", core.TodoBySolo: "by you", core.TodoByThread: "when its threads landed"}[td.DoneBy]
+			done = append(done, fmt.Sprintf("%s, done %s %s", line, ago(td.DoneAt), by))
+			continue
+		}
+		open = append(open, line)
+	}
+	out := "Open todos:\n"
+	if len(open) == 0 {
+		out += "(none)\n"
+	}
+	out += strings.Join(open, "\n")
+	if len(done) > 0 {
+		out += "\n\nCompleted lately:\n" + strings.Join(done[max(0, len(done)-10):], "\n")
+	}
+	return strings.TrimSpace(out)
+}
+
+// openTodos lists the open todos for a thread update, one per line, or "" when there are none.
+func (o *Orchestrator) openTodos() string {
+	var lines []string
+	for _, td := range o.c.Todos(false) {
+		line := fmt.Sprintf("- %s %q", td.ID, td.Text)
+		var ids []string
+		for _, id := range td.Threads {
+			ids = append(ids, short(id))
+		}
+		if len(ids) > 0 {
+			line += " (threads " + strings.Join(ids, ", ") + ")"
+		}
+		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// takeRecall counts a recall against the current turn's allowance, reporting whether there was one left.
+func (o *Orchestrator) takeRecall() bool {
+	v, _ := o.c.Thread(core.OrchestratorID)
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if !v.TurnStarted.Equal(o.recallTurn) {
+		o.recallTurn, o.recalls = v.TurnStarted, 0
+	}
+	if o.recalls >= recallsPerTurn {
+		return false
+	}
+	o.recalls++
+	return true
+}
+
+// memoryLines lists memories one per line: ID, repository, date and text.
+func memoryLines(ms []core.Memory) string {
+	var b strings.Builder
+	for _, m := range ms {
+		fmt.Fprintf(&b, "- #%d", m.ID)
+		if m.Repo != "" {
+			fmt.Fprintf(&b, " [%s]", m.Repo)
+		}
+		fmt.Fprintf(&b, " (%s) %s\n", m.UpdatedAt.Format("2006-01-02"), m.Text)
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// recalled formats a recall's results compactly, one line each.
+func (o *Orchestrator) recalled(r core.Recalled) string {
+	var parts []string
+	if len(r.Memories) > 0 {
+		parts = append(parts, "Memories:\n"+memoryLines(r.Memories))
+	}
+	if len(r.Messages) > 0 {
+		var b strings.Builder
+		b.WriteString("Earlier conversation:")
+		for _, h := range r.Messages {
+			who := "User"
+			if h.Kind == core.ItemAssistant {
+				who = "You"
+			}
+			fmt.Fprintf(&b, "\n- (%s) %s: %s", h.CreatedAt.Format("2006-01-02"), who, oneLine(h.Snippet))
+		}
+		parts = append(parts, b.String())
+	}
+	if len(r.Threads) > 0 {
+		var b strings.Builder
+		b.WriteString("Threads:")
+		for _, h := range r.Threads {
+			v, ok := o.c.Thread(h.ThreadID)
+			if !ok {
+				continue
+			}
+			fmt.Fprintf(&b, "\n- %s %q (%s, %s): %s", short(v.ID), v.Title, repoList(v), v.Status, oneLine(h.Snippet))
+		}
+		parts = append(parts, b.String())
+	}
+	if len(parts) == 0 {
+		return "Nothing found. Try other words, or ask the user."
+	}
+	return strings.Join(parts, "\n\n")
 }

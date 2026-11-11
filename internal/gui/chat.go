@@ -14,11 +14,13 @@ import (
 	"github.com/tyler-builds/jamb/access"
 	"github.com/tyler-builds/jamb/icons"
 	"github.com/tyler-builds/jamb/input"
+	"github.com/tyler-builds/jamb/markdown"
 	"github.com/tyler-builds/jamb/markdown/mdcode"
 	"github.com/tyler-builds/jamb/ui"
 
 	"github.com/tyler-builds/solo/internal/agent"
 	"github.com/tyler-builds/solo/internal/core"
+	"github.com/tyler-builds/solo/internal/forge"
 )
 
 const chatMaxWidth = 780
@@ -104,6 +106,7 @@ type row struct {
 	item   *core.Item
 	steps  []*core.Item // a run of tool calls and thoughts, shown folded
 	thread string       // the thread the folded steps act on, if they all act on one
+	quiet  bool         // in Solo's chat: the steps of one turn, folded into one muted line
 	live   *core.LiveBlock
 	busy   bool // the "working" line at the end of a running turn
 }
@@ -118,9 +121,113 @@ const minFold = 3
 
 // transcript renders a thread's items, its streaming text, and a working indicator, newest at the bottom.
 func (a *App) transcript(ctx *ui.Context, v core.ThreadView, items []core.Item, scope string) ui.Element {
+	var rows []row
+	if scope == "orch" {
+		rows = a.orchRows(items)
+	} else {
+		rows = a.threadRows(items)
+	}
+	rows = a.mergeHandoffs(rows)
+	for i := range v.Live {
+		// Solo's chat says it is thinking in its working line, not in a block of thoughts.
+		if scope == "orch" && v.Live[i].Thinking {
+			continue
+		}
+		rows = append(rows, row{key: fmt.Sprintf("live%d", i), live: &v.Live[i]})
+	}
+	// A thread's panel pins its working line above the composer; only Solo's transcript says it in line.
+	if v.InTurn && !v.IsWorker && v.Status != core.StatusWaiting && (len(v.Live) == 0 || v.Live[len(v.Live)-1].Thinking) {
+		rows = append(rows, row{key: "busy", busy: true})
+	}
+	h := ui.Local(ctx, scope+"-list", ui.NewListHandle()).Peek()
+	// Open on the latest message; after that the list follows new ones while it is at the end.
+	if started := ui.Local(ctx, scope+"-started", false); !started.Peek() && len(rows) > 0 {
+		started.Set(true)
+		h.ScrollToEnd()
+	}
+	list := ui.ListOf(rows, func(r row) string { return r.key }, func(_ int, r row) ui.Element {
+		key := r.key
+		// Rows are built only near the viewport; which ones are built tells the pill below what has
+		// scrolled away.
+		return ui.Component(func(rctx *ui.Context) ui.Element {
+			a.markBuilt(rctx, scope, key, true)
+			rctx.OnDispose(func() { a.markBuilt(rctx, scope, key, false) })
+			return ui.Div().Column().Align(ui.Center).PaddingX(space6).
+				Child(ui.Div().Column().Width(ui.Full).MaxWidth(ui.Px(chatMaxWidth)).PaddingY(space1 + 2).
+					Child(a.rowView(rctx, v, r)))
+		})
+	}).Bottom().Handle(h).SelectionContainer().Key(scope + "-transcript").Label("Conversation").
+		Style(ui.Style{Grow: 1, Padding: ui.Edges{Top: space4, Bottom: space2}})
+	if scope != "orch" {
+		return list
+	}
+	return ui.Div().Column().Grow(1).MinHeight(ui.Px(0)).
+		Child(ui.Component(func(ctx *ui.Context) ui.Element { return a.offscreenPill(ctx, rows, h, true) })).
+		Child(list).
+		Child(ui.Component(func(ctx *ui.Context) ui.Element { return a.offscreenPill(ctx, rows, h, false) }))
+}
+
+// orchRows lays out Solo's chat one exchange at a time: each message to Solo, one quiet folded line
+// for everything Solo did while it worked, then its cards and its reply. Only Solo's last message of
+// a turn shows in full; what it said between steps folds in with them.
+func (a *App) orchRows(items []core.Item) []row {
+	rows := make([]row, 0, len(items)/2+4)
+	var seg []*core.Item
+	flush := func() {
+		if len(seg) == 0 {
+			return
+		}
+		last := -1
+		for i, it := range seg {
+			if it.Kind == core.ItemAssistant {
+				last = i
+			}
+		}
+		var fold []*core.Item
+		var rest []row
+		thread, mixed, worked := "", false, false
+		for i, it := range seg {
+			if !isStep(it) && (it.Kind != core.ItemAssistant || i == last) {
+				rest = append(rest, row{key: fmt.Sprintf("i%d", it.ID), item: it})
+				continue
+			}
+			fold = append(fold, it)
+			worked = worked || it.Kind != core.ItemThinking
+			if th := a.itemThread(it); th != "" {
+				mixed = mixed || (thread != "" && th != thread)
+				thread = th
+			}
+		}
+		if mixed {
+			thread = ""
+		}
+		// Thoughts alone aren't worth a line. The key is the exchange's first item, so the line keeps
+		// its open state as steps arrive.
+		if worked {
+			rows = append(rows, row{key: fmt.Sprintf("g%d", seg[0].ID), steps: fold, thread: thread, quiet: true})
+		}
+		rows = append(rows, rest...)
+		seg = nil
+	}
+	for i := range items {
+		it := &items[i]
+		if !visible(it) {
+			continue
+		}
+		if it.Kind == core.ItemUser {
+			flush()
+			rows = append(rows, row{key: fmt.Sprintf("i%d", it.ID), item: it})
+			continue
+		}
+		seg = append(seg, it)
+	}
+	flush()
+	return rows
+}
+
+// threadRows lays out a thread's transcript: its steps fold in runs between messages.
+func (a *App) threadRows(items []core.Item) []row {
 	rows := make([]row, 0, len(items)+4)
-	// Steps fold in runs. In the orchestrator, a run is also cut where the thread it acts on changes, so
-	// each folded group belongs to one thread (or to none).
 	var run []*core.Item
 	runThread := ""
 	flush := func() {
@@ -156,40 +263,7 @@ func (a *App) transcript(ctx *ui.Context, v core.ThreadView, items []core.Item, 
 		rows = append(rows, row{key: fmt.Sprintf("i%d", it.ID), item: it})
 	}
 	flush()
-	rows = a.mergeHandoffs(rows)
-	for i := range v.Live {
-		rows = append(rows, row{key: fmt.Sprintf("live%d", i), live: &v.Live[i]})
-	}
-	// A thread's panel pins its working line above the composer; only Solo's transcript says it in line.
-	if v.InTurn && !v.IsWorker && v.Status != core.StatusWaiting && (len(v.Live) == 0 || v.Live[len(v.Live)-1].Thinking) {
-		rows = append(rows, row{key: "busy", busy: true})
-	}
-	h := ui.Local(ctx, scope+"-list", ui.NewListHandle()).Peek()
-	// Open on the latest message; after that the list follows new ones while it is at the end.
-	if started := ui.Local(ctx, scope+"-started", false); !started.Peek() && len(rows) > 0 {
-		started.Set(true)
-		h.ScrollToEnd()
-	}
-	list := ui.ListOf(rows, func(r row) string { return r.key }, func(_ int, r row) ui.Element {
-		key := r.key
-		// Rows are built only near the viewport; which ones are built tells the pill below what has
-		// scrolled away.
-		return ui.Component(func(rctx *ui.Context) ui.Element {
-			a.markBuilt(rctx, scope, key, true)
-			rctx.OnDispose(func() { a.markBuilt(rctx, scope, key, false) })
-			return ui.Div().Column().Align(ui.Center).PaddingX(space6).
-				Child(ui.Div().Column().Width(ui.Full).MaxWidth(ui.Px(chatMaxWidth)).PaddingY(space1 + 2).
-					Child(a.rowView(rctx, v, r)))
-		})
-	}).Bottom().Handle(h).SelectionContainer().Key(scope + "-transcript").Label("Conversation").
-		Style(ui.Style{Grow: 1, Padding: ui.Edges{Top: space4, Bottom: space2}})
-	if scope != "orch" {
-		return list
-	}
-	return ui.Div().Column().Grow(1).MinHeight(ui.Px(0)).
-		Child(ui.Component(func(ctx *ui.Context) ui.Element { return a.offscreenPill(ctx, rows, h, true) })).
-		Child(list).
-		Child(ui.Component(func(ctx *ui.Context) ui.Element { return a.offscreenPill(ctx, rows, h, false) }))
+	return rows
 }
 
 // mergeHandoffs folds the actions Solo took on a thread right after that thread's update into the
@@ -290,6 +364,8 @@ func (a *App) rowView(ctx *ui.Context, v core.ThreadView, r row) ui.Element {
 			return a.updateWithSteps(ctx, us[0], r.steps)
 		}
 		return a.updateView(ctx, d.Text)
+	case r.steps != nil && r.quiet:
+		return a.quietSteps(ctx, r.steps)
 	case r.steps != nil:
 		return a.stepsView(ctx, r.steps, r.thread)
 	}
@@ -309,14 +385,14 @@ func (a *App) rowView(ctx *ui.Context, v core.ThreadView, r row) ui.Element {
 				Child(a.messageImages(ctx, d.Images, ui.Start)).
 				Child(ui.Div().PaddingX(space3+2).PaddingY(space2+2).Radius(radiusL).MaxWidth(ui.Percent(92)).
 					Background(t.Surface).Border(1, t.Border).
-					Child(a.withPathMenu(a.pathText(d.Text, viewBases(v)).Selectable(), d.Text, viewBases(v))))
+					Child(a.md(ctx, d.Text, viewBases(v))))
 		}
 		col := ui.Div().Column().Align(ui.End).Gap(space1 + 2).MaxWidth(ui.Percent(85)).
 			Child(a.messageImages(ctx, d.Images, ui.End))
 		if strings.TrimSpace(d.Text) != "" {
 			col = col.Child(ui.Div().PaddingX(space3 + 2).PaddingY(space2 + 2).Radius(radiusL).
 				Background(t.SurfaceActive).
-				Child(a.withPathMenu(a.pathText(d.Text, viewBases(v)).Selectable(), d.Text, viewBases(v))))
+				Child(a.md(ctx, hardBreaks(d.Text), viewBases(v))))
 		}
 		if d.Steer {
 			col = col.Child(ui.Div().Row().Align(ui.Center).Gap(4).PaddingRight(2).
@@ -338,6 +414,10 @@ func (a *App) rowView(ctx *ui.Context, v core.ThreadView, r row) ui.Element {
 func (a *App) stepView(ctx *ui.Context, it *core.Item, v core.ThreadView) ui.Element {
 	t := ctx.Theme()
 	switch it.Kind {
+	case core.ItemAssistant:
+		var d core.TextData
+		it.Decode(&d)
+		return ui.Div().PaddingX(space2).Child(a.md(ctx, d.Text, viewBases(v)))
 	case core.ItemThinking:
 		var d core.TextData
 		it.Decode(&d)
@@ -521,11 +601,7 @@ func (a *App) updateWithSteps(ctx *ui.Context, u update, steps []*core.Item) ui.
 	return ui.Component(func(ctx *ui.Context) ui.Element {
 		t := ctx.Theme()
 		open := ui.Local(ctx, "open", false)
-		label := fmt.Sprintf("%d actions", len(steps))
-		if len(steps) == 1 {
-			_, verb, _ := a.describeTool(itemTool(steps[0]))
-			label = verb
-		}
+		label := a.actionsLabel(steps)
 		toggle := ui.Div().Row().Align(ui.Center).Gap(space1).PaddingX(space2).Height(ui.Px(22)).Radius(radiusS).Shrink(0).
 			Cursor(ui.CursorPointer).Hover(ui.Style{Background: t.SurfaceActive}).
 			Role(access.RoleButton).Label("Show what Solo did").TabIndex(0).
@@ -533,6 +609,70 @@ func (a *App) updateWithSteps(ctx *ui.Context, u update, steps []*core.Item) ui.
 			Child(ui.Text(label).FontSize(12).TextColor(t.TextSubtle).NoWrap()).
 			Child(ui.Icon(map[bool]*icons.Icon{true: icons.ChevronDown, false: icons.ChevronRight}[open.Get()]).Size(12).Color(t.TextSubtle))
 		col := ui.Div().Column().Gap(2).Child(a.updateRow(ctx, u, toggle))
+		if open.Get() {
+			inner := ui.Div().Column().Gap(2).PaddingLeft(space3).MarginLeft(space3).BorderEdges(ui.Edges{Left: 1}, t.Border)
+			for _, it := range steps {
+				inner = inner.Child(a.stepView(ctx, it, core.ThreadView{}))
+			}
+			col = col.Child(inner)
+		}
+		return col
+	})
+}
+
+// countSteps counts the folded steps worth naming: tool calls and words, not thoughts.
+func countSteps(steps []*core.Item) int {
+	n := 0
+	for _, it := range steps {
+		if it.Kind != core.ItemThinking {
+			n++
+		}
+	}
+	return n
+}
+
+// actionsLabel names what Solo did about a thread update: the one tool call, or how many steps.
+func (a *App) actionsLabel(steps []*core.Item) string {
+	var tools []*core.Item
+	for _, it := range steps {
+		if it.Kind == core.ItemTool {
+			tools = append(tools, it)
+		}
+	}
+	if n := countSteps(steps); n == 1 && len(tools) == 1 {
+		_, verb, _ := a.describeTool(itemTool(tools[0]))
+		return verb
+	} else if n == 1 {
+		return "1 action"
+	} else {
+		return fmt.Sprintf("%d actions", n)
+	}
+}
+
+// quietSteps is everything Solo did in one turn, folded into a single muted line above its reply.
+func (a *App) quietSteps(ctx *ui.Context, steps []*core.Item) ui.Element {
+	return ui.Component(func(ctx *ui.Context) ui.Element {
+		t := ctx.Theme()
+		open := ui.Local(ctx, "open", false)
+		failures := 0
+		for _, it := range steps {
+			if it.Kind == core.ItemTool && itemTool(it).IsError {
+				failures++
+			}
+		}
+		n := countSteps(steps)
+		label := fmt.Sprintf("%d steps", n)
+		if n == 1 {
+			label = "1 step"
+		}
+		head := ui.Div().Row().Align(ui.Center).Gap(space1).PaddingX(space2).Height(ui.Px(22)).Radius(radiusS).
+			AlignSelf(ui.Start).Cursor(ui.CursorPointer).Hover(ui.Style{Background: t.SurfaceHover}).
+			Role(access.RoleButton).Label("Show what Solo did: " + label).TabIndex(0).
+			OnClick(func() { open.Update(func(o bool) bool { return !o }) }).
+			Child(ui.Text(label).FontSize(12).TextColor(t.TextSubtle).NoWrap()).
+			Child(ui.If(failures > 0, ui.Text(fmt.Sprintf("· %d failed", failures)).FontSize(12).TextColor(t.Danger).NoWrap())).
+			Child(ui.Icon(map[bool]*icons.Icon{true: icons.ChevronDown, false: icons.ChevronRight}[open.Get()]).Size(12).Color(t.TextSubtle))
+		col := ui.Div().Column().Gap(2).Child(head)
 		if open.Get() {
 			inner := ui.Div().Column().Gap(2).PaddingLeft(space3).MarginLeft(space3).BorderEdges(ui.Edges{Left: 1}, t.Border)
 			for _, it := range steps {
@@ -667,6 +807,30 @@ func (a *App) describeTool(d core.ToolData) (*icons.Icon, string, string) {
 		return icons.ListTodo, "Listed threads", ""
 	case "list_repos":
 		return icons.FolderGit2, "Listed repositories", ""
+	case "remember":
+		return icons.BookmarkPlus, "Remembered", str("text")
+	case "recall":
+		qs, _ := in["queries"].([]any)
+		var words []string
+		for _, q := range qs {
+			if w, ok := q.(string); ok {
+				words = append(words, w)
+			}
+		}
+		return icons.Search, "Searched memory", strings.Join(words, " · ")
+	case "forget":
+		return icons.BookmarkX, "Forgot a memory", ""
+	case "list_todos":
+		return icons.ListTodo, "Read the to-do list", ""
+	case "add_todo":
+		return icons.ListPlus, "Added to do", str("text")
+	case "update_todo":
+		if done, _ := in["done"].(bool); done {
+			return icons.CircleCheck, "Ticked off", str("text")
+		}
+		return icons.ListTodo, "Updated to do", str("text")
+	case "remove_todo":
+		return icons.ListX, "Removed to do", ""
 	case "init_repo":
 		return icons.GitBranchPlus, "Put in git", filepath.Base(str("folder"))
 	case "interrupt_thread":
@@ -792,14 +956,14 @@ func (a *App) proposalCard(ctx *ui.Context, d core.ProposalData, steps []*core.I
 					return append(items, ui.MenuItem{Label: "Discard thread…", Icon: icons.Trash, OnClick: func() { a.confirmDiscard(th) }})
 				}))
 		}
-		if len(steps) > 0 {
-			label := fmt.Sprintf("%d actions", len(steps))
-			if len(steps) == 1 {
+		if n := countSteps(steps); n > 0 {
+			label := fmt.Sprintf("%d actions", n)
+			if n == 1 {
 				label = "1 action"
 			}
 			tip := label + " Solo took on this thread"
 			if a.chatWidth(ctx) < 640 {
-				label = fmt.Sprint(len(steps)) // narrow: the count alone, with its tooltip
+				label = fmt.Sprint(n) // narrow: the count alone, with its tooltip
 			}
 			actions = actions.Child(ui.Div().Grow(1)).
 				Child(ui.Div().Row().Align(ui.Center).Gap(space1).PaddingX(space2).Height(ui.Px(24)).Radius(radiusS).
@@ -811,7 +975,7 @@ func (a *App) proposalCard(ctx *ui.Context, d core.ProposalData, steps []*core.I
 		}
 		card := ui.Div().Column().Gap(space3).Padding(space4).Radius(radiusL).Background(t.Surface).
 			Border(1, brand.Alpha(0.35)).
-			Child(a.cardHeader(ctx, icons.GitMerge, brand, "Merge proposed", d.ThreadID)).
+			Child(a.cardHeader(ctx, icons.GitMerge, brand, "Merge proposed", d.ThreadID, checksBadge(ctx, th))).
 			Child(ui.Text(d.Summary).FontSize(13).TextColor(t.Text)).
 			Child(actions)
 		if open.Get() {
@@ -1010,10 +1174,10 @@ func (a *App) foldedAsk(ctx *ui.Context, th core.ThreadView, pq core.PendingQues
 // a question (those show in full above it): ready to merge, and failed.
 func (a *App) attentionBar(ctx *ui.Context) ui.Element {
 	t := ctx.Theme()
-	// A merge proposal among the last few messages is already in view; don't repeat it.
+	// A merge proposal among the recent messages is likely in view; don't repeat it.
 	shown := map[string]bool{}
 	items := a.itemsOf(core.OrchestratorID).Get()
-	for i := len(items) - 1; i >= 0 && i >= len(items)-4; i-- {
+	for i := len(items) - 1; i >= 0 && i >= len(items)-16; i-- {
 		if items[i].Kind == core.ItemProposal {
 			shown[items[i].Ref] = true
 		}
@@ -1035,15 +1199,15 @@ func (a *App) attentionBar(ctx *ui.Context) ui.Element {
 	if len(ready) == 0 && len(failed) == 0 {
 		return ui.Div()
 	}
+	// A quiet link, not a badge: the rail already counts what needs the user.
 	pill := func(icon *icons.Icon, c ui.Color, text string, th core.ThreadView, tab string) ui.Element {
-		return ui.Div().Row().Align(ui.Center).Gap(6).PaddingX(space3).Height(ui.Px(28)).Radius(14).Shrink(1).
-			MinWidth(ui.Px(0)).MaxWidth(ui.Px(360)).
-			Border(1, c.Alpha(0.35)).Background(c.Alpha(0.08)).Cursor(ui.CursorPointer).
-			Hover(ui.Style{Background: c.Alpha(0.16)}).
+		return ui.Div().Row().Align(ui.Center).Gap(6).PaddingX(space2).Height(ui.Px(24)).Radius(radiusS).Shrink(1).
+			MinWidth(ui.Px(0)).MaxWidth(ui.Px(360)).Cursor(ui.CursorPointer).
+			Hover(ui.Style{Background: t.SurfaceHover}).
 			Role(access.RoleButton).Label(text).TabIndex(0).Tooltip(text).
 			OnClick(func() { a.openThread(th.ID, tab) }).
-			Child(ui.Icon(icon).Size(13).Color(c)).
-			Child(ui.Text(text).FontSize(12).Medium().Truncate().MinWidth(ui.Px(0)))
+			Child(ui.Icon(icon).Size(12).Color(c)).
+			Child(ui.Text(text).FontSize(12).TextColor(t.TextMuted).Truncate().MinWidth(ui.Px(0)))
 	}
 	row := ui.Div().Row().Align(ui.Center).Gap(space2).MinWidth(ui.Px(0))
 	if len(ready) > 0 {
@@ -1150,8 +1314,14 @@ func (a *App) composer(ctx *ui.Context, v core.ThreadView, key, placeholder stri
 						})
 				}))
 		actions = actions.Child(sendBtn)
+		// Markdown shows formatted as it is typed; its syntax shows where the caret is.
+		marks := markdown.EditMarks(markdown.EditStyle{
+			Syntax: ui.Highlight{Color: t.TextSubtle},
+			Code:   ui.Highlight{Color: t.Link, Background: t.Background},
+			Link:   ui.Highlight{Color: t.Link},
+		})
 		area := ui.TextArea(draft).Placeholder(placeholder).Label(placeholder).MinRows(1).Borderless().
-			MaxHeight(ui.Px(220)).Width(ui.Full).Key(key + "-area").FocusHandle(focus).
+			MaxHeight(ui.Px(220)).Width(ui.Full).Key(key + "-area").FocusHandle(focus).Marks(marks).
 			OnPasteImage(func(img image.Image) {
 				attach(func() ([]string, error) {
 					p, err := a.b.SaveImage(img)
@@ -1254,11 +1424,17 @@ func (a *App) threadChip(ctx *ui.Context, id string) ui.Element {
 
 // cardHeader is the one line atop a card: its type, then the repository and thread it is about (the
 // title opens the thread). threadID "" leaves out the repository and thread.
-func (a *App) cardHeader(ctx *ui.Context, icon *icons.Icon, c ui.Color, typ, threadID string) ui.Element {
+// extra goes after the type, such as a merge's checks.
+func (a *App) cardHeader(ctx *ui.Context, icon *icons.Icon, c ui.Color, typ, threadID string, extra ...ui.Element) ui.Element {
 	t := ctx.Theme()
 	row := ui.Div().Row().Align(ui.Center).Gap(space2).MinWidth(ui.Px(0)).
 		Child(ui.Icon(icon).Size(15).Color(c)).
 		Child(ui.Text(typ).FontSize(12).Semibold().TextColor(c).NoWrap())
+	for _, e := range extra {
+		if e != nil {
+			row = row.Child(e)
+		}
+	}
 	th, ok := a.thread(threadID)
 	if threadID == "" || !ok {
 		return row
@@ -1274,6 +1450,54 @@ func (a *App) cardHeader(ctx *ui.Context, icon *icons.Icon, c ui.Color, typ, thr
 				Hover(ui.Style{TextColor: t.Link}).
 				OnClick(func() { a.openThread(threadID, "conversation") }).
 				Child(ui.Text(th.Title).FontSize(12).Medium().Truncate())))
+}
+
+// checksBadge says where a merge's checks stand: passed (or none required), running, or failed. A
+// local merge has none to wait for, so it shows as passed. nil before a pull request is opened, and
+// once the thread has landed.
+func checksBadge(ctx *ui.Context, th core.ThreadView) ui.Element {
+	t := ctx.Theme()
+	switch th.Status {
+	case core.StatusMerged, core.StatusDiscarded, core.StatusArchived:
+		return nil
+	}
+	icon, c, text, tip := icons.CircleCheck, t.Success, "Checks passed", "Every required check passed"
+	prs := openPRs(th)
+	if len(prs) == 0 && th.PR != nil && th.PR.State == forge.StateOpen {
+		prs = []*forge.PR{th.PR}
+	}
+	switch {
+	case len(prs) > 0:
+		var failed []string
+		pending := false
+		for _, pr := range prs {
+			switch pr.Checks {
+			case forge.ChecksFailing:
+				failed = append(failed, checkNamesOf(pr.Failed)...)
+				if len(pr.Failed) == 0 {
+					failed = append(failed, fmt.Sprintf("%s #%d", pr.Kind.Noun(), pr.Number))
+				}
+			case forge.ChecksPending:
+				pending = true
+			case forge.ChecksNone:
+				tip = "No checks are required"
+			}
+		}
+		switch {
+		case len(failed) > 0:
+			icon, c, text, tip = icons.CircleX, t.Danger, "Checks failed", "Failed: "+strings.Join(failed, ", ")
+		case pending:
+			icon, c, text, tip = icons.Timer, t.Warning, "Checks running", "Waiting for the required checks"
+		}
+	case th.CanMerge && th.Forge == forge.None:
+		tip = "A local merge has no checks to wait for"
+	default:
+		return nil
+	}
+	return ui.Div().Row().Align(ui.Center).Gap(4).PaddingLeft(space1).Shrink(0).Tooltip(tip).
+		Child(ui.Text("·").FontSize(12).TextColor(t.TextSubtle)).
+		Child(ui.Icon(icon).Size(13).Color(c)).
+		Child(ui.Text(text).FontSize(12).TextColor(c).NoWrap())
 }
 
 // markBuilt records that a transcript row is built (near the viewport) or not. UI thread only.

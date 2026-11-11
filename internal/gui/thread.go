@@ -20,7 +20,7 @@ import (
 )
 
 func (a *App) merge(id string) {
-	a.run("Merge", func(ctx context.Context) error {
+	a.runBusy(id, "Merge", func(ctx context.Context) error {
 		commit, err := a.b.Merge(ctx, id)
 		if err != nil {
 			return err
@@ -36,7 +36,7 @@ func (a *App) merge(id string) {
 
 // openPR opens a pull request for a thread, as a draft when draft is set.
 func (a *App) openPR(id string, draft bool) {
-	a.run("Opening the pull request", func(ctx context.Context) error {
+	a.runBusy(id, "Opening the pull request", func(ctx context.Context) error {
 		pr, err := a.b.OpenPR(ctx, id, draft)
 		if err != nil {
 			return err
@@ -52,15 +52,35 @@ func (a *App) openPR(id string, draft bool) {
 
 // mergeLocal merges a thread's branch in the local checkout, skipping the pull request.
 func (a *App) mergeLocal(id string) {
-	a.run("Merge", func(ctx context.Context) error {
+	a.runBusy(id, "Merge", func(ctx context.Context) error {
 		_, err := a.b.MergeLocal(ctx, id)
 		return err
 	})
 }
 
 // landControl is a thread's main landing action: Open PR, Merge (its pull request, or locally without
-// a forge), or a note that auto-merge will do it. nil when there is nothing to land.
+// a forge), or a note that auto-merge will do it. While the action runs, the button shows it is busy.
+// nil when there is nothing to land.
 func (a *App) landControl(ctx *ui.Context, th core.ThreadView) ui.Element {
+	if th.Resolving {
+		return ui.Button("Merge").Icon(icons.GitMerge).Primary().Small().Loading(true).Key("land-" + th.ID).
+			Tooltip("Resolving conflicts: newer work landed in " + th.BaseBranch + " since this started. " +
+				"The thread is merging it in, then Solo merges.")
+	}
+	e := a.landButton(ctx, th)
+	if a.busy.Get()[th.ID] {
+		switch b := e.(type) {
+		case *ui.ButtonElement:
+			return b.Loading(true)
+		case *ui.SplitButtonElement:
+			return b.Loading(true)
+		}
+	}
+	return e
+}
+
+// landButton is landControl's button, without the busy state.
+func (a *App) landButton(ctx *ui.Context, th core.ThreadView) ui.Element {
 	t := ctx.Theme()
 	id := th.ID
 	if th.MultiRepo() {
@@ -76,7 +96,7 @@ func (a *App) landControl(ctx *ui.Context, th core.ThreadView) ui.Element {
 		return ui.Button("Ready for review").Icon(icons.GitPullRequest).Primary().Small().
 			Tooltip(fmt.Sprintf("Mark %s #%d ready for review", th.PR.Kind.Noun(), th.PR.Number)).
 			OnClick(func() {
-				a.run("Marking it ready", func(ctx context.Context) error { return a.b.MarkReady(ctx, id) })
+				a.runBusy(id, "Marking it ready", func(ctx context.Context) error { return a.b.MarkReady(ctx, id) })
 			})
 	case th.PR != nil && th.PR.State == forge.StateOpen:
 		if th.CanMerge {
@@ -92,6 +112,12 @@ func (a *App) landControl(ctx *ui.Context, th core.ThreadView) ui.Element {
 		return ui.Button("Merge").Icon(icons.GitMerge).Secondary().Small().Disabled(true).
 			Tooltip("Can't merge yet: " + th.PR.Blocked)
 	case th.CanMerge:
+		if th.Forge == forge.None {
+			// No remote to open a pull request on: it merges straight into the local branch.
+			return ui.Button("Merge locally").Icon(icons.GitMerge).Primary().Small().
+				Tooltip("No remote, so no pull request: merges " + branchLabel(th) + " into your local " + th.BaseBranch).
+				OnClick(func() { a.merge(id) })
+		}
 		return ui.Button("Merge").Icon(icons.GitMerge).Primary().Small().
 			Tooltip("Merge " + th.Branch + " into " + th.BaseBranch).OnClick(func() { a.merge(id) })
 	}
@@ -100,7 +126,7 @@ func (a *App) landControl(ctx *ui.Context, th core.ThreadView) ui.Element {
 
 // openPRFor opens pull requests for one of a thread's repositories ("" for all).
 func (a *App) openPRFor(id, repo string, draft bool) {
-	a.run("Opening pull requests", func(ctx context.Context) error {
+	a.runBusy(id, "Opening pull requests", func(ctx context.Context) error {
 		prs, err := a.b.OpenPRFor(ctx, id, repo, draft)
 		if err != nil {
 			return err
@@ -120,7 +146,7 @@ func (a *App) openPRFor(id, repo string, draft bool) {
 
 // mergeRepo merges one of a thread's repositories ("" for every one that can merge now).
 func (a *App) mergeRepo(id, repo string) {
-	a.run("Merge", func(ctx context.Context) error {
+	a.runBusy(id, "Merge", func(ctx context.Context) error {
 		_, err := a.b.MergeRepo(ctx, id, repo)
 		return err
 	})
@@ -172,7 +198,7 @@ func (a *App) landControlMulti(ctx *ui.Context, th core.ThreadView) ui.Element {
 		return ui.Button("Ready for review").Icon(icons.GitPullRequest).Primary().Small().
 			Tooltip("Mark " + plural(len(drafts), "draft") + " ready for review").
 			OnClick(func() {
-				a.run("Marking them ready", func(ctx context.Context) error { return a.b.MarkReady(ctx, id) })
+				a.runBusy(id, "Marking them ready", func(ctx context.Context) error { return a.b.MarkReady(ctx, id) })
 			})
 	case len(open) > 0:
 		menu := func() []ui.MenuItem {
@@ -390,7 +416,7 @@ func (a *App) threadPanel(ctx *ui.Context) ui.Element {
 	header := ui.Div().Row().Align(ui.Start).Gap(space2).PaddingLeft(space4).PaddingRight(space2).PaddingY(space3).Shrink(0).
 		Child(ui.Div().Column().Gap(space1).Grow(1).MinWidth(ui.Px(0)).
 			Child(ui.Div().Row().Align(ui.Center).Gap(space2).MinWidth(ui.Px(0)).
-				Child(ui.Div().Shrink(0).Tooltip(statusLabel(th)).Child(statusMark(ctx, shownStatus(th)))).
+				Child(statusMark(ctx, shownStatus(th)).Tooltip(statusLabel(th))).
 				Child(ui.Div().MinWidth(ui.Px(0)).Tooltip(th.Title).ContextMenu(func() []ui.MenuItem { return a.folderMenu(th) }).
 					Child(ui.Text(th.Title).FontSize(14).Semibold().Truncate()))).
 			Child(ui.Div().PaddingLeft(space5 + 2).Child(meta))).

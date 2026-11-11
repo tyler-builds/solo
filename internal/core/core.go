@@ -47,6 +47,10 @@ type Settings struct {
 	// carrying them on when it starts again (ResumeInterrupted).
 	NoResumeAfterRestart bool `json:"noResumeAfterRestart,omitempty"`
 
+	// SoloSessionTokens is the context size at which Solo moves to a fresh Claude session, with a recap
+	// and its memory: 0 for the default, -1 for never (Claude compacts the session itself instead).
+	SoloSessionTokens int `json:"soloSessionTokens,omitempty"`
+
 	// Effort for each model; "" leaves it to Claude.
 	OrchestratorEffort string `json:"orchestratorEffort,omitempty"`
 	WorkerEffort       string `json:"workerEffort,omitempty"`
@@ -130,6 +134,7 @@ const (
 	ChangeStream                     // a thread's streaming text changed (frequent)
 	ChangeSettings                   // settings changed
 	ChangeRepos                      // the repository list changed
+	ChangeTodos                      // the to-do list changed
 )
 
 // Change is one notification to subscribers.
@@ -182,6 +187,7 @@ type Core struct {
 	pollNow   chan struct{}         // asks the pull request watcher to look now
 	// resume are the threads that were working when Solo last closed, for ResumeInterrupted.
 	resume []resumeInfo
+	todos  []Todo // the user's to-do list, oldest first (todos.go)
 }
 
 // resumeInfo is a thread that was working when Solo closed, and how far it had got.
@@ -242,6 +248,7 @@ func New(cfg Config) (*Core, error) {
 		cfg.Log.Warn("core: settings unreadable; using defaults", "err", err)
 	}
 	c.settings.normalize()
+	c.loadTodos()
 	rows, err := db.Threads()
 	if err != nil {
 		db.Close()
@@ -279,6 +286,13 @@ func New(cfg Config) (*Core, error) {
 			go c.countChanges(id)
 		}
 	}
+	// A todo is done once its threads' work lands.
+	c.Subscribe(func(ch Change) {
+		if ch.Kind == ChangeThread {
+			c.checkTodos()
+		}
+	})
+	c.checkTodos()
 	go c.watchPRs()
 	return c, nil
 }
