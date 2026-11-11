@@ -272,6 +272,8 @@ func (f *fakeBackend) add(thread, kind string, data any) {
 		ref = d.ID
 	case core.ProposalData:
 		ref = d.ThreadID
+	case core.QuestionData:
+		ref = d.ToolUseID
 	}
 	f.items[thread] = append(f.items[thread], core.Item{ID: f.nextID, ThreadID: thread, Kind: kind, Ref: ref, Data: raw,
 		CreatedAt: time.Now()})

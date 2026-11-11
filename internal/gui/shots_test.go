@@ -158,16 +158,27 @@ func TestShots(t *testing.T) {
 		{"filter", func(a *App, f *fakeBackend) { a.railQuery.Set("audit"); a.openThread("c3d4e5f6-forms", "conversation") }},
 		{"search", func(a *App, f *fakeBackend) { a.palette.Set(true) }},
 		{"empty", nil},
+		// A heavy day, from busyBackend: many threads, several questions, a long chat with Solo.
+		{"busy-main", func(a *App, f *fakeBackend) {}},
+		{"busy-thread", func(a *App, f *fakeBackend) { a.openThread("a1f3c9d2-oauth", "conversation") }},
+		{"busy-question", func(a *App, f *fakeBackend) { a.openThread("b7e21a90-limit", "conversation") }},
 	}
 	for _, theme := range []struct {
 		name string
 		t    *ui.Theme
 	}{{"dark", dark}, {"light", light}} {
 		for _, sh := range shots {
-			if theme.name == "light" && sh.name != "main" && sh.name != "changes" {
+			busy := strings.HasPrefix(sh.name, "busy-")
+			if only := os.Getenv("SOLO_SHOTS_ONLY"); only != "" && !strings.HasPrefix(sh.name, only) {
+				continue
+			}
+			if theme.name == "light" && sh.name != "main" && sh.name != "changes" && !busy {
 				continue
 			}
 			f := demoBackend()
+			if busy {
+				f = busyBackend()
+			}
 			if sh.setup == nil {
 				f = &fakeBackend{items: map[string][]core.Item{}, repos: f.repos, settings: f.settings}
 			}
