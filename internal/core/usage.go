@@ -12,16 +12,29 @@ import (
 var rateLimitOrder = []string{"five_hour", "seven_day", "seven_day_opus", "seven_day_sonnet",
 	"seven_day_overage_included", "overage"}
 
-// setRateLimit keeps a rate limit event as the latest of its kind. An event that doesn't say how much of
-// the limit is used keeps the last known utilization.
+// setRateLimit keeps the latest reading of each kind of limit from a rate limit event: one for each
+// window it lists, and one for the limit its top level names. The top level only describes the limit
+// that binds now, so without the windows the others (the 5-hour one, say) would never show. It is
+// applied last, as its status is the one that says whether requests are refused. A reading that doesn't
+// say how much of the limit is used keeps the last known utilization.
 func (c *Core) setRateLimit(e agent.Event) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.rateLimits == nil {
 		c.rateLimits = map[string]agent.Event{}
 	}
-	if prev, ok := c.rateLimits[e.RateLimitType]; ok && e.Utilization == nil {
+	for _, w := range e.Windows {
+		u := w.Utilization
+		c.rateLimits[w.RateLimitType] = agent.Event{SessionID: e.SessionID, Seq: e.Seq, Kind: e.Kind,
+			Status: w.Status, ResetsAt: w.ResetsAt, RateLimitType: w.RateLimitType, Utilization: &u}
+	}
+	e.Windows = nil
+	prev, ok := c.rateLimits[e.RateLimitType]
+	if ok && e.Utilization == nil {
 		e.Utilization = prev.Utilization
+	}
+	if ok && e.ResetsAt == 0 {
+		e.ResetsAt = prev.ResetsAt
 	}
 	c.rateLimits[e.RateLimitType] = e
 }
@@ -51,14 +64,10 @@ func (c *Core) RateLimits() []agent.Event {
 }
 
 // UsedFraction is how much of a limit an event says is used, from 0 to 1, and whether it says. Claude
-// Code reports a fraction; a value above 1 is taken as a percent.
+// Code reports a fraction, which can pass 1 when usage runs past the cap; that shows as all used.
 func UsedFraction(e agent.Event) (float64, bool) {
 	if e.Utilization == nil {
 		return 0, false
 	}
-	u := *e.Utilization
-	if u > 1 {
-		u /= 100
-	}
-	return min(max(u, 0), 1), true
+	return min(max(*e.Utilization, 0), 1), true
 }
