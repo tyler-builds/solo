@@ -29,7 +29,6 @@ func TestShots(t *testing.T) {
 	if err := os.MkdirAll(out, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	useBundledFont(t)
 	light, dark := Themes()
 	typing := map[string]string{"search": "token"} // typed once the window is up
 	// The transcript scrolled up from its end, once the window is up.
@@ -291,24 +290,6 @@ func longChat(f *fakeBackend) {
 			f.add(id, core.ItemAssistant, core.TextData{Text: "Still running the auth tests. The refresh path now retries once on a 401; the remaining work is the test for an expired refresh token, which the worker is writing now. I'll tell you when it finishes."})
 		}
 	}
-}
-
-// useBundledFont makes fontconfig answer "sans-serif" with the bundled Inter, so the shots show the font
-// the app registers (uitest can't register fonts itself). From uas.
-func useBundledFont(t *testing.T) {
-	dir, err := filepath.Abs("fonts")
-	if err != nil {
-		t.Fatal(err)
-	}
-	conf := filepath.Join(t.TempDir(), "fonts.conf")
-	xml := `<?xml version="1.0"?><!DOCTYPE fontconfig SYSTEM "fonts.dtd"><fontconfig>
-<include ignore_missing="yes">/etc/fonts/fonts.conf</include><dir>` + dir + `</dir>
-<alias binding="strong"><family>sans-serif</family><prefer><family>Inter</family></prefer></alias>
-</fontconfig>`
-	if err := os.WriteFile(conf, []byte(xml), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("FONTCONFIG_FILE", conf)
 }
 
 // composerMarkdown is a draft with each kind of inline Markdown the composer formats.
