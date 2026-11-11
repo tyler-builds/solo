@@ -827,33 +827,46 @@ func (c *Core) Interrupt(ctx context.Context, threadID string) error {
 	return err
 }
 
-// Answer answers a pending question. answers is keyed by question text.
+// Answer records the user's answer to a pending question. answers is keyed by question text.
 func (c *Core) Answer(threadID, toolUseID string, answers map[string]string) error {
-	return c.resolveAsk(threadID, toolUseID, agent.AskResult{Answers: answers})
+	return c.resolveAsk(threadID, toolUseID, agent.AskResult{Answers: answers}, FromUser)
 }
 
-// Dismiss declines a pending question.
+// AnswerFromOrchestrator answers a worker's pending question for the user, as Answer does.
+func (c *Core) AnswerFromOrchestrator(threadID, toolUseID string, answers map[string]string) error {
+	return c.resolveAsk(threadID, toolUseID, agent.AskResult{Answers: answers}, FromOrchestrator)
+}
+
+// Dismiss declines a pending question for the user.
 func (c *Core) Dismiss(threadID, toolUseID string) error {
-	return c.resolveAsk(threadID, toolUseID, agent.AskResult{Cancelled: true})
+	return c.resolveAsk(threadID, toolUseID, agent.AskResult{Cancelled: true}, FromUser)
 }
 
-func (c *Core) resolveAsk(threadID, toolUseID string, res agent.AskResult) error {
+// resolveAsk gives a pending question its result, and tells subscribers (ChangeAnswer).
+func (c *Core) resolveAsk(threadID, toolUseID string, res agent.AskResult, from string) error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	t := c.threads[threadID]
 	if t == nil {
+		c.mu.Unlock()
 		return fmt.Errorf("no thread %s", threadID)
 	}
-	ch := t.asks[toolUseID]
-	if ch == nil {
-		if itemID, ok := t.staleAsks[toolUseID]; ok {
-			return c.answerStaleLocked(t, toolUseID, itemID, res)
+	qs := t.askQs[toolUseID]
+	if ch := t.asks[toolUseID]; ch != nil {
+		delete(t.asks, toolUseID)
+		delete(t.askQs, toolUseID)
+		ch <- res
+	} else if itemID, ok := t.staleAsks[toolUseID]; ok {
+		if err := c.answerStaleLocked(t, toolUseID, itemID, res); err != nil {
+			c.mu.Unlock()
+			return err
 		}
+	} else {
+		c.mu.Unlock()
 		return errors.New("that question is no longer waiting for an answer")
 	}
-	delete(t.asks, toolUseID)
-	delete(t.askQs, toolUseID)
-	ch <- res
+	c.mu.Unlock()
+	c.notify(Change{Kind: ChangeAnswer, ThreadID: threadID,
+		Answer: &Answered{Questions: qs, Answers: res.Answers, Skipped: res.Cancelled, From: from}})
 	return nil
 }
 

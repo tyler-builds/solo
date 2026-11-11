@@ -155,6 +155,9 @@ func loadPending(b Backend, threads []core.ThreadView) map[string][]core.Pending
 }
 
 func (a *App) onChange(ch core.Change) {
+	if ch.Kind == core.ChangeAnswer {
+		return // the question's item and the thread's status change say it
+	}
 	if ch.Kind == core.ChangeThread {
 		go a.notifyChange(ch)
 	}
