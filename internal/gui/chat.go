@@ -222,8 +222,10 @@ func (a *App) transcript(ctx *ui.Context, v core.ThreadView, items []core.Item, 
 	}
 	// The list and, floating over its foot, the way back to the latest message. Solo's chat has one
 	// control there that also points at cards below that need the user, and another at its top for
-	// those above; all float over the conversation and take no room from it.
+	// those above; all float over the conversation and take no room from it. Selected text in it
+	// can be quoted into the composer (see quotable).
 	view := ui.Div().Column().Grow(1).MinHeight(ui.Px(0)).Child(list)
+	view = a.quotable(ctx, view, v, scope)
 	if scope != "orch" {
 		return view.Child(ui.Component(func(ctx *ui.Context) ui.Element {
 			return jumpControl(ctx, h, bottomJump(atEnd.Get(), nil), false)
@@ -1503,19 +1505,22 @@ func (a *App) composer(ctx *ui.Context, v core.ThreadView, key, scope, placehold
 		t := ctx.Theme()
 		draft := ui.Local(ctx, key, "")
 		images := ui.Local(ctx, key+"-images", []string(nil))
-		focus := ui.Local(ctx, key+"-focus", ui.NewFocusHandle()).Peek()
+		// The focus handle and quotes live on the App, so quoting from the transcript reaches them.
+		id := convID(key)
+		focus, quotes := a.composerFocus(id), a.quotesOf(id)
 		if key == "orch-draft" {
 			draft = a.orchDraft // the pinned question folds while the user writes to Solo
-			focus = a.orchFocus
 			images = a.orchImages
 		}
 		submit := func() {
-			text, imgs := strings.TrimSpace(draft.Peek()), images.Peek()
-			if text == "" && len(imgs) == 0 {
+			text, imgs, qs := strings.TrimSpace(draft.Peek()), images.Peek(), quotes.Peek()
+			if text == "" && len(imgs) == 0 && len(qs) == 0 {
 				return
 			}
+			text = quoteMessage(qs, text)
 			draft.Set("")
 			images.Set(nil)
+			quotes.Set(nil)
 			a.listHandle(scope).ScrollToEnd()
 			a.run("Sending", func(context.Context) error { return send(text, imgs) })
 		}
@@ -1550,7 +1555,7 @@ func (a *App) composer(ctx *ui.Context, v core.ThreadView, key, scope, placehold
 				return out, nil
 			})
 		}
-		empty := strings.TrimSpace(draft.Get()) == "" && len(images.Get()) == 0
+		empty := strings.TrimSpace(draft.Get()) == "" && len(images.Get()) == 0 && len(quotes.Get()) == 0
 		// As in t3code: while the thread works, the button stops it, or steers it once there's a message.
 		round := ui.Style{Radius: 999}
 		var sendBtn *ui.ButtonElement
@@ -1616,9 +1621,10 @@ func (a *App) composer(ctx *ui.Context, v core.ThreadView, key, scope, placehold
 		box := ui.Div().Column().Justify(ui.Center).PaddingLeft(space3).PaddingRight(space2).PaddingY(space2).
 			MinHeight(ui.Px(52)).Radius(radiusXL).Border(1, t.BorderStrong).Background(t.Surface).
 			FocusWithin(ui.Style{BorderColor: t.TextSubtle}).
-			OnDrop(ui.Drop(func(f ui.Files, _ *ui.DropEvent) { importFiles(f) }))
-		// The thumbnails go above the text, so both rows are keyed: unkeyed, the text's row would take a
-		// new identity when the thumbnails appear, and the text area would be rebuilt without focus.
+			OnDrop(ui.Drop(func(f ui.Files, _ *ui.DropEvent) { importFiles(f) })).
+			Child(a.quoteStrip(ctx, key, id, quotes.Get()))
+		// The quotes and thumbnails go above the text, so the rows are keyed: unkeyed, the text's row
+		// would take a new identity when they appear, and the text area would be rebuilt without focus.
 		if imgs := images.Get(); len(imgs) > 0 {
 			strip := ui.Div().Key(key + "-images").Row().Wrap().Gap(space2).PaddingTop(space1).PaddingBottom(space2)
 			for i, p := range imgs {
