@@ -351,24 +351,49 @@ func (c *Core) pokePRs() {
 	}
 }
 
-// watchPRs follows open pull requests until Close.
+// settledPRPoll is how many times PRPoll the watcher waits while every open pull request is settled.
+const settledPRPoll = 4
+
+// watchPRs follows open pull requests until Close: every PRPoll while one has checks running or
+// merges on its own, and settledPRPoll times as long while all are settled, since each check runs gh
+// or glab once per pull request.
 func (c *Core) watchPRs() {
 	every := c.cfg.PRPoll
 	if every <= 0 {
 		every = 30 * time.Second
 	}
-	tick := time.NewTicker(every)
-	defer tick.Stop()
+	timer := time.NewTimer(every)
+	defer timer.Stop()
 	for {
 		select {
 		case <-c.stop:
 			return
-		case <-tick.C:
+		case <-timer.C:
 		case <-c.pollNow:
 		}
 		c.CheckPRs(context.Background())
 		c.sweepLanded()
+		next := every
+		if c.prsSettled() {
+			next *= settledPRPoll
+		}
+		timer.Reset(next)
 	}
+}
+
+// prsSettled reports whether no open pull request has checks running, unknown checks, or auto-merge
+// on: nothing about them is about to change on its own.
+func (c *Core) prsSettled() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, t := range c.threads {
+		for _, p := range t.parts {
+			if p.prOpen() && (p.PR.AutoMerge || (p.PR.Checks != forge.ChecksPassing && p.PR.Checks != forge.ChecksFailing && p.PR.Checks != forge.ChecksNone)) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // CheckPRs reads the state of every open pull request.

@@ -8,4 +8,5 @@ import (
 )
 
 // detach starts the program in its own session, so it outlives Solo and doesn't get its signals.
-func detach(cmd *exec.Cmd) { cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true} }
+// Only Windows gives a program a console window, so console changes nothing here.
+func detach(cmd *exec.Cmd, console bool) { cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true} }

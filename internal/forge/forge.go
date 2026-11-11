@@ -17,6 +17,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/tyler-builds/solo/internal/proc"
 )
 
 // Kind is a forge.
@@ -165,7 +167,7 @@ func FindTool(name string) string {
 }
 
 func (c *Client) run(ctx context.Context, dir string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, c.Path, args...)
+	cmd := proc.CommandContext(ctx, c.Path, args...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GH_PROMPT_DISABLED=1", "NO_COLOR=1", "GLAB_NO_PROMPT=1")
 	out, err := cmd.CombinedOutput()

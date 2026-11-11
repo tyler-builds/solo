@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 
 	"github.com/godbus/dbus/v5"
@@ -53,7 +54,7 @@ func Editor(command, dir string) error {
 	if err != nil {
 		return err
 	}
-	return start(command, dir, dir)
+	return start(command, dir, dir, false)
 }
 
 // EditFile opens the file at path in the editor command, or the first editor found, at line when
@@ -71,14 +72,14 @@ func EditFile(command, path string, line int) error {
 		at := fmt.Sprintf("%s:%d", path, line)
 		switch editorName(args[0]) {
 		case "code", "cursor", "codium":
-			return run(append(args, "-g", at), filepath.Dir(path))
+			return run(append(args, "-g", at), filepath.Dir(path), false)
 		case "zed", "subl":
-			return run(append(args, at), filepath.Dir(path))
+			return run(append(args, at), filepath.Dir(path), false)
 		case "idea":
-			return run(append(args, "--line", fmt.Sprint(line), path), filepath.Dir(path))
+			return run(append(args, "--line", fmt.Sprint(line), path), filepath.Dir(path), false)
 		}
 	}
-	return start(command, path, filepath.Dir(path))
+	return start(command, path, filepath.Dir(path), false)
 }
 
 // ErrNoEditor is EditFile's and Editor's error when Settings names no editor and none is installed.
@@ -101,11 +102,15 @@ func Open(path string) error {
 	}
 	switch runtime.GOOS {
 	case "windows":
-		return run([]string{"rundll32", "url.dll,FileProtocolHandler", path}, "")
+		// The shell opens it in this process: no program to start.
+		if err := shellOpen(path); err == nil {
+			return nil
+		}
+		return run([]string{"rundll32", "url.dll,FileProtocolHandler", path}, "", false)
 	case "darwin":
-		return run([]string{"open", path}, "")
+		return run([]string{"open", path}, "", false)
 	}
-	return run([]string{"xdg-open", path}, "")
+	return run([]string{"xdg-open", path}, "", false)
 }
 
 // Reveal shows path in the file manager with it selected, or opens the folder that holds it when the
@@ -116,9 +121,9 @@ func Reveal(path string) error {
 	}
 	switch runtime.GOOS {
 	case "windows":
-		return run([]string{"explorer", "/select," + path}, "")
+		return run([]string{"explorer", "/select," + path}, "", false)
 	case "darwin":
-		return run([]string{"open", "-R", path}, "")
+		return run([]string{"open", "-R", path}, "", false)
 	}
 	if conn, err := dbus.SessionBus(); err == nil {
 		uri := (&url.URL{Scheme: "file", Path: path}).String()
@@ -130,39 +135,122 @@ func Reveal(path string) error {
 	return Open(filepath.Dir(path))
 }
 
-// Terminal opens a terminal in dir with the terminal command, or the first one found.
+// Terminal opens a terminal in dir with the terminal command, or the first one found. On Windows it
+// can take a moment: the first time it would use PowerShell, it checks that PowerShell may run (see
+// powerShellBlocked), so call it off the UI thread.
+//
+// On Windows, when the command is PowerShell (or empty) and PowerShell is blocked or fails to start,
+// it falls back to the next terminal that starts: Windows Terminal with cmd.exe, then cmd.exe.
 func Terminal(command, dir string) error {
-	if strings.TrimSpace(command) == "" {
-		command = Detect("terminal")
-		if command == "" {
-			return errors.New("no terminal found: set one in Settings › General")
-		}
+	if _, err := os.Stat(dir); err != nil {
+		return fmt.Errorf("%s isn't there: %w", dir, err)
 	}
-	return start(command, dir, dir)
+	try := terminalsToTry(runtime.GOOS, command, installed, powerShellBlocked)
+	if len(try) == 0 {
+		msg := "no terminal found: set one in Settings › General"
+		if runtime.GOOS == "windows" {
+			if why := powerShellBlocked("powershell.exe"); why != "" {
+				msg = "no terminal found (" + why + "): set one in Settings › General"
+			}
+		}
+		return errors.New(msg)
+	}
+	var errs []string
+	for _, t := range try {
+		err := start(t, dir, dir, true)
+		if err == nil {
+			return nil
+		}
+		errs = append(errs, err.Error())
+	}
+	return errors.New(strings.Join(errs, "; "))
 }
 
-// Detect returns the editor or terminal command Solo would use: the first one installed.
+// terminalsToTry is the terminal commands Terminal tries in order on goos: the command when it is
+// set, else the ones installed (only the first, except on Windows). On Windows a PowerShell that
+// blocked reports a reason for (by name, such as "pwsh.exe") is left out, a PowerShell command that
+// is set falls back to the others when it is blocked or fails to start, and Windows Terminal opens
+// cmd.exe instead of its default profile, which is usually PowerShell, when PowerShell is blocked.
+func terminalsToTry(goos, command string, installed func(string) bool, blocked func(string) string) []string {
+	var out []string
+	if f := strings.Fields(command); len(f) > 0 {
+		if goos != "windows" || !isPowerShell(f[0]) {
+			return []string{command}
+		}
+		if blocked(f[0]) == "" {
+			out = append(out, command)
+		}
+	}
+	for _, t := range terminals[goos] {
+		name := strings.Fields(t)[0]
+		if !installed(name) {
+			continue
+		}
+		if goos != "windows" {
+			if len(out) == 0 {
+				out = append(out, t)
+			}
+			break
+		}
+		switch {
+		case isPowerShell(name):
+			if blocked(name) != "" {
+				continue
+			}
+		case name == "wt.exe":
+			if blocked("powershell.exe") != "" {
+				t = "wt.exe -d {path} cmd.exe"
+			}
+		}
+		if !slices.Contains(out, t) {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// isPowerShell reports whether the program name is Windows PowerShell or PowerShell 7.
+func isPowerShell(name string) bool {
+	switch strings.TrimSuffix(strings.ToLower(filepath.Base(strings.ReplaceAll(name, `\`, "/"))), ".exe") {
+	case "powershell", "pwsh":
+		return true
+	}
+	return false
+}
+
+func installed(name string) bool {
+	_, err := exec.LookPath(name)
+	return err == nil
+}
+
+// Detect returns the editor or terminal command Solo would use: the first one installed. It runs
+// nothing: a PowerShell that Windows policy disallows is skipped, but one blocked another way is
+// found only when Terminal opens it.
 func Detect(kind string) string {
 	if kind == "editor" {
 		for _, e := range editors {
-			if _, err := exec.LookPath(e); err == nil {
+			if installed(e) {
 				return e
 			}
 		}
 		return ""
 	}
-	for _, t := range terminals[runtime.GOOS] {
-		name := strings.Fields(t)[0]
-		if _, err := exec.LookPath(name); err == nil {
-			return t
+	try := terminalsToTry(runtime.GOOS, "", installed, func(name string) string {
+		if policyBlocks(filepath.Base(name)) {
+			return "blocked by policy"
 		}
+		return ""
+	})
+	if len(try) == 0 {
+		return ""
 	}
-	return ""
+	return try[0]
 }
 
 // start runs command in dir without waiting for it. {path} in the command is replaced by target; an
-// editor command without it gets target as its last argument.
-func start(command, target, dir string) error {
+// editor command without it gets target as its last argument. A console program gets a console
+// window when console is set (a terminal), and none otherwise.
+func start(command, target, dir string, console bool) error {
 	if _, err := os.Stat(target); err != nil {
 		return fmt.Errorf("%s isn't there: %w", target, err)
 	}
@@ -179,15 +267,17 @@ func start(command, target, dir string) error {
 	if !hasPath && isEditor(args[0]) {
 		args = append(args, target)
 	}
-	return run(args, dir)
+	return run(args, dir, console)
 }
 
-// run starts args in dir (or Solo's own folder when "") without waiting for it.
-func run(args []string, dir string) error {
+// run starts args in dir (or Solo's own folder when "") without waiting for it. On Windows a console
+// program gets a console window only when console is set: an editor's .cmd launcher would otherwise
+// flash one. A GUI program shows its windows either way.
+func run(args []string, dir string, console bool) error {
 	cmd := exec.Command(args[0], args[1:]...)
 	cmd.Dir = dir
 	cmd.Env = cleanEnv()
-	detach(cmd)
+	detach(cmd, console)
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("starting %s: %w", args[0], err)
 	}

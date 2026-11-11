@@ -36,12 +36,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/tyler-builds/solo/internal/proc"
 )
 
 const envVar = "SOLO_FAKE_SIDECAR"
@@ -337,7 +338,7 @@ func turn(s *fakeSession, sid, uuid, text string, event func(string, map[string]
 		event(sid, map[string]any{"kind": "assistant", "messageId": "m-" + uuid, "blocks": []any{
 			map[string]any{"type": "tool_use", "id": toolID, "name": "Bash", "input": map[string]any{"command": rest}},
 		}})
-		cmd := exec.Command("sh", "-c", rest)
+		cmd := proc.Command("sh", "-c", rest)
 		cmd.Dir = s.cwd
 		out, err := cmd.CombinedOutput()
 		event(sid, map[string]any{"kind": "tool_result", "toolUseId": toolID, "text": string(out), "isError": err != nil})
