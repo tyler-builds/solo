@@ -156,8 +156,22 @@ Raw `SDKMessage`s are also appended to a per-session JSONL file for debugging an
 - AskUserQuestion goes to Go → shows as a card in the rail and orchestrator chat. You or the
   orchestrator (`answer_question`) can reply.
 - Status machine: `queued → starting → running ⇄ waiting → idle | failed | interrupted → merged |
-  discarded | archived`. No concurrency cap. After each turn Solo counts the files the branch changes:
-  an idle thread with changes is "Ready to merge"; one without shows "No changes".
+  discarded | archived`, plus `running ⇄ background`. No concurrency cap. After each turn Solo counts
+  the files the branch changes: an idle thread with changes is "Ready to merge"; one without shows
+  "No changes".
+- **Background work** (verified live, claude 2.1.321, SDK 0.3.319): a turn can end while a command run
+  with `run_in_background` or a background subagent still runs. The CLI sends
+  `background_tasks_changed` with every live background task (replace semantics; ambient tasks are
+  left out), which the sidecar forwards as a `background` event. A turn that completes with any left
+  ends `background`, not `idle`: shown at work (rail's Working group, an hourglass, "N in background"
+  in Solo's bar, the pinned line says what and for how long), landing disabled in the header and the
+  merge card alike, `propose_merge` refused, and the orchestrator told it isn't finished. When a task
+  finishes by itself (`task_notification` completed or failed) the list empties and the CLI starts a
+  turn of its own to read it, so the thread stays `background` until that turn ends (30 s fallback if
+  none comes). A task stopped (`stopTask`, or Claude's TaskStop) wakes no turn: the thread settles at
+  once. Stop stops background work too (`session.stopTask`); an effort change waits for it; the
+  process exiting kills it (the thread is stopped), and a restart resumes the thread with a note
+  naming what was stopped.
 - **Restart:** like t3code, Solo carries on what a restart cut short. On load, a thread that was starting
   or running is marked interrupted and its unfinished steps end (tool calls without a result, running
   tasks); the commands and subagents among them are noted. `ResumeInterrupted`, called once the

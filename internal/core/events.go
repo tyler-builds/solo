@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/tyler-builds/solo/internal/agent"
@@ -26,6 +28,7 @@ func (c *Core) onEvent(e agent.Event) {
 	id := t.row.ID
 	var changes []Change
 	itemsChanged, streamChanged, threadChanged := false, false, false
+	settledBg := false // background work ended after the turn, so the thread settled
 
 	switch e.Kind {
 	case agent.EventInit:
@@ -39,6 +42,7 @@ func (c *Core) onEvent(e agent.Event) {
 		}
 		t.inTurn = true
 		t.retry = ""
+		t.bgWake, t.bgStopped = false, false
 		if !t.row.HasTranscript {
 			t.row.HasTranscript = true
 			_ = c.saveLocked(t)
@@ -127,6 +131,12 @@ func (c *Core) onEvent(e agent.Event) {
 		if e.Ambient {
 			break
 		}
+		if e.Phase == "ended" && t.hasBg(e.TaskID) {
+			if t.bgEnd == nil {
+				t.bgEnd = map[string]string{}
+			}
+			t.bgEnd[e.TaskID] = e.Status
+		}
 		if t.tasks == nil {
 			t.tasks = map[string]int64{}
 		}
@@ -170,6 +180,29 @@ func (c *Core) onEvent(e agent.Event) {
 		}
 		itemsChanged = true
 
+	case agent.EventBackground:
+		wake := t.setBg(e.Tasks)
+		threadChanged = true
+		if len(t.bg) > 0 || t.inTurn || t.row.Status != StatusBackground {
+			break
+		}
+		// The turn had ended and its background work is over now.
+		if wake && !t.bgStopped {
+			// It finished by itself, and Claude starts a turn to read the result: the thread carries
+			// on rather than turning ready for a moment. If no turn comes, it settles after all.
+			t.bgWake = true
+			t.bgWakeGen++
+			gen := t.bgWakeGen
+			time.AfterFunc(bgWakeWait, func() { c.bgWakeTimeout(id, gen) })
+			break
+		}
+		status := StatusIdle
+		if t.bgStopped {
+			status = StatusInterrupted // the user stopped it
+		}
+		changes = append(changes, c.settleLocked(t, status, "")...)
+		settledBg = true
+
 	case agent.EventCompact:
 		c.addItemLocked(t, ItemNotice, "", NoticeData{Level: "info",
 			Text: fmt.Sprintf("Context compacted (%dk → %dk tokens).", e.PreTokens/1000, e.PostTokens/1000)})
@@ -192,10 +225,6 @@ func (c *Core) onEvent(e agent.Event) {
 			break
 		}
 		t.inTurn = false
-		if t.reopen && e.QueuedTurns == 0 {
-			t.reopen = false
-			go c.closeSession(context.Background(), id) // takes the new effort on its next message
-		}
 		t.step = nil
 		t.retry = ""
 		t.thought = ""
@@ -239,16 +268,7 @@ func (c *Core) onEvent(e agent.Event) {
 		case agent.TurnInterrupted, agent.TurnCancelled:
 			status = StatusInterrupted
 		}
-		if !Finished(t.row.Status) {
-			changes = append(changes, c.setStatusLocked(t, status, errText))
-		}
-		if t.resolving {
-			if status == StatusIdle {
-				go c.mergeResolved(id) // Resolving stays set until it has merged
-			} else {
-				t.resolving = false
-			}
-		}
+		changes = append(changes, c.settleLocked(t, status, errText)...)
 
 	case agent.EventExited:
 		t.inTurn = false
@@ -259,6 +279,16 @@ func (c *Core) onEvent(e agent.Event) {
 			itemsChanged = true
 			if t.row.Status == StatusStarting || t.row.Status == StatusRunning {
 				changes = append(changes, c.setStatusLocked(t, StatusFailed, e.Error))
+			}
+		}
+		// Background work dies with the process.
+		if lost := c.dropBgLocked(t); len(lost) > 0 {
+			itemsChanged = true
+			if t.row.Status == StatusBackground {
+				c.addItemLocked(t, ItemNotice, "", NoticeData{Level: "warning",
+					Text: "Claude exited, which stopped the work it ran in the background: " + strings.Join(lost, "; ") + "."})
+				changes = append(changes, c.setStatusLocked(t, StatusInterrupted, "Claude exited while its background work ran."))
+				t.resolving = false
 			}
 		}
 		threadChanged = true
@@ -276,10 +306,114 @@ func (c *Core) onEvent(e agent.Event) {
 		changes = append(changes, Change{Kind: ChangeThread, ThreadID: id, PrevStatus: v.Status, Status: v.Status})
 	}
 	c.notify(changes...)
-	if e.Kind == agent.EventTurnEnd || e.Kind == agent.EventExited {
+	if e.Kind == agent.EventTurnEnd || e.Kind == agent.EventExited || settledBg {
 		c.schedule()
 		go c.countChanges(id)
 	}
+}
+
+// bgWakeWait is how long a thread whose background work finished between turns waits for the turn
+// Claude starts to read it, before it settles without one.
+var bgWakeWait = 30 * time.Second
+
+// hasBg reports whether the task is running in the thread's background.
+func (t *thread) hasBg(taskID string) bool {
+	return slices.ContainsFunc(t.bg, func(b BackgroundTask) bool { return b.ID == taskID })
+}
+
+// setBg replaces the thread's background work with the tasks a background event lists, keeping when
+// each was first seen. It reports whether a task that left finished by itself (or ended unreported),
+// which is when Claude starts a turn to read it; tasks stopped don't wake it.
+func (t *thread) setBg(tasks []agent.BackgroundTask) (wake bool) {
+	prev := t.bg
+	t.bg = nil
+	for _, bt := range tasks {
+		b := BackgroundTask{ID: bt.TaskID, Type: bt.TaskType, Description: bt.Description, Started: now()}
+		for _, o := range prev {
+			if o.ID == bt.TaskID {
+				b.Started = o.Started
+			}
+		}
+		t.bg = append(t.bg, b)
+	}
+	for _, o := range prev {
+		if t.hasBg(o.ID) {
+			continue
+		}
+		st, ok := t.bgEnd[o.ID]
+		wake = wake || !ok || (st != "stopped" && st != "killed")
+		delete(t.bgEnd, o.ID)
+	}
+	return wake
+}
+
+// dropBgLocked forgets the thread's background work, which died with its process: their task rows end
+// as stopped. It returns what they were, as "command: …". Call with c.mu held.
+func (c *Core) dropBgLocked(t *thread) []string {
+	var lost []string
+	for _, b := range t.bg {
+		lost = append(lost, b.Kind()+": "+b.Description)
+		if itemID, ok := t.tasks[b.ID]; ok {
+			c.updateItemLocked(itemID, func(raw json.RawMessage) any {
+				var d TaskData
+				_ = json.Unmarshal(raw, &d)
+				d.Status = "stopped"
+				return d
+			})
+			delete(t.tasks, b.ID)
+		}
+	}
+	t.bg, t.bgEnd, t.bgWake = nil, nil, false
+	return lost
+}
+
+// settleLocked gives a thread whose turn is over the status it ends on: status (idle, failed,
+// interrupted), except that a turn that ended well while background work still runs waits on it
+// (StatusBackground). A thread with nothing left running takes a pending effort change, and one
+// resolving merge conflicts merges once it is idle. Call with c.mu held; notify the changes after.
+func (c *Core) settleLocked(t *thread, status, errText string) []Change {
+	id := t.row.ID
+	if status == StatusIdle && len(t.bg) > 0 {
+		status = StatusBackground
+	}
+	if status != StatusBackground {
+		t.bgWake, t.bgStopped = false, false
+	}
+	if t.reopen && len(t.bg) == 0 {
+		t.reopen = false
+		go c.closeSession(context.Background(), id) // takes the new effort on its next message
+	}
+	var changes []Change
+	if !Finished(t.row.Status) {
+		changes = append(changes, c.setStatusLocked(t, status, errText))
+	}
+	if t.resolving {
+		switch status {
+		case StatusIdle:
+			go c.mergeResolved(id) // Resolving stays set until it has merged
+		case StatusBackground: // it merges once that work is done
+		default:
+			t.resolving = false
+		}
+	}
+	return changes
+}
+
+// bgWakeTimeout settles a thread whose background work finished between turns when the turn Claude
+// should have started to read it hasn't come.
+func (c *Core) bgWakeTimeout(id string, gen int) {
+	c.mu.Lock()
+	t := c.threads[id]
+	if t == nil || c.closed || !t.bgWake || t.bgWakeGen != gen || t.inTurn || len(t.bg) > 0 || t.row.Status != StatusBackground {
+		c.mu.Unlock()
+		return
+	}
+	t.bgWake = false
+	changes := c.settleLocked(t, StatusIdle, "")
+	c.mu.Unlock()
+	c.notify(changes...)
+	c.schedule()
+	go c.countChanges(id)
 }
 
 // addItemLocked saves a transcript item and returns its ID. Call with c.mu held.

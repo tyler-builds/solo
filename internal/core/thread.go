@@ -20,10 +20,13 @@ import (
 
 // Thread statuses.
 const (
-	StatusQueued      = "queued"      // created; about to start
-	StatusStarting    = "starting"    // creating its worktree and session
-	StatusRunning     = "running"     // a turn is in progress
-	StatusWaiting     = "waiting"     // asked the user a question
+	StatusQueued   = "queued"   // created; about to start
+	StatusStarting = "starting" // creating its worktree and session
+	StatusRunning  = "running"  // a turn is in progress
+	StatusWaiting  = "waiting"  // asked the user a question
+	// StatusBackground: its turn ended, but work it started in the background (a command, a subagent)
+	// still runs, and Claude carries on when it finishes. Not ready until then.
+	StatusBackground  = "background"
 	StatusIdle        = "idle"        // its last turn finished; ready for review or more instructions
 	StatusFailed      = "failed"      // its last turn, or its start, failed
 	StatusInterrupted = "interrupted" // stopped by the user, or by Solo closing
@@ -32,9 +35,9 @@ const (
 	StatusArchived    = "archived"    // marked done with no changes; its worktree and branch were removed
 )
 
-// Active reports whether a thread with the status is starting or working.
+// Active reports whether a thread with the status is starting or working, its background work included.
 func Active(status string) bool {
-	return status == StatusStarting || status == StatusRunning || status == StatusWaiting
+	return status == StatusStarting || status == StatusRunning || status == StatusWaiting || status == StatusBackground
 }
 
 // Finished reports whether a thread with the status is closed for good.
@@ -65,6 +68,17 @@ type thread struct {
 	recovered time.Time
 	tasks     map[string]int64 // task id → item id
 	tools     map[string]int64 // tool_use id → item id
+	// bg is the work Claude runs in the background, oldest first (agent.EventBackground).
+	bg []BackgroundTask
+	// bgEnd is how each background task ended (completed, failed, stopped), until it leaves bg.
+	bgEnd map[string]string
+	// bgWake: background work finished by itself between turns, so Claude is about to start a turn to
+	// read its result; the thread stays in the background state until then, or bgWakeWait passes.
+	// bgWakeGen tells a stale wait's timer from the current one's.
+	bgWake    bool
+	bgWakeGen int
+	// bgStopped: the user stopped the background work, so the thread settles as stopped, not ready.
+	bgStopped bool
 	// parts are the repositories it works in; the first is the one most of the app shows.
 	parts []*part
 	// reopen asks for the session to restart at the end of the turn, to take a new effort level.
@@ -73,6 +87,46 @@ type thread struct {
 	// the turn ends. resolveTries counts the hand-offs, so a merge that keeps conflicting stops.
 	resolving    bool
 	resolveTries int
+}
+
+// BackgroundTask is work a thread's agent runs in the background: a command run with
+// run_in_background, or a background subagent.
+type BackgroundTask struct {
+	ID          string
+	Type        string // local_bash, local_agent, …
+	Description string
+	Started     time.Time // when Solo first saw it running
+}
+
+// Kind names what the task is, for people: "command", "subagent" or "task".
+func (b BackgroundTask) Kind() string { return taskKind(b.Type) }
+
+// DescribeBackground names background work in a line: `command "Run benchmarks", running 4m`; several
+// are joined with "; ".
+func DescribeBackground(bg []BackgroundTask) string {
+	var parts []string
+	for _, b := range bg {
+		s := b.Kind()
+		if b.Description != "" {
+			s += fmt.Sprintf(" %q", b.Description)
+		}
+		if !b.Started.IsZero() {
+			s += ", running " + roughDuration(time.Since(b.Started))
+		}
+		parts = append(parts, s)
+	}
+	return strings.Join(parts, "; ")
+}
+
+// roughDuration is a duration to the second under a minute, else to the minute: "40s", "4m", "1h12m".
+func roughDuration(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	}
+	return fmt.Sprintf("%dh%dm", int(d.Hours()), int(d.Minutes())%60)
 }
 
 type liveKey struct {
@@ -94,8 +148,11 @@ type ThreadView struct {
 	Retry       string
 	PendingAsk  bool
 	// Resolving: the worker is resolving merge conflicts, and its branch merges when it finishes.
-	Resolving    bool
-	Live         []LiveBlock
+	Resolving bool
+	Live      []LiveBlock
+	// Background is the work still running in the background, oldest first. With status Background the
+	// turn has ended and the thread waits on it; it can also run on under a turn.
+	Background   []BackgroundTask
 	IsWorker     bool
 	HasWorktree  bool
 	CanMerge     bool
@@ -149,7 +206,8 @@ func (t *thread) view() ThreadView {
 	for _, k := range t.live {
 		v.Live = append(v.Live, *t.liveTxt[k])
 	}
-	v.CanInterrupt = t.inTurn
+	v.Background = slices.Clone(t.bg)
+	v.CanInterrupt = t.inTurn || len(t.bg) > 0
 	for _, p := range t.parts {
 		v.HasWorktree = v.HasWorktree || p.Worktree != ""
 	}
@@ -165,7 +223,7 @@ func (t *thread) view() ThreadView {
 		hasWork := settled && p.changed != 0
 		pv.CanMergeLocal = hasWork && !prOpen
 		pv.CanOpenPR = hasWork && !prOpen && p.forge != forge.None
-		pv.CanMarkReady = prOpen && p.PR.Draft && !t.inTurn
+		pv.CanMarkReady = prOpen && p.PR.Draft && !t.inTurn && len(t.bg) == 0
 		// Merge: the open pull request when it can merge now, or locally when there's no forge.
 		pv.CanMerge = hasWork && ((prOpen && p.PR.Mergeable) || (!prOpen && p.forge == forge.None))
 		v.CanMergeLocal = v.CanMergeLocal || pv.CanMergeLocal
@@ -190,11 +248,11 @@ func (t *thread) view() ThreadView {
 		v.Forge, v.PR = v.Parts[0].Forge, v.Parts[0].PR
 	}
 	v.NoChanges = settled && v.Changed == 0 && t.row.Status == StatusIdle
-	v.CanDone = v.IsWorker && t.row.DoneAt.IsZero() && !t.inTurn &&
+	v.CanDone = v.IsWorker && t.row.DoneAt.IsZero() && !t.inTurn && len(t.bg) == 0 &&
 		(t.row.Status == StatusMerged || (settled && v.Changed == 0) || (allLanded && v.Changed > 0))
 	if t.inPlace() {
 		v.InPlace = true
-		v.CanDone = v.IsWorker && t.row.DoneAt.IsZero() && !t.inTurn && !Active(t.row.Status) && t.row.Status != StatusQueued
+		v.CanDone = v.IsWorker && t.row.DoneAt.IsZero() && !t.inTurn && len(t.bg) == 0 && !Active(t.row.Status) && t.row.Status != StatusQueued
 	}
 	v.CanDiscard = v.IsWorker && !Finished(t.row.Status)
 	return v
@@ -675,7 +733,10 @@ func (c *Core) SetThreadModel(ctx context.Context, threadID, model, effort strin
 	t.row.Model, t.row.Effort = model, effort
 	t.row.UpdatedAt = now()
 	err := c.saveLocked(t)
-	opened, inTurn, sid := t.opened, t.inTurn, t.row.SessionID
+	opened, sid := t.opened, t.row.SessionID
+	// Background work dies with the session, so a session with any also waits for its turn to end
+	// with nothing left running.
+	inTurn := t.inTurn || len(t.bg) > 0
 	if opened && inTurn && effortChanged {
 		t.reopen = true
 	}
@@ -696,7 +757,7 @@ func (c *Core) SetThreadModel(ctx context.Context, threadID, model, effort strin
 	return nil
 }
 
-// Interrupt stops a thread's running turn.
+// Interrupt stops a thread's running turn, and any work it runs in the background.
 func (c *Core) Interrupt(ctx context.Context, threadID string) error {
 	c.mu.Lock()
 	t := c.threads[threadID]
@@ -704,17 +765,34 @@ func (c *Core) Interrupt(ctx context.Context, threadID string) error {
 		c.mu.Unlock()
 		return fmt.Errorf("no thread %s", threadID)
 	}
-	sid, queued := t.row.SessionID, t.row.Status == StatusQueued
+	sid, queued, inTurn := t.row.SessionID, t.row.Status == StatusQueued, t.inTurn
 	var ch Change
 	if queued {
 		ch = c.setStatusLocked(t, StatusInterrupted, "")
+	}
+	// Stop means everything: the work it runs in the background too.
+	var bg []string
+	for _, b := range t.bg {
+		bg = append(bg, b.ID)
+	}
+	if len(bg) > 0 {
+		t.bgStopped = true
 	}
 	c.mu.Unlock()
 	if queued {
 		c.notify(ch)
 		return nil
 	}
-	return c.agent.Interrupt(ctx, sid)
+	var err error
+	if inTurn || len(bg) == 0 {
+		err = c.agent.Interrupt(ctx, sid)
+	}
+	for _, id := range bg {
+		if e := c.agent.StopTask(ctx, sid, id); e != nil && err == nil {
+			err = e
+		}
+	}
+	return err
 }
 
 // Answer answers a pending question. answers is keyed by question text.

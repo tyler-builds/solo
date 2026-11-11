@@ -44,6 +44,11 @@ peer.handle("session.send", async (p: SendParams) => {
 
 peer.handle("session.interrupt", async (p: { sessionId: string }) => session(p.sessionId).interrupt());
 
+peer.handle("session.stopTask", async (p: { sessionId: string; taskId: string }) => {
+  await session(p.sessionId).stopTask(p.taskId);
+  return {};
+});
+
 peer.handle("session.setModel", async (p: { sessionId: string; model?: string }) => {
   await session(p.sessionId).setModel(p.model);
   return {};

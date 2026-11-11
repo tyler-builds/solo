@@ -50,6 +50,12 @@ func TestShots(t *testing.T) {
 			a.openThread("c3d4e5f6-forms", "changes")
 		}},
 		{"working", func(a *App, f *fakeBackend) { a.openThread("a1f3c9d2-oauth", "conversation") }},
+		// A thread whose turn ended while its benchmarks run in the background: at work, not ready.
+		{"background", func(a *App, f *fakeBackend) {
+			th := waitingOnBackground(f)
+			a.threads.Set(f.Threads())
+			a.openThread(th.ID, "conversation")
+		}},
 		{"repo-filter", func(a *App, f *fakeBackend) { a.navSel.Set("repo:/home/dev/code/api") }},
 		{"opening", func(a *App, f *fakeBackend) { a.openID.Set("c3d4e5f6-forms"); a.panelAnim.Set(0.35) }},
 		{"narrow-thread", func(a *App, f *fakeBackend) { a.openThread("c3d4e5f6-forms", "conversation") }},

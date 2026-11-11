@@ -138,6 +138,9 @@ func (c *Core) AddProposal(workerID, summary string) error {
 	if v.NoChanges || (v.Changed == 0 && !Finished(v.Status)) {
 		return fmt.Errorf("thread %q changed no files; there is nothing to merge", v.Title)
 	}
+	if v.Status == StatusBackground {
+		return fmt.Errorf("thread %q is still waiting on work it runs in the background (%s); it carries on when that finishes, so propose landing after its next turn ends", v.Title, DescribeBackground(v.Background))
+	}
 	if !v.CanMerge && !v.CanOpenPR {
 		return fmt.Errorf("thread %q can't be merged while it is %s", v.Title, v.Status)
 	}

@@ -255,6 +255,12 @@ export class Session {
     return { stillQueued: res?.still_queued ?? [] };
   }
 
+  /** Stops a background task. Claude hears it was stopped but starts no turn for it. */
+  async stopTask(taskId: string) {
+    if (!this.live) return;
+    await this.live.query.stopTask(taskId);
+  }
+
   async setModel(model: string | undefined) {
     this.params = { ...this.params, ...(model ? { model } : {}) };
     if (this.live) await this.live.query.setModel(model);

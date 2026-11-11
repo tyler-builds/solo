@@ -22,6 +22,7 @@ func TestParseUpdates(t *testing.T) {
 		color            ui.Color
 	}{
 		{"finished", head + " finished its turn. Summary: Fixed the **retry**. Tests pass.", "finished · Fixed the retry", icons.CircleCheck, th.Success},
+		{"background", head + ` ended its turn but isn't finished: it waits on work it runs in the background (command "Run benchmarks", running 4m), and carries on by itself when that ends. Don't review it or propose landing yet; you hear when its next turn finishes. Summary so far: Waiting.`, "waiting on background work · Run benchmarks", icons.Hourglass, th.TextMuted},
 		{"resolved", head + " resolved the conflicts its merge had; Solo is merging it now, so don't propose it again.", "resolved its merge conflicts", icons.GitMerge, info},
 		{"failed", head + " failed: exit status 1", "failed · exit status 1", icons.CircleAlert, th.Danger},
 		{"question", head + " is asking a question (see get_thread).", "has a question", icons.MessageCircleQuestionMark, th.Warning},
