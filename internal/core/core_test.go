@@ -658,6 +658,32 @@ func TestPullRequestFlow(t *testing.T) {
 	if _, err := e.c.Merge(ctx, v.ID); err == nil {
 		t.Fatal("merged locally in a repository with a forge")
 	}
+	// Solo proposes it; proposing again replaces the card rather than adding a second.
+	if _, err := e.c.EnsureOrchestrator(); err != nil {
+		t.Fatal(err)
+	}
+	proposals := func() (all []Item, last Item) {
+		t.Helper()
+		items, err := e.c.Items(ctx, OrchestratorID, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, it := range items {
+			if it.Kind == ItemProposal && it.Ref == v.ID {
+				all = append(all, it)
+			}
+		}
+		return all, items[len(items)-1]
+	}
+	for _, summary := range []string{"first", "ship it"} {
+		e.c.addNotice(OrchestratorID, "info", "the conversation moves on")
+		if err := e.c.AddProposal(v.ID, summary); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if all, last := proposals(); len(all) != 1 || last.ID != all[0].ID || !strings.Contains(string(last.Data), "ship it") {
+		t.Fatalf("proposed twice: %d cards, last item %+v", len(all), last)
+	}
 
 	// Opening pushes the branch, opens the PR against main and turns on auto-merge.
 	setView(t, gh, "OPEN", "BLOCKED", "test=PENDING")
@@ -690,6 +716,11 @@ func TestPullRequestFlow(t *testing.T) {
 	if v, _ = e.c.Thread(v.ID); v.PR.Checks != "failing" || len(v.PR.Failed) != 1 || v.PR.Failed[0].Name != "test" || v.PR.Blocked != "checks failed" {
 		t.Fatalf("failing %+v", v.PR)
 	}
+	failedCard, _ := proposals()
+	if len(failedCard) != 1 || !strings.Contains(string(failedCard[0].Data), `"checksFailed":true`) {
+		t.Fatalf("card after failing checks %+v", failedCard)
+	}
+	e.c.addNotice(OrchestratorID, "info", "the conversation moves on")
 	if err := e.c.Send(ctx, v.ID, "write fix.txt fixed"); err != nil {
 		t.Fatal(err)
 	}
@@ -708,6 +739,11 @@ func TestPullRequestFlow(t *testing.T) {
 	waitEvent(PRChecksPassed)
 	if v, _ = e.c.Thread(v.ID); !v.CanMerge {
 		t.Fatalf("mergeable PR can't merge: %+v", v.PR)
+	}
+	// Checks recovered: the card is posted anew at the end, and the old one is gone.
+	if all, last := proposals(); len(all) != 1 || last.ID != all[0].ID || all[0].ID == failedCard[0].ID ||
+		strings.Contains(string(last.Data), "checksFailed") || !strings.Contains(string(last.Data), "ship it") {
+		t.Fatalf("card after checks recovered: %d cards, last item %+v", len(all), last)
 	}
 	setView(t, gh, "MERGED", "UNKNOWN")
 	if _, err := e.c.Merge(ctx, v.ID); err != nil {

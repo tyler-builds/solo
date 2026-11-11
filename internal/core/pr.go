@@ -459,6 +459,7 @@ func (c *Core) applyPR(id, repo string, pr forge.PR, event string) {
 			c.addNotice(id, "info", "Checks passed on "+noun+".")
 		}
 	}
+	c.proposalChecks(id, event)
 	c.notify(Change{Kind: ChangeThread, ThreadID: id, PrevStatus: status, Status: status, PREvent: event, Repo: repo})
 	if event == PRMerged {
 		c.finishIfLanded(id)

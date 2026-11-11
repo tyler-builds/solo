@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/tyler-builds/solo/internal/agent"
+	"github.com/tyler-builds/solo/internal/forge"
 	"github.com/tyler-builds/solo/internal/store"
 )
 
@@ -16,7 +17,9 @@ import (
 const OrchestratorID = "orchestrator"
 
 // ItemProposal is a merge proposal the orchestrator made, shown as a card with a Merge button. Its
-// data is ProposalData; Ref is the worker's thread ID.
+// data is ProposalData; Ref is the worker's thread ID. A thread has at most one: proposing it again,
+// or its checks passing after they failed, removes the card and posts it anew at the end of the
+// conversation, so the card the user can act on is always the latest one.
 const ItemProposal = "proposal"
 
 // ProposalData is a merge proposal.
@@ -24,6 +27,9 @@ type ProposalData struct {
 	ThreadID string `json:"threadId"`
 	Title    string `json:"title"`
 	Summary  string `json:"summary"`
+	// ChecksFailed is set while the thread's pull request checks have failed since the card was
+	// posted; when they pass again, the card is posted anew.
+	ChecksFailed bool `json:"checksFailed,omitempty"`
 }
 
 // SetOrchestratorSpec sets how the orchestrator's session is opened. Core fills in the session ID and
@@ -122,7 +128,8 @@ func (c *Core) PendingQuestions(threadID string) []PendingQuestion {
 	return out
 }
 
-// AddProposal records a merge proposal in the orchestrator's transcript.
+// AddProposal records a merge proposal in the orchestrator's transcript, in place of any earlier one
+// for the thread.
 func (c *Core) AddProposal(workerID, summary string) error {
 	v, ok := c.Thread(workerID)
 	if !ok {
@@ -134,15 +141,88 @@ func (c *Core) AddProposal(workerID, summary string) error {
 	if !v.CanMerge && !v.CanOpenPR {
 		return fmt.Errorf("thread %q can't be merged while it is %s", v.Title, v.Status)
 	}
-	data, _ := json.Marshal(ProposalData{ThreadID: workerID, Title: v.Title, Summary: summary})
+	failing := false
+	for _, p := range v.Parts {
+		failing = failing || (p.PR != nil && p.PR.State == forge.StateOpen && p.PR.Checks == forge.ChecksFailing)
+	}
 	c.mu.Lock()
-	err := c.db.AddItem(&store.Item{ThreadID: OrchestratorID, Kind: ItemProposal, Ref: workerID, Data: data, CreatedAt: now()})
+	err := c.postProposalLocked(ProposalData{ThreadID: workerID, Title: v.Title, Summary: summary, ChecksFailed: failing})
 	c.mu.Unlock()
 	if err != nil {
 		return err
 	}
 	c.notify(Change{Kind: ChangeItems, ThreadID: OrchestratorID})
 	return nil
+}
+
+// postProposalLocked removes the thread's merge proposals and appends d as its one card.
+func (c *Core) postProposalLocked(d ProposalData) error {
+	old, err := c.db.ItemsByRef(context.Background(), OrchestratorID, ItemProposal, d.ThreadID)
+	if err != nil {
+		return err
+	}
+	data, _ := json.Marshal(d)
+	if err := c.db.AddItem(&store.Item{ThreadID: OrchestratorID, Kind: ItemProposal, Ref: d.ThreadID, Data: data, CreatedAt: now()}); err != nil {
+		return err
+	}
+	ids := make([]int64, len(old))
+	for i, it := range old {
+		ids[i] = it.ID
+	}
+	return c.db.DeleteItems(ids...)
+}
+
+// proposalChecks keeps the thread's merge proposal current with its pull requests' checks: it notes
+// on the card when they fail, and when they all pass again, posts the card anew at the end of the
+// conversation, where the user sees it, in place of the one the conversation has scrolled past.
+func (c *Core) proposalChecks(threadID, event string) {
+	if event != PRChecksFailed && event != PRChecksPassed {
+		return
+	}
+	c.mu.Lock()
+	changed, err := c.proposalChecksLocked(threadID, event)
+	c.mu.Unlock()
+	if err != nil {
+		c.log.Error("core: updating a merge proposal", "thread", threadID, "err", err)
+	}
+	if changed {
+		c.notify(Change{Kind: ChangeItems, ThreadID: OrchestratorID})
+	}
+}
+
+func (c *Core) proposalChecksLocked(threadID, event string) (bool, error) {
+	t := c.threads[threadID]
+	if t == nil {
+		return false, nil
+	}
+	items, err := c.db.ItemsByRef(context.Background(), OrchestratorID, ItemProposal, threadID)
+	if err != nil || len(items) == 0 {
+		return false, err
+	}
+	last := items[len(items)-1]
+	var d ProposalData
+	if err := json.Unmarshal(last.Data, &d); err != nil {
+		return false, err
+	}
+	if event == PRChecksFailed {
+		if d.ChecksFailed {
+			return false, nil
+		}
+		d.ChecksFailed = true
+		data, _ := json.Marshal(d)
+		return false, c.db.UpdateItemData(last.ID, data)
+	}
+	if !d.ChecksFailed {
+		return false, nil // never failed: the card is as it was posted
+	}
+	for _, p := range t.parts {
+		if p.prOpen() && p.PR.Checks == forge.ChecksFailing {
+			return false, nil // another repository's checks still fail
+		}
+	}
+	d.ChecksFailed = false
+	d.Title = t.row.Title
+	return true, c.postProposalLocked(d)
 }
 
 // ResetSession starts the thread on a new Claude session the next time it is used. The transcript
