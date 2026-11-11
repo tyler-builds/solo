@@ -186,8 +186,11 @@ func needsUser(th core.ThreadView) bool {
 func groupHeader(ctx *ui.Context, title string, n int, status string) ui.Element {
 	t := ctx.Theme()
 	c := t.TextSubtle
-	if status == core.StatusWaiting {
+	switch status {
+	case core.StatusWaiting:
 		c = t.Warning
+	case core.StatusFailed:
+		c = t.Danger
 	}
 	return ui.Div().Row().Align(ui.Center).Gap(6).PaddingX(space2).PaddingTop(space3).PaddingBottom(space1).
 		Child(ui.Text(title).FontSize(11).Medium().TextColor(c)).

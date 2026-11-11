@@ -77,18 +77,15 @@ func (a *App) orchestratorBar(ctx *ui.Context, v core.ThreadView) ui.Element {
 }
 
 // threadsSummary sums up the threads at the right of Solo's bar, in the rail's own groups and
-// counts: how many work, ask, failed and are ready. Each opens the newest thread of its group.
+// counts: how many work, failed and are ready. Each opens the newest thread of its group.
 func (a *App) threadsSummary(ctx *ui.Context) ui.Element {
 	t := ctx.Theme()
-	type group struct {
-		title, status, label string
-		mark                 ui.Element
-	}
+	type group struct{ title, status, label string }
+	// Questions have their own line above the composer, so they aren't counted again here.
 	groups := []group{
-		{"Working", core.StatusRunning, "working", dot(workingColor(t), 7)},
-		{"Needs answer", core.StatusWaiting, "to answer", nil},
-		{"Failed", core.StatusFailed, "failed", nil},
-		{"Ready", core.StatusIdle, "ready", nil},
+		{"Working", core.StatusRunning, "working"},
+		{"Failed", core.StatusFailed, "failed"},
+		{"Ready", core.StatusIdle, "ready"},
 	}
 	row := ui.Div().Row().Align(ui.Center).Gap(space1).Shrink(0)
 	for _, g := range groups {
@@ -107,18 +104,15 @@ func (a *App) threadsSummary(ctx *ui.Context) ui.Element {
 			continue
 		}
 		slices.SortStableFunc(in, func(x, y core.ThreadView) int { return y.UpdatedAt.Compare(x.UpdatedAt) })
-		mark := g.mark
-		if mark == nil {
-			mark = statusMark(ctx, g.status)
-		}
 		text := fmt.Sprintf("%d %s", len(in), g.label)
 		first := in[0].ID
-		row = row.Child(ui.Div().Row().Align(ui.Center).Gap(6).PaddingX(space2).Height(ui.Px(26)).Radius(radiusS).
-			Cursor(ui.CursorPointer).Hover(ui.Style{Background: t.SurfaceHover}).
+		row = row.Child(ui.Div().Row().Align(ui.Center).Gap(6).PaddingLeft(space2-2).PaddingRight(space2+2).
+			Height(ui.Px(24)).Radius(999).Border(1, t.Border).
+			Cursor(ui.CursorPointer).Hover(ui.Style{Background: t.SurfaceHover, BorderColor: t.BorderStrong}).
 			Role(access.RoleButton).Label(text + ": open the newest").TabIndex(0).
 			Tooltip(g.title + ": open the newest · Ctrl+J opens the next that needs you").
 			OnClick(func() { a.openThread(first, "conversation") }).
-			Child(mark).
+			Child(statusMark(ctx, g.status)).
 			Child(ui.Text(text).FontSize(12).TextColor(t.TextMuted).NoWrap()))
 	}
 	return row
@@ -589,8 +583,8 @@ var checkURL = regexp.MustCompile(` \(https?://[^)]*\)`)
 // update is one line of a thread update the app sent Solo.
 type update struct {
 	threadID, name, repo, what string
-	// quiet: news that asks nothing of the user (merged, a PR opened, checks passed), shown lighter
-	// than what does (a question, a failure, finished work to review).
+	// quiet: news that asks nothing of the user here (merged, a PR opened, finished work, whose
+	// card follows), shown lighter than what does: a question or a failure.
 	quiet bool
 	icon  *icons.Icon
 	color ui.Color
@@ -610,8 +604,7 @@ func (a *App) parseUpdates(t *ui.Theme, text string) []update {
 		}
 		u := update{threadID: a.findThreadID(m[1]), name: name, repo: m[3], what: m[4], icon: icons.Activity, color: t.TextMuted}
 		describeUpdate(t, &u, m[4])
-		u.quiet = u.color == ui.Hex(pal(t).info) || u.color == t.TextSubtle ||
-			strings.HasPrefix(u.what, "checks passed")
+		u.quiet = u.color != t.Danger && u.color != t.Warning
 		out = append(out, u)
 	}
 	return out
@@ -698,23 +691,25 @@ func cutChangeRequest(s string) (cr, tail string, ok bool) {
 func (a *App) updateRow(ctx *ui.Context, u update, trailing ui.Element) *ui.DivElement {
 	t := ctx.Theme()
 	name := ui.Text(u.name).FontSize(13).Medium()
+	iconColor, whatColor := u.color, t.TextMuted
 	if u.quiet {
 		name = ui.Text(u.name).FontSize(13).TextColor(t.TextMuted)
+		iconColor, whatColor = u.color.Alpha(0.6), t.TextSubtle
 	}
 	var line *ui.DivElement
 	if a.chatWidth(ctx) < 640 {
 		// Narrow: the thread on one line and what happened under it, so neither is cut to a few words.
 		line = ui.Div().Row().Align(ui.Start).Gap(space2).PaddingX(space2).PaddingY(3).Radius(radiusS).
-			Child(ui.Div().Height(ui.Px(18)).Row().Align(ui.Center).Child(ui.Icon(u.icon).Size(14).Color(u.color))).
+			Child(ui.Div().Height(ui.Px(18)).Row().Align(ui.Center).Child(ui.Icon(u.icon).Size(14).Color(iconColor))).
 			Child(ui.Div().Column().Gap(1).Grow(1).MinWidth(ui.Px(0)).
 				Child(name.Truncate()).
-				Child(ui.Text(u.repo + " · " + u.what).FontSize(12).TextColor(t.TextMuted).Truncate()))
+				Child(ui.Text(u.repo + " · " + u.what).FontSize(12).TextColor(whatColor).Truncate()))
 	} else {
 		line = ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space2).Height(ui.Px(26)).Radius(radiusS).
-			Child(ui.Icon(u.icon).Size(14).Color(u.color)).
+			Child(ui.Icon(u.icon).Size(14).Color(iconColor)).
 			Child(ui.Text(u.repo).FontSize(12).TextColor(t.TextSubtle).Width(ui.Px(56)).Shrink(0).Truncate()).
 			Child(name.NoWrap().Shrink(0).MaxWidth(ui.Percent(45)).Truncate()).
-			Child(ui.Text(u.what).FontSize(12).TextColor(t.TextMuted).Truncate().Grow(1).MinWidth(ui.Px(0)))
+			Child(ui.Text(u.what).FontSize(12).TextColor(whatColor).Truncate().Grow(1).MinWidth(ui.Px(0)))
 	}
 	if trailing != nil {
 		line = line.Child(trailing)
@@ -1119,7 +1114,7 @@ func (a *App) proposalCard(ctx *ui.Context, d core.ProposalData, steps []*core.I
 					Child(ui.Icon(map[bool]*icons.Icon{true: icons.ChevronDown, false: icons.ChevronRight}[open.Get()]).Size(12).Color(t.TextSubtle)))
 		}
 		card := ui.Div().Column().Gap(space3).Padding(space4).Radius(radiusL).Background(t.Surface).
-			Border(1, t.Success.Alpha(0.35)).
+			Border(1, t.BorderStrong).
 			Child(a.cardHeader(ctx, icons.GitMerge, t.Success, "Merge proposed", d.ThreadID, checksBadge(ctx, th))).
 			Child(a.md(ctx, d.Summary, a.threadBases(d.ThreadID))).
 			Child(actions)
@@ -1235,11 +1230,10 @@ func (a *App) askForm(ctx *ui.Context, threadID, toolUseID string, qs []agent.Qu
 			}
 		}
 		otherRow := ui.Div().Row().Align(ui.Center).Gap(space2).
-			Child(ui.TextInput(other).Placeholder("Your answer").Label("Your answer").Small().Width(ui.Full).
+			Child(ui.TextInput(other).Placeholder("Or write your own answer").Label("Your answer").Small().Width(ui.Full).
 				OnSubmit(func(string) { sendOther() })).
-			Child(ui.IfElse(strings.TrimSpace(other.Get()) != "", ui.Button("Send").Primary().Small().OnClick(sendOther),
-				ui.Button("Send").Secondary().Small().Disabled(true))).
-			Child(ui.Button("Skip").Ghost().Small().
+			Child(ui.If(strings.TrimSpace(other.Get()) != "", ui.Button("Send").Primary().Small().OnClick(sendOther))).
+			Child(ui.Button("Skip").Secondary().Small().
 				Tooltip("Skip the question; the agent carries on with its own judgment").
 				OnClick(func() {
 					a.run("Skipping", func(context.Context) error { return a.b.Dismiss(threadID, toolUseID) })
@@ -1458,7 +1452,7 @@ func (a *App) composer(ctx *ui.Context, v core.ThreadView, key, placeholder stri
 		// Markdown shows formatted as it is typed; its syntax shows where the caret is.
 		marks := markdown.EditMarks(markdown.EditStyle{
 			Syntax: ui.Highlight{Color: t.TextSubtle},
-			Code:   ui.Highlight{Color: t.Link, Background: t.Background},
+			Code:   ui.Highlight{Color: codeColor(t), Background: t.Background},
 			Link:   ui.Highlight{Color: t.Link},
 		})
 		area := ui.TextArea(draft).Placeholder(placeholder).Label(placeholder).MinRows(1).Borderless().

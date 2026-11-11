@@ -67,13 +67,21 @@ var darkPalette = palette{
 }
 
 var lightPalette = palette{
-	background: "#ffffff", panel: "#efeff2", surface: "#ffffff", surfaceHover: "#f6f6f8", surfaceActive: "#ececef",
+	background: "#ffffff", panel: "#efeff2", surface: "#ffffff", surfaceHover: "#e8e8ec", surfaceActive: "#dfdfe5",
 	border: "#e3e3e8", borderStrong: "#d4d4db",
-	text: "#0c0c0e", textMuted: "#55555e", textSubtle: "#777781",
+	text: "#0c0c0e", textMuted: "#4f4f58", textSubtle: "#6c6c76",
 	accent: "#18181b", accentHover: "#2c2c31", accentActive: "#3f3f46", accentText: "#ffffff", link: "#bb1a43",
 	brand:   "#d6214f",
 	success: "#15803d", warning: "#a94e07", danger: "#b91c1c", info: "#2459c7",
 	scrollbar: "#d0d0d6", scrim: "#0c0c0e59",
+}
+
+// codeColor is inline code's color.
+func codeColor(t *ui.Theme) ui.Color {
+	if t.Dark {
+		return ui.Hex("#6fd3c1")
+	}
+	return ui.Hex("#0b7a6c")
 }
 
 // workingColor marks work in progress: a calm blue, so a running thread never reads as an error or
@@ -92,7 +100,8 @@ func Themes() (light, dark *ui.Theme) {
 	light, dark = buildTheme(ui.LightTheme(), lightPalette), buildTheme(ui.DarkTheme(), darkPalette)
 	for _, t := range []*ui.Theme{light, dark} {
 		// Inline code is colored, without a box: a box per word reads as a row of chips.
-		ui.SetThemeStyle(t, markdown.Style{InlineCode: ui.Style{TextColor: t.Link, Background: t.Background}})
+		// Teal, so code never reads as an error or as the crimson brand.
+		ui.SetThemeStyle(t, markdown.Style{InlineCode: ui.Style{TextColor: codeColor(t), Background: t.Background}})
 	}
 	return light, dark
 }
@@ -385,8 +394,8 @@ func statusMark(ctx *ui.Context, status string) *ui.DivElement {
 		return box.Child(ui.Icon(icons.CircleCheck).Size(14).Color(c))
 	case statusInReview:
 		return box.Child(ui.Icon(icons.GitPullRequest).Size(13).Color(c))
-	case statusChecksFailed:
-		return box.Child(ui.Icon(icons.CircleX).Size(14).Color(c))
+	case statusChecksFailed: // one mark for every failure; the row's line says which
+		return box.Child(ui.Icon(icons.CircleAlert).Size(14).Color(c))
 	case core.StatusArchived:
 		return box.Child(ui.Icon(icons.CircleCheck).Size(14).Color(c))
 	case core.StatusMerged:
