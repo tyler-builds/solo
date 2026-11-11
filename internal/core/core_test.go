@@ -9,9 +9,12 @@ import (
 	"image/png"
 	"io"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1127,8 +1130,13 @@ func TestRestartKeepsQuestion(t *testing.T) {
 	if v2.Status != StatusWaiting || !v2.PendingAsk || len(qs) != 1 || qs[0].Questions[0].Question != "Tabs or spaces?" {
 		t.Fatalf("after restart: %s, pending %v, %+v", v2.Status, v2.PendingAsk, qs)
 	}
+	answered := watchAnswers(c2)
 	if err := c2.Answer(v.ID, qs[0].ToolUseID, map[string]string{"Tabs or spaces?": "Spaces"}); err != nil {
 		t.Fatal(err)
+	}
+	if got := answered(); len(got) != 1 || got[0].From != FromUser || got[0].Answers["Tabs or spaces?"] != "Spaces" ||
+		len(got[0].Questions) != 1 || got[0].Questions[0].Question != "Tabs or spaces?" {
+		t.Fatalf("answers reported %+v", got)
 	}
 	var v3 ThreadView
 	deadline := time.Now().Add(10 * time.Second)
@@ -1152,6 +1160,62 @@ func TestRestartKeepsQuestion(t *testing.T) {
 			if d.Answers["Tabs or spaces?"] != "Spaces" {
 				t.Fatalf("question row not answered: %+v", d)
 			}
+		}
+	}
+}
+
+// watchAnswers collects the answers c reports (ChangeAnswer).
+func watchAnswers(c *Core) func() []Answered {
+	var mu sync.Mutex
+	var got []Answered
+	c.Subscribe(func(ch Change) {
+		if ch.Kind == ChangeAnswer {
+			mu.Lock()
+			got = append(got, *ch.Answer)
+			mu.Unlock()
+		}
+	})
+	return func() []Answered {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(got)
+	}
+}
+
+// Answering or skipping a question is reported with the question, the answer and who gave it.
+func TestAnswersAreReported(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	answered := watchAnswers(e.c)
+	resolve := []func(id, key string) error{
+		func(id, key string) error { return e.c.Answer(id, key, map[string]string{"Tabs or spaces?": "Tabs"}) },
+		func(id, key string) error { return e.c.Dismiss(id, key) },
+		func(id, key string) error {
+			return e.c.AnswerFromOrchestrator(id, key, map[string]string{"Tabs or spaces?": "Spaces"})
+		},
+	}
+	for _, f := range resolve {
+		v, _ := e.c.CreateWorker(ctx, WorkerSpec{Repo: "proj", Prompt: "ask"})
+		waitStatusAllowTurn(t, e.c, v.ID, StatusWaiting)
+		qs := e.c.PendingQuestions(v.ID)
+		if err := f(v.ID, qs[0].ToolUseID); err != nil {
+			t.Fatal(err)
+		}
+		waitStatus(t, e.c, v.ID, StatusIdle)
+	}
+	got := answered()
+	if len(got) != 3 {
+		t.Fatalf("%d answers reported: %+v", len(got), got)
+	}
+	for i, want := range []Answered{
+		{Answers: map[string]string{"Tabs or spaces?": "Tabs"}, From: FromUser},
+		{Skipped: true, From: FromUser},
+		{Answers: map[string]string{"Tabs or spaces?": "Spaces"}, From: FromOrchestrator},
+	} {
+		g := got[i]
+		if g.From != want.From || g.Skipped != want.Skipped || !maps.Equal(g.Answers, want.Answers) ||
+			len(g.Questions) != 1 || g.Questions[0].Question != "Tabs or spaces?" {
+			t.Fatalf("answer %d: %+v, want %+v", i, g, want)
 		}
 	}
 }

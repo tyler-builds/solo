@@ -168,6 +168,117 @@ func TestAnswerQuestionForWorker(t *testing.T) {
 	if s := onlyWorker(c).Summary; s != "Tabs" {
 		t.Fatalf("summary %q", s)
 	}
+	// Solo answered it, so it gets no note saying so.
+	var notes []string
+	if c.State(notesKey, &notes); len(notes) != 0 {
+		t.Fatalf("notes after answer_question: %q", notes)
+	}
+}
+
+// A question the user answers in its card is noted, hidden, for Solo's next message (here the user's),
+// without a turn of its own; the update saying the thread asks, not yet delivered, is dropped.
+func TestUserAnswerIsNotedForTheNextMessage(t *testing.T) {
+	c, o := setup(t)
+	o.SetUpdates(false)
+	call(t, o, "spawn_thread", map[string]any{"repo": "web", "title": "Q", "prompt": "ask"})
+	eventually(t, "question", func() bool { return onlyWorker(c).PendingAsk })
+	w := onlyWorker(c)
+	qs := c.PendingQuestions(w.ID)
+	if err := c.Answer(w.ID, qs[0].ToolUseID, map[string]string{"Tabs or spaces?": "Spaces"}); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "worker idle", func() bool { v := onlyWorker(c); return v.Status == core.StatusIdle && !v.InTurn })
+	want := `[Solo: the user answered Thread ` + w.ID[:8] + ` "Q" (web)'s question themselves, and the thread carries on: "Tabs or spaces?" → "Spaces"]`
+	var notes, pending []string
+	c.State(notesKey, &notes)
+	if len(notes) != 1 || notes[0] != want {
+		t.Fatalf("notes %q, want %q", notes, want)
+	}
+	c.State(pendingKey, &pending)
+	for _, l := range pending {
+		if strings.Contains(l, "is asking a question") {
+			t.Fatalf("pending still says the thread asks: %q", pending)
+		}
+	}
+	if v, _ := c.Thread(core.OrchestratorID); v.HasTranscript {
+		t.Fatal("the note started a turn of its own")
+	}
+	// A restart keeps the note.
+	o2, err := New(c, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o2.SetUpdates(false)
+	if !slices.Equal(o2.notes, notes) {
+		t.Fatalf("notes after restart %q", o2.notes)
+	}
+
+	if err := o.Send(context.Background(), "what next"); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "reply", func() bool {
+		items, _ := c.Items(context.Background(), core.OrchestratorID, 0)
+		for _, it := range items {
+			var d core.TextData
+			if it.Kind == core.ItemAssistant && it.Decode(&d) == nil && strings.Contains(d.Text, "what next") {
+				return strings.Contains(d.Text, want)
+			}
+		}
+		return false
+	})
+	// The transcript shows the user's words only, and the note is spent.
+	items, _ := c.Items(context.Background(), core.OrchestratorID, 0)
+	for _, it := range items {
+		var d core.UserData
+		if it.Kind == core.ItemUser && it.Decode(&d) == nil && d.Text != "what next" {
+			t.Fatalf("transcript message %q", d.Text)
+		}
+	}
+	if c.State(notesKey, &notes); len(notes) != 0 {
+		t.Fatalf("notes not cleared: %q", notes)
+	}
+}
+
+// A question the user skips is noted too, and goes with the next thread update when that comes first.
+func TestUserSkipIsNotedWithTheNextUpdate(t *testing.T) {
+	c, o := setup(t)
+	var mu sync.Mutex
+	var hiddens []string
+	send := o.update
+	o.mu.Lock()
+	o.update = func(ctx context.Context, id, hidden, text string) error {
+		mu.Lock()
+		hiddens = append(hiddens, hidden)
+		mu.Unlock()
+		return send(ctx, id, hidden, text)
+	}
+	o.mu.Unlock()
+	call(t, o, "spawn_thread", map[string]any{"repo": "web", "title": "Q", "prompt": "ask"})
+	eventually(t, "question", func() bool { return onlyWorker(c).PendingAsk })
+	w := onlyWorker(c)
+	qs := c.PendingQuestions(w.ID)
+	if err := c.Dismiss(w.ID, qs[0].ToolUseID); err != nil {
+		t.Fatal(err)
+	}
+	want := `[Solo: the user skipped Thread ` + w.ID[:8] + ` "Q" (web)'s question without answering it, so the thread carries on with its own judgment. It asked: "Tabs or spaces?"]`
+	eventually(t, "update with the note", func() bool {
+		var finished bool
+		for _, m := range syntheticMessages(c) {
+			finished = finished || strings.Contains(m, `"Q" (web) finished its turn. Summary: cancelled`)
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		return finished && slices.Contains(hiddens, want)
+	})
+	for _, m := range syntheticMessages(c) {
+		if strings.Contains(m, "skipped") {
+			t.Fatalf("the note shows in the transcript: %q", m)
+		}
+	}
+	var notes []string
+	if c.State(notesKey, &notes); len(notes) != 0 {
+		t.Fatalf("notes not cleared: %q", notes)
+	}
 }
 
 func TestUpdatesReachTheOrchestrator(t *testing.T) {

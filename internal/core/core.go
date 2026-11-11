@@ -135,6 +135,7 @@ const (
 	ChangeSettings                   // settings changed
 	ChangeRepos                      // the repository list changed
 	ChangeTodos                      // the to-do list changed
+	ChangeAnswer                     // a thread's question was answered or skipped (Change.Answer)
 )
 
 // Change is one notification to subscribers.
@@ -147,6 +148,16 @@ type Change struct {
 	// PRChecksFailed, PRChecksPassed, PRMerged or PRClosed. Repo is its repository.
 	PREvent string
 	Repo    string
+	// For ChangeAnswer: the question and what became of it.
+	Answer *Answered
+}
+
+// Answered is a question a thread asked and what became of it.
+type Answered struct {
+	Questions []agent.Question
+	Answers   map[string]string // keyed by question text
+	Skipped   bool              // dismissed rather than answered
+	From      string            // who answered: FromUser or FromOrchestrator
 }
 
 // Pull request events (Change.PREvent).

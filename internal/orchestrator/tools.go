@@ -302,7 +302,7 @@ func (o *Orchestrator) handleTool(ctx context.Context, threadID, name string, ra
 			qs := o.c.PendingQuestions(v.ID)
 			if len(qs) == 0 {
 				err = fmt.Errorf("%s has no pending question", short(v.ID))
-			} else if err = o.c.Answer(v.ID, qs[0].ToolUseID, a.Answers); err == nil {
+			} else if err = o.c.AnswerFromOrchestrator(v.ID, qs[0].ToolUseID, a.Answers); err == nil {
 				out = fmt.Sprintf("Answered %s's question.", short(v.ID))
 			}
 		}

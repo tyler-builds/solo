@@ -45,6 +45,9 @@ const carryKey = "orchestrator_carry"
 // pendingKey is where thread updates not yet delivered are kept, so a restart doesn't lose them.
 const pendingKey = "orchestrator_pending"
 
+// notesKey is where notes waiting for Solo's next message are kept, so a restart doesn't lose them.
+const notesKey = "orchestrator_notes"
+
 // An update that fails to reach Solo is tried again after RetryDelay, doubling with each failure, up
 // to RetryLimit times; after that it waits for the next update, the end of Solo's turn, or a restart.
 var (
@@ -64,6 +67,9 @@ type Orchestrator struct {
 	failures int    // deliveries failed in a row
 	paused   bool   // proactive updates are off (SetUpdates)
 	carry    string // a recap for the next message, after NewConversation or a rotation (saved)
+	// notes say what happened that Solo should know but needn't answer (the user answering a thread's
+	// question in its card): they go, hidden, with its next message, whatever starts it (saved).
+	notes    []string
 	rotating bool
 	rotateAt int // overrides the size in Settings, for tests; 0 uses Settings
 	// update sends thread updates to Solo (a field so tests can make it fail).
@@ -91,6 +97,7 @@ func New(c *core.Core, dataDir string, log *slog.Logger) (*Orchestrator, error) 
 	c.SetRecap(o.recap)
 	c.State(carryKey, &o.carry)
 	c.State(pendingKey, &o.pending)
+	c.State(notesKey, &o.notes)
 	c.Subscribe(o.onChange)
 	o.schedule() // updates a restart interrupted
 	return o, nil
@@ -102,12 +109,10 @@ func (o *Orchestrator) ID() string { return core.OrchestratorID }
 // Send sends the user's message, with any images (attachment paths), to the orchestrator.
 func (o *Orchestrator) Send(ctx context.Context, text string, images ...string) error {
 	o.rotateIfIdle(ctx)
-	carry := o.takeCarry()
-	// A recap waiting from a fresh session goes before the message, out of the transcript.
-	if err := o.c.SendWithContext(ctx, core.OrchestratorID, carry, text, images...); err != nil {
-		if carry != "" {
-			o.putCarry(carry)
-		}
+	// A recap waiting from a fresh session, and any notes, go before the message, out of the transcript.
+	hidden, restore := o.takeHidden()
+	if err := o.c.SendWithContext(ctx, core.OrchestratorID, hidden, text, images...); err != nil {
+		restore()
 		return err
 	}
 	return nil
@@ -141,6 +146,55 @@ func (o *Orchestrator) putCarry(c string) {
 	o.carry = c
 	o.saveCarry(c)
 	o.mu.Unlock()
+}
+
+// takeHidden takes what goes, hidden, before Solo's next message: a recap waiting from a fresh session,
+// then the notes. restore puts them back, for when the message doesn't get through.
+func (o *Orchestrator) takeHidden() (hidden string, restore func()) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	carry, notes := o.carry, o.notes
+	if carry != "" {
+		o.carry = ""
+		o.saveCarry("")
+	}
+	if len(notes) > 0 {
+		o.notes = nil
+		o.saveNotesLocked()
+	}
+	var parts []string
+	if carry != "" {
+		parts = append(parts, carry)
+	}
+	if len(notes) > 0 {
+		parts = append(parts, strings.Join(notes, "\n"))
+	}
+	restore = func() {
+		if carry != "" {
+			o.putCarry(carry)
+		}
+		if len(notes) > 0 {
+			o.mu.Lock()
+			o.notes = append(notes, o.notes...)
+			o.saveNotesLocked()
+			o.mu.Unlock()
+		}
+	}
+	return strings.Join(parts, "\n\n"), restore
+}
+
+// note keeps a note for Solo's next message, and saves it. It starts no turn of its own.
+func (o *Orchestrator) note(n string) {
+	o.mu.Lock()
+	o.notes = append(o.notes, n)
+	o.saveNotesLocked()
+	o.mu.Unlock()
+}
+
+func (o *Orchestrator) saveNotesLocked() {
+	if err := o.c.SetState(notesKey, o.notes); err != nil {
+		o.log.Warn("orchestrator: saving notes", "err", err)
+	}
 }
 
 // queue adds thread updates for Solo, and saves them.
@@ -253,6 +307,10 @@ func (o *Orchestrator) openParams() agent.OpenParams {
 
 // onChange queues an update when a worker reaches a state the orchestrator should hear about.
 func (o *Orchestrator) onChange(ch core.Change) {
+	if ch.Kind == core.ChangeAnswer {
+		o.onAnswer(ch)
+		return
+	}
 	if ch.Kind != core.ChangeThread {
 		return
 	}
@@ -328,7 +386,7 @@ func (o *Orchestrator) onChange(ch core.Change) {
 	case core.StatusFailed:
 		line = fmt.Sprintf("%s failed: %s", label(v), clip(oneLine(v.Error), 400))
 	case core.StatusWaiting:
-		line = fmt.Sprintf("%s is asking a question (see get_thread).", label(v))
+		line = askingLine(v)
 	case core.StatusInterrupted:
 		line = fmt.Sprintf("%s was interrupted.", label(v))
 	case core.StatusMerged:
@@ -344,6 +402,49 @@ func (o *Orchestrator) onChange(ch core.Change) {
 		return
 	}
 	o.queue(line)
+}
+
+func askingLine(v core.ThreadView) string {
+	return fmt.Sprintf("%s is asking a question (see get_thread).", label(v))
+}
+
+// onAnswer notes, for Solo's next message, that the user answered or skipped a worker's question
+// themselves (in its card, not through Solo), so Solo doesn't go on thinking the thread waits on them.
+// It starts no turn: the thread carries on, and Solo hears when its turn ends.
+func (o *Orchestrator) onAnswer(ch core.Change) {
+	a := ch.Answer
+	if a == nil || a.From != core.FromUser {
+		return // Solo answered it (answer_question), so it knows
+	}
+	v, ok := o.c.Thread(ch.ThreadID)
+	if !ok || v.Kind != store.KindWorker {
+		return
+	}
+	var parts []string
+	for _, q := range a.Questions {
+		part := fmt.Sprintf("%q", clip(oneLine(q.Question), 200))
+		if !a.Skipped {
+			if ans, ok := a.Answers[q.Question]; ok {
+				part += fmt.Sprintf(" → %q", clip(oneLine(ans), 400))
+			} else {
+				part += " → (no answer)"
+			}
+		}
+		parts = append(parts, part)
+	}
+	n := fmt.Sprintf("[Solo: the user answered %s's question themselves, and the thread carries on: %s]", label(v), strings.Join(parts, "; "))
+	if a.Skipped {
+		n = fmt.Sprintf("[Solo: the user skipped %s's question without answering it, so the thread carries on with its own judgment. It asked: %s]", label(v), strings.Join(parts, "; "))
+	}
+	// Solo hasn't heard the question yet: the note says all there is.
+	o.mu.Lock()
+	ask := askingLine(v)
+	if i := slices.Index(o.pending, ask); i >= 0 {
+		o.pending = slices.Delete(o.pending, i, i+1)
+		o.savePendingLocked()
+	}
+	o.mu.Unlock()
+	o.note(n)
 }
 
 // schedule delivers pending updates after UpdateDelay, once the orchestrator is between turns.
@@ -381,11 +482,9 @@ func (o *Orchestrator) deliver() {
 		b.WriteString("\n\nThe user's open todos, to tick off with update_todo any this update finishes (ones with threads tick off when those threads' work lands):\n" + todos)
 	}
 	text := b.String()
-	carry := o.takeCarry()
-	if err := o.update(context.Background(), core.OrchestratorID, carry, text); err != nil {
-		if carry != "" {
-			o.putCarry(carry)
-		}
+	hidden, restore := o.takeHidden()
+	if err := o.update(context.Background(), core.OrchestratorID, hidden, text); err != nil {
+		restore()
 		o.log.Warn("orchestrator: delivering updates", "err", err)
 		o.mu.Lock()
 		o.pending = append(lines, o.pending...)
