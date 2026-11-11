@@ -285,6 +285,38 @@ func (s *Store) UpdateItemData(id int64, data json.RawMessage) error {
 	return err
 }
 
+// DeleteItems removes items by ID.
+func (s *Store) DeleteItems(ids ...int64) error {
+	for _, id := range ids {
+		if _, err := s.db.Exec(`DELETE FROM items WHERE id = ?`, id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ItemsByRef returns the thread's items of a kind with the given ref, oldest first.
+func (s *Store) ItemsByRef(ctx context.Context, threadID, kind, ref string) ([]*Item, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, thread_id, kind, turn_uuid, ref, data, created_at FROM items
+		WHERE thread_id = ? AND ref = ? AND kind = ? ORDER BY id`, threadID, ref, kind)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*Item
+	for rows.Next() {
+		var it Item
+		var data string
+		var created int64
+		if err := rows.Scan(&it.ID, &it.ThreadID, &it.Kind, &it.TurnUUID, &it.Ref, &data, &created); err != nil {
+			return nil, err
+		}
+		it.Data, it.CreatedAt = json.RawMessage(data), time.UnixMilli(created)
+		out = append(out, &it)
+	}
+	return out, rows.Err()
+}
+
 // Items returns up to limit of the thread's newest items, in order. limit <= 0 returns all.
 func (s *Store) Items(ctx context.Context, threadID string, limit int) ([]*Item, error) {
 	q := `SELECT id, thread_id, kind, turn_uuid, ref, data, created_at FROM items WHERE thread_id = ? ORDER BY id`
