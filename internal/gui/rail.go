@@ -240,8 +240,9 @@ func (a *App) threadRow(ctx *ui.Context, th core.ThreadView) ui.Element {
 	return row
 }
 
-// workingRow is a thread at work, in one line: its pulse, repository, title and time running. Work in
-// progress needs nothing from the user, so it takes little room.
+// workingRow is a thread at work, in one line: its pulse, title and time running. It leaves out the
+// repositories, whose names would crowd out the title. Work in progress needs nothing from the user,
+// so it takes little room.
 func (a *App) workingRow(ctx *ui.Context, th core.ThreadView) ui.Element {
 	t := ctx.Theme()
 	when, whenColor := rowTime(ctx, th)
@@ -258,11 +259,8 @@ func (a *App) workingRow(ctx *ui.Context, th core.ThreadView) ui.Element {
 			}
 		}).
 		Child(statusMark(ctx, shownStatus(th))).
-		Child(ui.Text(th.Title).FontSize(13).Truncate().Grow(1).MinWidth(ui.Px(0)))
-	if a.repoFilter() == "" {
-		row = row.Child(ui.Text(repoLabel(th)).FontSize(11).TextColor(t.TextSubtle).NoWrap().Shrink(0))
-	}
-	row = row.Child(ui.Text(when).FontSize(11).TextColor(whenColor).NoWrap().Shrink(0).Width(ui.Px(44)).Align(ui.End))
+		Child(ui.Text(th.Title).FontSize(13).Truncate().Grow(1).MinWidth(ui.Px(0)).Key("working-title-" + th.ID)).
+		Child(ui.Text(when).FontSize(11).TextColor(whenColor).NoWrap().Shrink(0).Width(ui.Px(44)).Align(ui.End))
 	if a.openID.Get() == th.ID {
 		row = row.Background(t.SurfaceActive)
 	}
