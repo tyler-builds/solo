@@ -220,17 +220,22 @@ func (a *App) transcript(ctx *ui.Context, v core.ThreadView, items []core.Item, 
 	if scope == "orch" {
 		list = list.Bottom() // a thread reads from its top, like a document, rather than sinking to the composer
 	}
-	// The list and, floating over its foot, the way back to the latest message.
-	view := ui.Div().Column().Grow(1).MinHeight(ui.Px(0)).
-		Child(list).
-		Child(ui.Component(func(ctx *ui.Context) ui.Element { return toLatestButton(ctx, atEnd, h) }))
+	// The list and, floating over its foot, the way back to the latest message. Solo's chat has one
+	// control there that also points at cards below that need the user, and another at its top for
+	// those above; all float over the conversation and take no room from it.
+	view := ui.Div().Column().Grow(1).MinHeight(ui.Px(0)).Child(list)
 	if scope != "orch" {
-		return view
+		return view.Child(ui.Component(func(ctx *ui.Context) ui.Element {
+			return jumpControl(ctx, h, bottomJump(atEnd.Get(), nil), false)
+		}))
 	}
-	return ui.Div().Column().Grow(1).MinHeight(ui.Px(0)).
-		Child(ui.Component(func(ctx *ui.Context) ui.Element { return a.offscreenPill(ctx, rows, h, true) })).
-		Child(view).
-		Child(ui.Component(func(ctx *ui.Context) ui.Element { return a.offscreenPill(ctx, rows, h, false) }))
+	return view.
+		Child(ui.Component(func(ctx *ui.Context) ui.Element {
+			return jumpControl(ctx, h, topJump(a.offscreenActions(rows, true)), true)
+		})).
+		Child(ui.Component(func(ctx *ui.Context) ui.Element {
+			return jumpControl(ctx, h, bottomJump(atEnd.Get(), a.offscreenActions(rows, false)), false)
+		}))
 }
 
 // listHandle is the handle of the transcript list of scope ("orch", or "thread-" and its ID).
@@ -246,25 +251,70 @@ func (a *App) listHandle(scope string) *ui.ListHandle {
 	return h
 }
 
-// toLatestButton floats a round down-arrow button over the foot of a conversation, centred above its
-// composer, while the conversation is scrolled up from its latest message; a click goes back down.
-// It reads atEnd alone, so scrolling re-renders only the button.
-func toLatestButton(ctx *ui.Context, atEnd *ui.Signal[bool], h *ui.ListHandle) ui.Element {
+// jump is what a floating control at an edge of a conversation offers.
+type jump struct {
+	latest bool  // a round arrow back to the latest message
+	needs  []int // or: the rows past that edge that wait on the user; wins over latest
+	target int   // the nearest of needs, which a click scrolls to
+}
+
+// bottomJump decides the one control at the foot of a conversation: the cards below that need the
+// user if there are any, otherwise the way back to the latest message while scrolled up from it,
+// otherwise nothing.
+func bottomJump(atEnd bool, needsBelow []int) jump {
+	if len(needsBelow) > 0 {
+		return jump{needs: needsBelow, target: needsBelow[0]}
+	}
+	return jump{latest: !atEnd, target: -1}
+}
+
+// topJump points at the nearest of the cards above that need the user, if any.
+func topJump(needsAbove []int) jump {
+	if len(needsAbove) == 0 {
+		return jump{target: -1}
+	}
+	return jump{needs: needsAbove, target: needsAbove[len(needsAbove)-1]}
+}
+
+// jumpControl floats j's control over the top (top=true) or foot of a conversation, centred, with a
+// solid background and shadow so it reads over the text under it; a click scrolls to its target.
+func jumpControl(ctx *ui.Context, h *ui.ListHandle, j jump, top bool) ui.Element {
 	t := ctx.Theme()
 	// A strip of no height, so the conversation under it still takes clicks and the wheel.
-	strip := ui.Div().Absolute().Left(0).Right(0).Bottom(space3).Height(ui.Px(0)).ZIndex(1).
-		Row().Justify(ui.Center).Align(ui.End)
-	if atEnd.Get() {
-		return strip
+	strip := ui.Div().Absolute().Left(0).Right(0).Height(ui.Px(0)).ZIndex(1).Row().Justify(ui.Center)
+	if top {
+		strip = strip.Top(space3).Align(ui.Start)
+	} else {
+		strip = strip.Bottom(space3).Align(ui.End)
 	}
-	const size = 32
-	return strip.Child(ui.Div().Size(ui.Px(size), ui.Px(size)).Radius(size/2).Center().Shrink(0).
-		Background(t.Surface).Border(1, t.BorderStrong).Shadow(ui.ShadowMd).
-		Cursor(ui.CursorPointer).Hover(ui.Style{Background: t.SurfaceHover}).
-		Role(access.RoleButton).Label("Scroll to the latest message").TabIndex(0).Tooltip("Scroll to the latest").
-		Key("to-latest").
-		OnClick(func() { h.ScrollToEnd() }).
-		Child(ui.Icon(icons.ArrowDown).Size(16).Color(t.TextMuted)))
+	switch {
+	case len(j.needs) > 0:
+		target, icon, key := j.target, icons.ArrowDown, "offscreen-pill"
+		if top {
+			icon, key = icons.ArrowUp, "offscreen-pill-up"
+		}
+		label := "1 needs you"
+		if len(j.needs) > 1 {
+			label = fmt.Sprintf("%d need you", len(j.needs))
+		}
+		return strip.Child(ui.Div().Row().Align(ui.Center).Gap(6).PaddingX(space3).Height(ui.Px(28)).Radius(14).
+			Shrink(0).Background(t.Surface).Border(1, t.Warning.Alpha(0.55)).Shadow(ui.ShadowMd).
+			Cursor(ui.CursorPointer).Hover(ui.Style{Background: t.SurfaceHover}).
+			Role(access.RoleButton).Label(label).TabIndex(0).Key(key).
+			OnClick(func() { h.ScrollToItem(target) }).
+			Child(ui.Icon(icon).Size(14).Color(t.Warning)).
+			Child(ui.Text(label).FontSize(12).Medium()))
+	case j.latest:
+		const size = 32
+		return strip.Child(ui.Div().Size(ui.Px(size), ui.Px(size)).Radius(size/2).Center().Shrink(0).
+			Background(t.Surface).Border(1, t.BorderStrong).Shadow(ui.ShadowMd).
+			Cursor(ui.CursorPointer).Hover(ui.Style{Background: t.SurfaceHover}).
+			Role(access.RoleButton).Label("Scroll to the latest message").TabIndex(0).Tooltip("Scroll to the latest").
+			Key("to-latest").
+			OnClick(func() { h.ScrollToEnd() }).
+			Child(ui.Icon(icons.ArrowDown).Size(16).Color(t.TextMuted)))
+	}
+	return strip
 }
 
 // orchRows lays out Solo's chat one exchange at a time: each message to Solo, one quiet folded line
@@ -1822,15 +1872,23 @@ func (a *App) isAction(r row) bool {
 	return false
 }
 
-// offscreenPill floats over the top (top=true) or bottom edge of the orchestrator's conversation when
-// cards that need the user have scrolled out of view that way; a click scrolls to the nearest one.
-func (a *App) offscreenPill(ctx *ui.Context, rows []row, h *ui.ListHandle, top bool) ui.Element {
-	t := ctx.Theme()
+// offscreenActions returns the rows of Solo's chat that wait on the user and have scrolled out of
+// view over its top (top=true) or bottom edge, in order. It subscribes to which rows are built.
+func (a *App) offscreenActions(rows []row, top bool) []int {
 	a.builtVer.Get()
-	anchor := ui.Div().Width(ui.Full).Height(ui.Px(0)).Shrink(0) // nothing to show
-	first, last := -1, -1
+	built, action := make([]bool, len(rows)), make([]bool, len(rows))
 	for i, r := range rows {
-		if a.built["orch/"+r.key] {
+		built[i], action[i] = a.built["orch/"+r.key], a.isAction(r)
+	}
+	return hiddenActions(built, action, top)
+}
+
+// hiddenActions returns the indexes i with action[i] that lie before the first built row (top=true)
+// or after the last, in order. With nothing built it can't tell what is out of view, so none.
+func hiddenActions(built, action []bool, top bool) []int {
+	first, last := -1, -1
+	for i, b := range built {
+		if b {
 			if first < 0 {
 				first = i
 			}
@@ -1838,40 +1896,15 @@ func (a *App) offscreenPill(ctx *ui.Context, rows []row, h *ui.ListHandle, top b
 		}
 	}
 	if first < 0 {
-		return anchor
+		return nil
 	}
 	var hidden []int
-	for i, r := range rows {
-		if a.isAction(r) && ((top && i < first) || (!top && i > last)) {
+	for i, act := range action {
+		if act && ((top && i < first) || (!top && i > last)) {
 			hidden = append(hidden, i)
 		}
 	}
-	if len(hidden) == 0 {
-		return anchor
-	}
-	target, icon := hidden[len(hidden)-1], icons.ArrowUp
-	if !top {
-		target, icon = hidden[0], icons.ArrowDown
-	}
-	label := "1 needs you"
-	if len(hidden) > 1 {
-		label = fmt.Sprintf("%d need you", len(hidden))
-	}
-	pill := ui.Div().Row().Align(ui.Center).Gap(6).PaddingX(space3).Height(ui.Px(28)).Radius(14).
-		Background(t.Surface).Border(1, t.Warning.Alpha(0.55)).Cursor(ui.CursorPointer).
-		Hover(ui.Style{Background: t.SurfaceHover}).
-		Role(access.RoleButton).Label(label).TabIndex(0).Key("offscreen-pill").
-		OnClick(func() { h.ScrollToItem(target) }).
-		Child(ui.Icon(icon).Size(14).Color(t.Warning)).
-		Child(ui.Text(label).FontSize(12).Medium())
-	// Its own strip at the edge of the conversation, so it never sits on top of text.
-	strip := ui.Div().Row().Justify(ui.Center).Align(ui.Center).Height(ui.Px(44)).Shrink(0).Width(ui.Full)
-	if top {
-		strip = strip.BorderEdges(ui.Edges{Bottom: 1}, t.Border)
-	} else {
-		strip = strip.BorderEdges(ui.Edges{Top: 1}, t.Border)
-	}
-	return strip.Child(pill)
+	return hidden
 }
 
 // chatWidth estimates the width of Solo's conversation column.
