@@ -581,8 +581,8 @@ type update struct {
 	// quiet: news that asks nothing of the user (merged, a PR opened, checks passed), shown lighter
 	// than what does (a question, a failure, finished work to review).
 	quiet bool
-	icon                       *icons.Icon
-	color                      ui.Color
+	icon  *icons.Icon
+	color ui.Color
 }
 
 // parseUpdates reads the thread updates in a synthetic message, one per line.
