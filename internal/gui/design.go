@@ -1,7 +1,8 @@
 package gui
 
 // Solo's design system, after uas (~/code/uas/internal/gui/design.go): neutral near-black or white
-// surfaces with hairline borders, and crimson kept for the brand, primary actions and small status marks.
+// surfaces with hairline borders, and crimson kept for the brand mark and links. Primary actions are
+// high-contrast neutral (white on dark, near-black on light), so no action reads as a warning.
 // Danger is a deeper, pure red, so failures stay apart from the pinker brand.
 // Pages use these tokens and components rather than raw sizes and colors.
 
@@ -58,22 +59,34 @@ var darkPalette = palette{
 	dark:       true,
 	background: "#0e0e10", panel: "#08080a", surface: "#19191d", surfaceHover: "#202025", surfaceActive: "#2a2a30",
 	border: "#222227", borderStrong: "#313137",
-	text: "#f2f2f4", textMuted: "#a9a9b3", textSubtle: "#75757f",
-	accent: "#d42a52", accentHover: "#dc3860", accentActive: "#b82145", accentText: "#ffffff", link: "#ff94aa",
+	text: "#f2f2f4", textMuted: "#acacb6", textSubtle: "#85858f",
+	accent: "#ececf0", accentHover: "#ffffff", accentActive: "#d0d0d6", accentText: "#0e0e10", link: "#ff94aa",
 	brand:   "#ff5a80",
 	success: "#3ecf8e", warning: "#f5b544", danger: "#e03e3e", info: "#7aa7ff",
 	scrollbar: "#2e2e34", scrim: "#000000b3",
 }
 
 var lightPalette = palette{
-	background: "#ffffff", panel: "#f5f5f6", surface: "#ffffff", surfaceHover: "#f6f6f8", surfaceActive: "#ececef",
-	border: "#e8e8ec", borderStrong: "#d8d8de",
-	text: "#0c0c0e", textMuted: "#5d5d66", textSubtle: "#9a9aa3",
-	accent: "#c41d47", accentHover: "#a8183c", accentActive: "#8d1432", accentText: "#ffffff", link: "#bb1a43",
+	background: "#ffffff", panel: "#efeff2", surface: "#ffffff", surfaceHover: "#e8e8ec", surfaceActive: "#dfdfe5",
+	border: "#e3e3e8", borderStrong: "#d4d4db",
+	text: "#0c0c0e", textMuted: "#4f4f58", textSubtle: "#6c6c76",
+	accent: "#18181b", accentHover: "#2c2c31", accentActive: "#3f3f46", accentText: "#ffffff", link: "#bb1a43",
 	brand:   "#d6214f",
-	success: "#15803d", warning: "#b45309", danger: "#b91c1c", info: "#2459c7",
+	success: "#15803d", warning: "#a94e07", danger: "#b91c1c", info: "#2459c7",
 	scrollbar: "#d0d0d6", scrim: "#0c0c0e59",
 }
+
+// codeColor is inline code's color.
+func codeColor(t *ui.Theme) ui.Color {
+	if t.Dark {
+		return ui.Hex("#6fd3c1")
+	}
+	return ui.Hex("#0b7a6c")
+}
+
+// workingColor marks work in progress: a calm blue, so a running thread never reads as an error or
+// as the crimson of the brand and primary actions.
+func workingColor(t *ui.Theme) ui.Color { return ui.Hex(pal(t).info) }
 
 func pal(t *ui.Theme) palette {
 	if t.Dark {
@@ -87,7 +100,8 @@ func Themes() (light, dark *ui.Theme) {
 	light, dark = buildTheme(ui.LightTheme(), lightPalette), buildTheme(ui.DarkTheme(), darkPalette)
 	for _, t := range []*ui.Theme{light, dark} {
 		// Inline code is colored, without a box: a box per word reads as a row of chips.
-		ui.SetThemeStyle(t, markdown.Style{InlineCode: ui.Style{TextColor: t.Link, Background: t.Background}})
+		// Teal, so code never reads as an error or as the crimson brand.
+		ui.SetThemeStyle(t, markdown.Style{InlineCode: ui.Style{TextColor: codeColor(t), Background: t.Background}})
 	}
 	return light, dark
 }
@@ -237,7 +251,7 @@ func statusColor(ctx *ui.Context, status string) ui.Color {
 	case statusChecksFailed:
 		return t.Danger
 	case core.StatusRunning, core.StatusStarting:
-		return ui.Hex(pal(t).brand)
+		return workingColor(t)
 	case core.StatusWaiting:
 		return t.Warning
 	case core.StatusIdle:
@@ -380,8 +394,8 @@ func statusMark(ctx *ui.Context, status string) *ui.DivElement {
 		return box.Child(ui.Icon(icons.CircleCheck).Size(14).Color(c))
 	case statusInReview:
 		return box.Child(ui.Icon(icons.GitPullRequest).Size(13).Color(c))
-	case statusChecksFailed:
-		return box.Child(ui.Icon(icons.CircleX).Size(14).Color(c))
+	case statusChecksFailed: // one mark for every failure; the row's line says which
+		return box.Child(ui.Icon(icons.CircleAlert).Size(14).Color(c))
 	case core.StatusArchived:
 		return box.Child(ui.Icon(icons.CircleCheck).Size(14).Color(c))
 	case core.StatusMerged:

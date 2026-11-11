@@ -47,7 +47,6 @@ func (a *App) orchestratorView(ctx *ui.Context) ui.Element {
 		Child(ui.Div().Column().Align(ui.Center).PaddingX(space6).PaddingBottom(space4).Shrink(0).
 			Child(ui.Div().Column().Gap(space2).Width(ui.Full).MaxWidth(ui.Px(chatMaxWidth)).
 				Child(a.questionStrip(ctx)).
-				Child(a.attentionBar(ctx)).
 				Child(a.composer(ctx, v, "orch-draft", "Message Solo…", func(text string, images []string) error {
 					return a.b.SendToOrchestrator(context.Background(), text, images...)
 				})))).
@@ -66,15 +65,57 @@ func (a *App) orchestratorBar(ctx *ui.Context, v core.ThreadView) ui.Element {
 			label = a.stepLabel(*v.Step) + "…"
 		}
 		state = state.Child(ui.ProgressRing().Size(ui.RingSmall).Label("Working")).
-			Child(ui.Text(label).FontSize(12).TextColor(ui.Hex(pal(t).brand)).Truncate().MinWidth(ui.Px(0)))
-	} else {
-		state = state.Child(dot(t.TextSubtle, 6)).Child(caption(ctx, "Idle"))
+			Child(ui.Text(label).FontSize(12).TextColor(t.TextMuted).Truncate().MinWidth(ui.Px(0)))
 	}
 	return ui.Div().Row().Align(ui.Center).Gap(space3).PaddingX(space4).Height(ui.Px(52)).Shrink(0).
 		BorderEdges(ui.Edges{Bottom: 1}, t.Border).
 		Child(brandMark(20)).
 		Child(ui.Text("Solo").FontSize(14).Semibold().NoWrap()).
-		Child(state)
+		Child(state).
+		Child(ui.Div().Grow(1)).
+		Child(a.threadsSummary(ctx))
+}
+
+// threadsSummary sums up the threads at the right of Solo's bar, in the rail's own groups and
+// counts: how many work, failed and are ready. Each opens the newest thread of its group.
+func (a *App) threadsSummary(ctx *ui.Context) ui.Element {
+	t := ctx.Theme()
+	type group struct{ title, status, label string }
+	// Questions have their own line above the composer, so they aren't counted again here.
+	groups := []group{
+		{"Working", core.StatusRunning, "working"},
+		{"Failed", core.StatusFailed, "failed"},
+		{"Ready", core.StatusIdle, "ready"},
+	}
+	row := ui.Div().Row().Align(ui.Center).Gap(space1).Shrink(0)
+	for _, g := range groups {
+		var in []core.ThreadView
+		for _, rg := range railGroups {
+			if rg.title != g.title {
+				continue
+			}
+			for _, th := range a.threads.Get() {
+				if inRail(th) && slices.Contains(rg.statuses, shownStatus(th)) {
+					in = append(in, th)
+				}
+			}
+		}
+		if len(in) == 0 {
+			continue
+		}
+		slices.SortStableFunc(in, func(x, y core.ThreadView) int { return y.UpdatedAt.Compare(x.UpdatedAt) })
+		text := fmt.Sprintf("%d %s", len(in), g.label)
+		first := in[0].ID
+		row = row.Child(ui.Div().Row().Align(ui.Center).Gap(6).PaddingLeft(space2-2).PaddingRight(space2+2).
+			Height(ui.Px(24)).Radius(999).Border(1, t.Border).
+			Cursor(ui.CursorPointer).Hover(ui.Style{Background: t.SurfaceHover, BorderColor: t.BorderStrong}).
+			Role(access.RoleButton).Label(text + ": open the newest").TabIndex(0).
+			Tooltip(g.title + ": open the newest · Ctrl+J opens the next that needs you").
+			OnClick(func() { a.openThread(first, "conversation") }).
+			Child(statusMark(ctx, g.status)).
+			Child(ui.Text(text).FontSize(12).TextColor(t.TextMuted).NoWrap()))
+	}
+	return row
 }
 
 func (a *App) welcome(ctx *ui.Context) ui.Element {
@@ -157,11 +198,12 @@ func (a *App) transcript(ctx *ui.Context, v core.ThreadView, items []core.Item, 
 				Child(ui.Div().Column().Width(ui.Full).MaxWidth(ui.Px(chatMaxWidth)).PaddingY(space1 + 2).
 					Child(a.rowView(rctx, v, r)))
 		})
-	}).Bottom().Handle(h).SelectionContainer().Key(scope + "-transcript").Label("Conversation").
+	}).Handle(h).SelectionContainer().Key(scope + "-transcript").Label("Conversation").
 		Style(ui.Style{Grow: 1, Padding: ui.Edges{Top: space4, Bottom: space2}})
 	if scope != "orch" {
-		return list
+		return list // a thread reads from its top, like a document, rather than sinking to the composer
 	}
+	list = list.Bottom()
 	return ui.Div().Column().Grow(1).MinHeight(ui.Px(0)).
 		Child(ui.Component(func(ctx *ui.Context) ui.Element { return a.offscreenPill(ctx, rows, h, true) })).
 		Child(list).
@@ -488,7 +530,8 @@ func (a *App) stepsView(ctx *ui.Context, steps []*core.Item, threadID string) ui
 			}
 			latest = strings.TrimSpace(verb + " " + detail)
 		}
-		var state ui.Element = ui.Icon(icons.Check).Size(13).Color(t.TextSubtle)
+		// Only what needs a look gets a mark: a step at work, or one that failed. Done is the quiet default.
+		var state ui.Element
 		if running {
 			state = ui.ProgressRing().Size(ui.RingSmall).Label("Running")
 		}
@@ -511,10 +554,8 @@ func (a *App) stepsView(ctx *ui.Context, steps []*core.Item, threadID string) ui
 			Child(ui.If(threadID != "", a.threadChip(ctx, threadID))).
 			Child(ui.Text(label).FontSize(13).Medium().TextColor(t.TextMuted).NoWrap().Shrink(0)).
 			Child(failedText).
+			Child(ui.If(state != nil, state)).
 			Child(ui.Text(latest).FontSize(12).TextColor(t.TextSubtle).Truncate().Grow(1).MinWidth(ui.Px(0)))
-		if state != nil {
-			head = head.Child(state)
-		}
 		col := ui.Div().Column().Gap(2).Child(head)
 		if open.Get() {
 			inner := ui.Div().Column().Gap(2).PaddingLeft(space3).MarginLeft(space3).
@@ -542,8 +583,11 @@ var checkURL = regexp.MustCompile(` \(https?://[^)]*\)`)
 // update is one line of a thread update the app sent Solo.
 type update struct {
 	threadID, name, repo, what string
-	icon                       *icons.Icon
-	color                      ui.Color
+	// quiet: news that asks nothing of the user here (merged, a PR opened, finished work, whose
+	// card follows), shown lighter than what does: a question or a failure.
+	quiet bool
+	icon  *icons.Icon
+	color ui.Color
 }
 
 // parseUpdates reads the thread updates in a synthetic message, one per line.
@@ -560,6 +604,7 @@ func (a *App) parseUpdates(t *ui.Theme, text string) []update {
 		}
 		u := update{threadID: a.findThreadID(m[1]), name: name, repo: m[3], what: m[4], icon: icons.Activity, color: t.TextMuted}
 		describeUpdate(t, &u, m[4])
+		u.quiet = u.color != t.Danger && u.color != t.Warning
 		out = append(out, u)
 	}
 	return out
@@ -645,11 +690,27 @@ func cutChangeRequest(s string) (cr, tail string, ok bool) {
 // updateLine renders one thread update; trailing goes before the chevron (an actions toggle).
 func (a *App) updateRow(ctx *ui.Context, u update, trailing ui.Element) *ui.DivElement {
 	t := ctx.Theme()
-	line := ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space2).Height(ui.Px(26)).Radius(radiusS).
-		Child(ui.Icon(u.icon).Size(14).Color(u.color)).
-		Child(ui.Text(u.repo).FontSize(12).TextColor(t.TextSubtle).NoWrap().Shrink(0)).
-		Child(ui.Text(u.name).FontSize(13).Medium().NoWrap().Shrink(0).MaxWidth(ui.Percent(45)).Truncate()).
-		Child(ui.Text(u.what).FontSize(12).TextColor(t.TextMuted).Truncate().Grow(1).MinWidth(ui.Px(0)))
+	name := ui.Text(u.name).FontSize(13).Medium()
+	iconColor, whatColor := u.color, t.TextMuted
+	if u.quiet {
+		name = ui.Text(u.name).FontSize(13).TextColor(t.TextMuted)
+		iconColor, whatColor = u.color.Alpha(0.6), t.TextSubtle
+	}
+	var line *ui.DivElement
+	if a.chatWidth(ctx) < 640 {
+		// Narrow: the thread on one line and what happened under it, so neither is cut to a few words.
+		line = ui.Div().Row().Align(ui.Start).Gap(space2).PaddingX(space2).PaddingY(3).Radius(radiusS).
+			Child(ui.Div().Height(ui.Px(18)).Row().Align(ui.Center).Child(ui.Icon(u.icon).Size(14).Color(iconColor))).
+			Child(ui.Div().Column().Gap(1).Grow(1).MinWidth(ui.Px(0)).
+				Child(name.Truncate()).
+				Child(ui.Text(u.repo + " · " + u.what).FontSize(12).TextColor(whatColor).Truncate()))
+	} else {
+		line = ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space2).Height(ui.Px(26)).Radius(radiusS).
+			Child(ui.Icon(u.icon).Size(14).Color(iconColor)).
+			Child(ui.Text(u.repo).FontSize(12).TextColor(t.TextSubtle).Width(ui.Px(56)).Shrink(0).Truncate()).
+			Child(name.NoWrap().Shrink(0).MaxWidth(ui.Percent(45)).Truncate()).
+			Child(ui.Text(u.what).FontSize(12).TextColor(whatColor).Truncate().Grow(1).MinWidth(ui.Px(0)))
+	}
 	if trailing != nil {
 		line = line.Child(trailing)
 	}
@@ -821,20 +882,20 @@ func (a *App) toolView(ctx *ui.Context, d core.ToolData) ui.Element {
 		case d.IsError:
 			state = ui.Icon(icons.CircleAlert).Size(13).Color(t.Danger)
 		default:
-			state = ui.Icon(icons.Check).Size(13).Color(t.TextSubtle)
+			state = ui.Div() // done is the quiet default
 		}
 		head := ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space2).Height(ui.Px(26)).Radius(radiusS).
 			Cursor(ui.CursorPointer).Hover(ui.Style{Background: t.SurfaceHover}).
 			Role(access.RoleButton).Label(label + " " + detail).TabIndex(0).
 			OnClick(func() { open.Update(func(o bool) bool { return !o }) }).
 			Child(ui.Icon(icon).Size(14).Color(t.TextMuted)).
-			Child(ui.Text(label).FontSize(13).Medium().TextColor(t.TextMuted).NoWrap().Shrink(0))
+			Child(ui.Text(label).FontSize(13).Medium().TextColor(t.TextMuted).NoWrap().Shrink(0)).
+			Child(state)
 		if threadID != "" {
 			head = head.Child(a.threadChip(ctx, threadID)).Child(ui.Div().Grow(1))
 		} else {
 			head = head.Child(ui.Text(detail).FontSize(12).TextColor(t.TextSubtle).Truncate().Grow(1).MinWidth(ui.Px(0)))
 		}
-		head = head.Child(state)
 		col := ui.Div().Column().Gap(space1).Child(head)
 		if open.Get() {
 			body := ui.Div().Column().Gap(space2).MarginLeft(space6).Padding(space3).Radius(radiusM).
@@ -998,7 +1059,6 @@ func (a *App) proposalCard(ctx *ui.Context, d core.ProposalData, steps []*core.I
 	return ui.Component(func(ctx *ui.Context) ui.Element {
 		t := ctx.Theme()
 		th, _ := a.thread(d.ThreadID)
-		brand := ui.Hex(pal(t).brand)
 		open := ui.Local(ctx, "steps-open", false)
 		var actions *ui.DivElement
 		switch th.Status {
@@ -1034,13 +1094,16 @@ func (a *App) proposalCard(ctx *ui.Context, d core.ProposalData, steps []*core.I
 				}))
 		}
 		if n := countSteps(steps); n > 0 {
-			label := fmt.Sprintf("%d actions", n)
+			label := fmt.Sprintf("%d steps by Solo", n)
 			if n == 1 {
-				label = "1 action"
+				label = "1 step by Solo"
 			}
-			tip := label + " Solo took on this thread"
+			tip := "What Solo did to check this thread"
 			if a.chatWidth(ctx) < 640 {
-				label = fmt.Sprint(n) // narrow: the count alone, with its tooltip
+				label = fmt.Sprintf("%d steps", n) // narrow: shorter, with its tooltip
+				if n == 1 {
+					label = "1 step"
+				}
 			}
 			actions = actions.Child(ui.Div().Grow(1)).
 				Child(ui.Div().Row().Align(ui.Center).Gap(space1).PaddingX(space2).Height(ui.Px(24)).Radius(radiusS).
@@ -1051,9 +1114,9 @@ func (a *App) proposalCard(ctx *ui.Context, d core.ProposalData, steps []*core.I
 					Child(ui.Icon(map[bool]*icons.Icon{true: icons.ChevronDown, false: icons.ChevronRight}[open.Get()]).Size(12).Color(t.TextSubtle)))
 		}
 		card := ui.Div().Column().Gap(space3).Padding(space4).Radius(radiusL).Background(t.Surface).
-			Border(1, brand.Alpha(0.35)).
-			Child(a.cardHeader(ctx, icons.GitMerge, brand, "Merge proposed", d.ThreadID, checksBadge(ctx, th))).
-			Child(ui.Text(d.Summary).FontSize(13).TextColor(t.Text)).
+			Border(1, t.BorderStrong).
+			Child(a.cardHeader(ctx, icons.GitMerge, t.Success, "Merge proposed", d.ThreadID, checksBadge(ctx, th))).
+			Child(a.md(ctx, d.Summary, a.threadBases(d.ThreadID))).
 			Child(actions)
 		if open.Get() {
 			inner := ui.Div().Column().Gap(2).PaddingTop(space2).BorderEdges(ui.Edges{Top: 1}, t.Border)
@@ -1167,10 +1230,10 @@ func (a *App) askForm(ctx *ui.Context, threadID, toolUseID string, qs []agent.Qu
 			}
 		}
 		otherRow := ui.Div().Row().Align(ui.Center).Gap(space2).
-			Child(ui.TextInput(other).Placeholder("Your answer").Label("Your answer").Small().Width(ui.Full).
+			Child(ui.TextInput(other).Placeholder("Or write your own answer").Label("Your answer").Small().Width(ui.Full).
 				OnSubmit(func(string) { sendOther() })).
-			Child(ui.Button("Send").Secondary().Small().Disabled(strings.TrimSpace(other.Get()) == "").OnClick(sendOther)).
-			Child(ui.Button("Skip").Ghost().Small().
+			Child(ui.If(strings.TrimSpace(other.Get()) != "", ui.Button("Send").Primary().Small().OnClick(sendOther))).
+			Child(ui.Button("Skip").Secondary().Small().
 				Tooltip("Skip the question; the agent carries on with its own judgment").
 				OnClick(func() {
 					a.run("Skipping", func(context.Context) error { return a.b.Dismiss(threadID, toolUseID) })
@@ -1197,40 +1260,89 @@ func (a *App) askForm(ctx *ui.Context, threadID, toolUseID string, qs []agent.Qu
 	})
 }
 
-// questionStrip shows the workers' open questions above the orchestrator's composer.
+// questionStrip shows the workers' open questions above the orchestrator's composer. A lone question
+// shows in full; several fold to a line each, so a busy afternoon's questions never push Solo's chat
+// away, and a click opens one. The thread open beside the chat asks in its own panel instead, and
+// while it is open the others stay folded too.
 func (a *App) questionStrip(ctx *ui.Context) ui.Element {
 	pending := a.pending.Get()
-	col := ui.Div().Column().Gap(space2)
+	folded := a.foldedAsks.Get()
+	writing := strings.TrimSpace(a.orchDraft.Get()) != "" // the question folds while the user writes to Solo
+	type ask struct {
+		th core.ThreadView
+		pq core.PendingQuestion
+	}
+	var asks []ask
 	for _, th := range a.threads.Get() {
 		qs := pending[th.ID]
-		if len(qs) == 0 || th.ID == core.OrchestratorID {
+		if len(qs) == 0 || th.ID == core.OrchestratorID || th.ID == a.openID.Get() {
 			continue
 		}
-		key := qs[0].ToolUseID
-		// Folded while the user writes to Solo, or when they fold it; a click unfolds it.
-		folded := a.foldedAsks.Get()[key] || strings.TrimSpace(a.orchDraft.Get()) != ""
-		if folded {
-			col = col.Child(a.foldedAsk(ctx, th, qs[0]).Key("ask-" + key))
-			continue
-		}
-		col = col.Child(ui.Div().Key("ask-" + key).
-			Child(a.askForm(ctx, th.ID, key, qs[0].Questions, th.Title+" asks")))
+		asks = append(asks, ask{th, qs[0]})
 	}
-	return col
+	open := ""
+	if !writing {
+		want := a.askOpen.Get()
+		for _, k := range asks {
+			if key := k.pq.ToolUseID; key == want && !folded[key] {
+				open = key
+			}
+		}
+		if open == "" && len(asks) == 1 && a.openID.Get() == "" && !folded[asks[0].pq.ToolUseID] {
+			open = asks[0].pq.ToolUseID
+		}
+	}
+	col := ui.Div().Column().Gap(space1 + 2)
+	var rest []ask
+	for _, k := range asks {
+		if key := k.pq.ToolUseID; key == open {
+			col = col.Child(ui.Div().Key("ask-" + key).
+				Child(a.askForm(ctx, k.th.ID, key, k.pq.Questions, k.th.Title+" asks")))
+		} else {
+			rest = append(rest, k)
+		}
+	}
+	// The open thread's question asks in its panel, but still counts, so the number matches the rail.
+	inPanel := 0
+	if id := a.openID.Get(); id != "" && len(pending[id]) > 0 {
+		inPanel = 1
+	}
+	switch {
+	case len(rest) == 1 && inPanel == 0:
+		col = col.Child(a.foldedAsk(ctx, rest[0].th, rest[0].pq, "").Key("ask-" + rest[0].pq.ToolUseID))
+	case len(rest) > 0:
+		// The others wait in one line: how many, and the next one, which a click opens.
+		label := fmt.Sprintf("%d questions waiting", len(rest)+inPanel)
+		if open != "" {
+			label = fmt.Sprintf("%d more questions", len(rest)+inPanel)
+		}
+		col = col.Child(a.foldedAsk(ctx, rest[0].th, rest[0].pq, label).Key("asks"))
+	}
+	_, h := ctx.WindowSize()
+	return col.MaxHeight(ui.Px(max(h*0.5, 200))).ScrollY()
 }
 
-// foldedAsk is a pinned question folded to one line.
-func (a *App) foldedAsk(ctx *ui.Context, th core.ThreadView, pq core.PendingQuestion) *ui.DivElement {
+// foldedAsk is a pinned question folded to one line. With a lead ("3 questions waiting") it stands for
+// several, and shows the lead before the next question.
+func (a *App) foldedAsk(ctx *ui.Context, th core.ThreadView, pq core.PendingQuestion, lead string) *ui.DivElement {
 	t := ctx.Theme()
 	q := ""
 	if len(pq.Questions) > 0 {
 		q = pq.Questions[0].Question
 	}
 	key := pq.ToolUseID
-	return ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space3).Height(ui.Px(40)).Radius(radiusL).
-		Background(t.Surface).Border(1, t.Warning.Alpha(0.4)).Cursor(ui.CursorPointer).
-		Hover(ui.Style{BorderColor: t.Warning.Alpha(0.7)}).
-		Role(access.RoleButton).Label("Show the question from " + th.Title).TabIndex(0).
+	label := "Show the question from " + th.Title
+	if lead != "" {
+		label = lead + ". Show the next, from " + th.Title
+	}
+	qText := ui.Text(q).FontSize(13).Medium().Truncate().Grow(1).MinWidth(ui.Px(0))
+	if lead != "" {
+		qText = ui.Text(q).FontSize(13).TextColor(t.TextMuted).Truncate().Grow(1).MinWidth(ui.Px(0))
+	}
+	return ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space3).Height(ui.Px(38)).Radius(radiusL).
+		Background(t.Surface).Border(1, t.BorderStrong).Cursor(ui.CursorPointer).
+		Hover(ui.Style{BorderColor: t.Warning.Alpha(0.6)}).
+		Role(access.RoleButton).Label(label).TabIndex(0).
 		OnClick(func() {
 			next := map[string]bool{}
 			for k, v := range a.foldedAsks.Peek() {
@@ -1238,71 +1350,17 @@ func (a *App) foldedAsk(ctx *ui.Context, th core.ThreadView, pq core.PendingQues
 			}
 			delete(next, key)
 			a.foldedAsks.Set(next)
+			a.askOpen.Set(key)
 			a.orchDraft.Set(strings.TrimRight(a.orchDraft.Peek(), " "))
 		}).
+		Tooltip(q + "\n" + repoLabel(th) + " · " + th.Title).
 		Child(ui.Icon(icons.MessageCircleQuestionMark).Size(15).Color(t.Warning)).
-		Child(ui.Text("Question").FontSize(12).Semibold().TextColor(t.Warning).NoWrap()).
-		Child(ui.Text(repoLabel(th) + " › " + th.Title).FontSize(12).TextColor(t.TextMuted).NoWrap().Shrink(0).MaxWidth(ui.Px(260)).Truncate()).
-		Child(ui.Text(q).FontSize(13).Truncate().Grow(1).MinWidth(ui.Px(0))).
-		Child(ui.Text("Answer").FontSize(12).Medium().TextColor(t.Link).NoWrap())
-}
-
-// attentionBar lists, above the composer, the threads that wait on the user for something other than
-// a question (those show in full above it): ready to merge, and failed.
-func (a *App) attentionBar(ctx *ui.Context) ui.Element {
-	t := ctx.Theme()
-	// A merge proposal among the recent messages is likely in view; don't repeat it.
-	shown := map[string]bool{}
-	items := a.itemsOf(core.OrchestratorID).Get()
-	for i := len(items) - 1; i >= 0 && i >= len(items)-16; i-- {
-		if items[i].Kind == core.ItemProposal {
-			shown[items[i].Ref] = true
-		}
-	}
-	var ready, failed []core.ThreadView
-	for _, th := range a.threads.Get() {
-		if !th.IsWorker {
-			continue
-		}
-		switch th.Status {
-		case core.StatusIdle:
-			if needsUser(th) && (th.CanMerge || th.CanOpenPR) && !shown[th.ID] {
-				ready = append(ready, th)
-			}
-		case core.StatusFailed:
-			failed = append(failed, th)
-		}
-	}
-	if len(ready) == 0 && len(failed) == 0 {
-		return ui.Div()
-	}
-	// A quiet link, not a badge: the rail already counts what needs the user.
-	pill := func(icon *icons.Icon, c ui.Color, text string, th core.ThreadView, tab string) ui.Element {
-		return ui.Div().Row().Align(ui.Center).Gap(6).PaddingX(space2).Height(ui.Px(24)).Radius(radiusS).Shrink(1).
-			MinWidth(ui.Px(0)).MaxWidth(ui.Px(360)).Cursor(ui.CursorPointer).
-			Hover(ui.Style{Background: t.SurfaceHover}).
-			Role(access.RoleButton).Label(text).TabIndex(0).Tooltip(text).
-			OnClick(func() { a.openThread(th.ID, tab) }).
-			Child(ui.Icon(icon).Size(12).Color(c)).
-			Child(ui.Text(text).FontSize(12).TextColor(t.TextMuted).Truncate().MinWidth(ui.Px(0)))
-	}
-	row := ui.Div().Row().Align(ui.Center).Gap(space2).MinWidth(ui.Px(0))
-	if len(ready) > 0 {
-		text := repoLabel(ready[0]) + " · " + ready[0].Title + " is ready"
-		if len(ready) > 1 {
-			text = fmt.Sprintf("%d ready to land", len(ready))
-		}
-		row = row.Child(pill(icons.GitMerge, t.Success, text, ready[0], "changes"))
-	}
-	if len(failed) > 0 {
-		text := repoLabel(failed[0]) + " · " + failed[0].Title + " failed"
-		if len(failed) > 1 {
-			text = fmt.Sprintf("%d failed", len(failed))
-		}
-		row = row.Child(pill(icons.CircleAlert, t.Danger, text, failed[0], "conversation"))
-	}
-	return row.Child(ui.Div().Grow(1)).
-		Child(ui.Div().Shrink(0).Tooltip("Open the next thread that needs you").Child(ui.Kbd("Ctrl+J")))
+		Child(ui.If(lead != "", ui.Text(lead).FontSize(13).Semibold().NoWrap().Shrink(0))).
+		Child(qText).
+		Child(ui.If(a.chatWidth(ctx) >= 640, // narrow, the tooltip and a click name the thread
+			ui.Text(repoLabel(th)+" · "+th.Title).FontSize(12).TextColor(t.TextSubtle).NoWrap().Shrink(1).MaxWidth(ui.Px(220)).MinWidth(ui.Px(60)).Truncate())).
+		Child(ui.Text("Answer").FontSize(12).Medium().TextColor(t.TextMuted).NoWrap()).
+		Child(ui.Icon(icons.ChevronUp).Size(13).Color(t.TextSubtle))
 }
 
 // composer is a message box: Enter sends, Shift+Enter starts a new line. Images come in by pasting,
@@ -1356,9 +1414,9 @@ func (a *App) composer(ctx *ui.Context, v core.ThreadView, key, placeholder stri
 		round := ui.Style{Radius: 999}
 		var sendBtn *ui.ButtonElement
 		switch {
-		case v.InTurn && empty:
+		case v.InTurn && empty && !v.PendingAsk:
 			id := v.ID
-			sendBtn = ui.IconButton(icons.Square).Small().Style(round).Danger().Label("Stop").
+			sendBtn = ui.IconButton(icons.Square).Small().Style(round).Secondary().Label("Stop").
 				Tooltip("Stop the current turn").
 				OnClick(func() {
 					a.run("Stopping", func(ctx context.Context) error { return a.b.Interrupt(ctx, id) })
@@ -1394,7 +1452,7 @@ func (a *App) composer(ctx *ui.Context, v core.ThreadView, key, placeholder stri
 		// Markdown shows formatted as it is typed; its syntax shows where the caret is.
 		marks := markdown.EditMarks(markdown.EditStyle{
 			Syntax: ui.Highlight{Color: t.TextSubtle},
-			Code:   ui.Highlight{Color: t.Link, Background: t.Background},
+			Code:   ui.Highlight{Color: codeColor(t), Background: t.Background},
 			Link:   ui.Highlight{Color: t.Link},
 		})
 		area := ui.TextArea(draft).Placeholder(placeholder).Label(placeholder).MinRows(1).Borderless().
@@ -1499,11 +1557,10 @@ func (a *App) threadChip(ctx *ui.Context, id string) ui.Element {
 		Child(ui.Text(th.Title).FontSize(12).Medium().Truncate().MinWidth(ui.Px(0)))
 }
 
-// cardHeader is the one line atop a card: its type, then the repository and thread it is about (the
-// title opens the thread). threadID "" leaves out the repository and thread.
+// cardHeader is the line atop a card: its type, then the repository and thread it is about (the
+// title opens the thread), on a second line in a narrow chat. threadID "" leaves out the repository and thread.
 // extra goes after the type, such as a merge's checks.
 func (a *App) cardHeader(ctx *ui.Context, icon *icons.Icon, c ui.Color, typ, threadID string, extra ...ui.Element) ui.Element {
-	t := ctx.Theme()
 	row := ui.Div().Row().Align(ui.Center).Gap(space2).MinWidth(ui.Px(0)).
 		Child(ui.Icon(icon).Size(15).Color(c)).
 		Child(ui.Text(typ).FontSize(12).Semibold().TextColor(c).NoWrap())
@@ -1516,17 +1573,26 @@ func (a *App) cardHeader(ctx *ui.Context, icon *icons.Icon, c ui.Color, typ, thr
 	if threadID == "" || !ok {
 		return row
 	}
-	// The repository and thread sit at the right: repo › title.
-	return row.
-		Child(ui.Div().Grow(1)).
-		Child(ui.Div().Row().Align(ui.Center).Gap(space1 + 2).Shrink(1).MinWidth(ui.Px(0)).
-			Child(ui.Text(repoLabel(th)).FontSize(12).TextColor(t.TextMuted).NoWrap()).
-			Child(ui.Icon(icons.ChevronRight).Size(12).Color(t.TextSubtle)).
-			Child(ui.Div().MinWidth(ui.Px(0)).Cursor(ui.CursorPointer).
-				Role(access.RoleButton).Label("Open " + th.Title).TabIndex(0).Tooltip("Open this thread").
-				Hover(ui.Style{TextColor: t.Link}).
-				OnClick(func() { a.openThread(threadID, "conversation") }).
-				Child(ui.Text(th.Title).FontSize(12).Medium().Truncate())))
+	// The repository and thread sit at the right: repo › title; in a narrow chat, on a line of their own.
+	where := ui.Div().Row().Align(ui.Center).Gap(space1 + 2).Shrink(1).MinWidth(ui.Px(0))
+	if a.chatWidth(ctx) < 640 {
+		return ui.Div().Column().Gap(space1).MinWidth(ui.Px(0)).Child(row).Child(a.cardWhere(ctx, where, th))
+	}
+	return row.Child(ui.Div().Grow(1)).Child(a.cardWhere(ctx, where, th))
+}
+
+// cardWhere fills a card header's "repo › title", whose title opens the thread.
+func (a *App) cardWhere(ctx *ui.Context, where *ui.DivElement, th core.ThreadView) ui.Element {
+	t := ctx.Theme()
+	threadID := th.ID
+	return where.
+		Child(ui.Text(repoLabel(th)).FontSize(12).TextColor(t.TextMuted).NoWrap()).
+		Child(ui.Icon(icons.ChevronRight).Size(12).Color(t.TextSubtle)).
+		Child(ui.Div().MinWidth(ui.Px(0)).Cursor(ui.CursorPointer).
+			Role(access.RoleButton).Label("Open " + th.Title).TabIndex(0).Tooltip("Open this thread").
+			Hover(ui.Style{TextColor: t.Link}).
+			OnClick(func() { a.openThread(threadID, "conversation") }).
+			Child(ui.Text(th.Title).FontSize(12).Medium().Truncate()))
 }
 
 // checksBadge says where a merge's checks stand: passed (or none required), running, or failed. A

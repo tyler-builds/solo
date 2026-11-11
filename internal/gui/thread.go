@@ -457,12 +457,8 @@ func (a *App) workingLine(ctx *ui.Context, th core.ThreadView) ui.Element {
 	}
 	t := ctx.Theme()
 	if th.Status == core.StatusWaiting {
-		return ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space3).Height(ui.Px(30)).Radius(radiusM).
-			Background(t.Warning.Alpha(0.08)).
-			Child(statusMark(ctx, core.StatusWaiting)).
-			Child(ui.Text("Waiting for your answer").FontSize(12).Semibold().TextColor(t.Warning).NoWrap())
+		return ui.Div() // its question card asks in the conversation
 	}
-	brand := ui.Hex(pal(t).brand)
 	text := "Working"
 	if !th.TurnStarted.IsZero() {
 		text += " · " + elapsed(th.TurnStarted)
@@ -474,9 +470,9 @@ func (a *App) workingLine(ctx *ui.Context, th core.ThreadView) ui.Element {
 		step = th.Retry
 	}
 	return ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space3).Height(ui.Px(30)).Radius(radiusM).
-		Background(brand.Alpha(0.07)).
+		Background(t.Surface).Border(1, t.Border).
 		Child(statusMark(ctx, core.StatusRunning)).
-		Child(ui.Text(text).FontSize(12).Semibold().TextColor(brand).NoWrap()).
+		Child(ui.Text(text).FontSize(12).Semibold().TextColor(t.Text).NoWrap()).
 		Child(ui.Div().Grow(1).MinWidth(ui.Px(0)).
 			Play("shimmer", []ui.Keyframe{{At: 0.5, Motion: ui.Fade().Opacity(0.55)}},
 				ui.Animation{Duration: 1600 * time.Millisecond, Repeat: true}).

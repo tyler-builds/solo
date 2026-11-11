@@ -37,12 +37,32 @@ func (a *App) todoList(ctx *ui.Context) ui.Element {
 		return col.Child(ui.Div().PaddingX(space2).PaddingBottom(space1).
 			Child(caption(ctx, "Nothing yet. What you ask Solo for shows up here.")))
 	}
+	// A long list shows its first few in whole rows, and the rest on request, so the threads keep room.
+	all := ui.Local(ctx, "all", false)
+	shown := todos
+	if !all.Get() && len(todos) > todoRows {
+		shown = todos[:todoRows]
+	}
 	list := ui.Div().Column().Gap(1)
-	for _, td := range todos {
+	for _, td := range shown {
 		list = list.Child(ui.Component(func(ctx *ui.Context) ui.Element { return a.todoRow(ctx, td) }).Key("todo-" + td.ID))
 	}
-	return col.Child(ui.Div().Column().MaxHeight(ui.Px(220)).ScrollY().Child(list))
+	if len(todos) > todoRows {
+		label := fmt.Sprintf("Show %d more", len(todos)-todoRows)
+		if all.Get() {
+			label = "Show fewer"
+		}
+		list = list.Child(ui.Div().Row().Align(ui.Center).Height(ui.Px(24)).PaddingLeft(space1 + 2).Radius(radiusS).
+			Cursor(ui.CursorPointer).Hover(ui.Style{Background: t.SurfaceHover}).
+			Role(access.RoleButton).Label(label).TabIndex(0).
+			OnClick(func() { all.Update(func(v bool) bool { return !v }) }).
+			Child(ui.Text(label).FontSize(12).TextColor(t.TextSubtle)))
+	}
+	return col.Child(ui.Div().Column().MaxHeight(ui.Px(320)).ScrollY().Child(list))
 }
+
+// todoRows is how many todos the rail shows before "Show N more".
+const todoRows = 4
 
 // todoRow is one todo: a tick box, its text, and the state of the thread doing it, which a click opens.
 func (a *App) todoRow(ctx *ui.Context, td core.Todo) ui.Element {

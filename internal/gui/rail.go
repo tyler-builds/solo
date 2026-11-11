@@ -29,7 +29,7 @@ var railGroups = []struct {
 	{"No changes", []string{statusNoChanges}},
 	{"Merged", []string{core.StatusMerged}},
 	{"Stopped", []string{core.StatusInterrupted}},
-	// Last, and pinned to the bottom of the rail: work in progress needs nothing from the user.
+	// Last, one line each: work in progress needs nothing from the user.
 	{"Working", []string{core.StatusRunning, core.StatusStarting, core.StatusQueued}},
 }
 
@@ -90,23 +90,10 @@ func (a *App) rail(ctx *ui.Context) ui.Element {
 		ctx.After(time.Second, func() { tick.Update(func(n int) int { return n + 1 }) })
 	}
 
-	need := 0
-	for _, th := range open {
-		if needsUser(th) {
-			need++
-		}
-	}
 	head := ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space4).Height(ui.Px(44)).Shrink(0).
 		Child(ui.Text("Threads").FontSize(14).Semibold().NoWrap()).
 		Child(ui.Div().Column().Justify(ui.Center).Shrink(1).MinWidth(ui.Px(0)).Child(a.repoMenu(ctx))).
 		Child(ui.Div().Grow(1))
-	if need > 0 {
-		label := fmt.Sprintf("%d need you", need)
-		if need == 1 {
-			label = "1 needs you"
-		}
-		head = head.Child(ui.Text(label).FontSize(12).Medium().TextColor(t.Warning).NoWrap())
-	}
 
 	list := ui.Div().Column().Gap(space1).PaddingX(space2).PaddingBottom(space3)
 	if len(open) == 0 {
@@ -114,7 +101,6 @@ func (a *App) rail(ctx *ui.Context) ui.Element {
 			Child(ui.Icon(icons.Layers).Size(22).Color(t.TextSubtle)).
 			Child(caption(ctx, emptyRailText(query)).Align(ui.Center)))
 	}
-	var working ui.Element
 	for gi, g := range railGroups {
 		var group []core.ThreadView
 		for _, th := range open {
@@ -126,31 +112,22 @@ func (a *App) rail(ctx *ui.Context) ui.Element {
 			continue
 		}
 		slices.SortStableFunc(group, func(x, y core.ThreadView) int { return y.UpdatedAt.Compare(x.UpdatedAt) })
-		if gi == len(railGroups)-1 {
-			col := ui.Div().Column().Gap(space1).PaddingX(space2).PaddingBottom(space2).Opacity(0.72).
-				Hover(ui.Style{Opacity: 1}).Transition(150 * time.Millisecond).
-				Child(groupHeader(ctx, g.title, len(group), g.statuses[0]))
+		list = list.Child(groupHeader(ctx, g.title, len(group), g.statuses[0]))
+		if gi == len(railGroups)-1 { // work in progress needs nothing from the user: one line each
 			for _, th := range group {
-				col = col.Child(a.workingRow(ctx, th))
+				list = list.Child(a.workingRow(ctx, th))
 			}
-			working = ui.Div().Column().Shrink(0).MaxHeight(ui.Percent(45)).ScrollY().
-				BorderEdges(ui.Edges{Top: 1}, t.Border).Child(col)
 			continue
 		}
-		list = list.Child(groupHeader(ctx, g.title, len(group), g.statuses[0]))
 		for _, th := range group {
 			list = list.Child(a.threadRow(ctx, th))
 		}
 	}
-	rail := ui.Div().Column().Size(ui.Full, ui.Full).Background(t.Panel).
+	return ui.Div().Column().Size(ui.Full, ui.Full).Background(t.Panel).
 		Child(ui.Component(a.todoList)).
 		Child(head).
 		Child(a.railFilterInput(ctx)).
 		Child(ui.Div().Column().Grow(1).MinHeight(ui.Px(0)).ScrollY().Child(list))
-	if working != nil {
-		rail = rail.Child(working)
-	}
-	return rail
 }
 
 // repoMenu narrows the rail to one repository. It shows only when the threads span several, or a
@@ -209,8 +186,11 @@ func needsUser(th core.ThreadView) bool {
 func groupHeader(ctx *ui.Context, title string, n int, status string) ui.Element {
 	t := ctx.Theme()
 	c := t.TextSubtle
-	if status == core.StatusWaiting {
+	switch status {
+	case core.StatusWaiting:
 		c = t.Warning
+	case core.StatusFailed:
+		c = t.Danger
 	}
 	return ui.Div().Row().Align(ui.Center).Gap(6).PaddingX(space2).PaddingTop(space3).PaddingBottom(space1).
 		Child(ui.Text(title).FontSize(11).Medium().TextColor(c)).
@@ -223,7 +203,7 @@ func (a *App) threadRow(ctx *ui.Context, th core.ThreadView) ui.Element {
 	selected := a.openID.Get() == th.ID
 	when, whenColor := shortAgo(th.UpdatedAt), t.TextSubtle
 	if th.InTurn && !th.TurnStarted.IsZero() {
-		when, whenColor = elapsed(th.TurnStarted), ui.Hex(pal(t).brand)
+		when, whenColor = elapsed(th.TurnStarted), t.TextMuted
 	}
 	// The mark and the group carry the state; the line stays neutral.
 	line, lineColor := a.activityLine(th), t.TextMuted
@@ -256,7 +236,7 @@ func (a *App) workingRow(ctx *ui.Context, th core.ThreadView) ui.Element {
 	t := ctx.Theme()
 	when, whenColor := shortAgo(th.UpdatedAt), t.TextSubtle
 	if th.InTurn && !th.TurnStarted.IsZero() {
-		when, whenColor = elapsed(th.TurnStarted), ui.Hex(pal(t).brand)
+		when, whenColor = elapsed(th.TurnStarted), t.TextMuted
 	}
 	row := ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space2 + 2).Height(ui.Px(28)).Radius(radiusM).
 		Cursor(ui.CursorPointer).Hover(ui.Style{Background: t.SurfaceHover}).
@@ -270,12 +250,12 @@ func (a *App) workingRow(ctx *ui.Context, th core.ThreadView) ui.Element {
 				a.openThread(th.ID, "conversation")
 			}
 		}).
-		Child(statusMark(ctx, shownStatus(th)))
+		Child(statusMark(ctx, shownStatus(th))).
+		Child(ui.Text(th.Title).FontSize(13).Truncate().Grow(1).MinWidth(ui.Px(0)))
 	if a.repoFilter() == "" {
-		row = row.Child(ui.Text(repoLabel(th)).FontSize(12).TextColor(t.TextSubtle).NoWrap().Shrink(0))
+		row = row.Child(ui.Text(repoLabel(th)).FontSize(11).TextColor(t.TextSubtle).NoWrap().Shrink(0))
 	}
-	row = row.Child(ui.Text(th.Title).FontSize(13).Medium().Truncate().Grow(1).MinWidth(ui.Px(0))).
-		Child(ui.Text(when).FontSize(11).TextColor(whenColor).NoWrap().Shrink(0))
+	row = row.Child(ui.Text(when).FontSize(11).TextColor(whenColor).NoWrap().Shrink(0).Width(ui.Px(44)).Align(ui.End))
 	if a.openID.Get() == th.ID {
 		row = row.Background(t.SurfaceActive)
 	}
@@ -297,7 +277,14 @@ func (a *App) rowEnd(ctx *ui.Context, th core.ThreadView, when string, c ui.Colo
 // activity.
 func (a *App) rowDetail(ctx *ui.Context, repo, line string, c ui.Color) ui.Element {
 	t := ctx.Theme()
-	l := ui.Div().Row().Align(ui.Center).Gap(6).PaddingLeft(space5 + 2).MinWidth(ui.Px(0))
+	l := ui.Div().Row().Align(ui.Start).Gap(6).PaddingLeft(space5 + 2).MinWidth(ui.Px(0))
+	if strings.HasPrefix(line, "Asks: ") {
+		// The question is what the user needs to see: two lines, wrapping under the title.
+		if a.repoFilter() == "" {
+			line = repo + " · " + line
+		}
+		return l.Child(ui.Text(line).FontSize(12).TextColor(c).MaxLines(2).Grow(1).MinWidth(ui.Px(0)))
+	}
 	if a.repoFilter() == "" {
 		l = l.Child(ui.Text(repo).FontSize(12).TextColor(t.TextSubtle).NoWrap())
 		if line != "" {
