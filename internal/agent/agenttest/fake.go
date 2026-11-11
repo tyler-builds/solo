@@ -34,6 +34,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -323,6 +324,17 @@ func turn(s *fakeSession, sid, uuid, text string, event func(string, map[string]
 		}})
 		event(sid, map[string]any{"kind": "tool_result", "toolUseId": toolID, "text": "File created"})
 		result = "wrote " + path
+	case "bash":
+		// Runs rest with sh in the session's folder, as Claude's Bash tool does.
+		toolID := fmt.Sprintf("toolu_%d", time.Now().UnixNano())
+		event(sid, map[string]any{"kind": "assistant", "messageId": "m-" + uuid, "blocks": []any{
+			map[string]any{"type": "tool_use", "id": toolID, "name": "Bash", "input": map[string]any{"command": rest}},
+		}})
+		cmd := exec.Command("sh", "-c", rest)
+		cmd.Dir = s.cwd
+		out, err := cmd.CombinedOutput()
+		event(sid, map[string]any{"kind": "tool_result", "toolUseId": toolID, "text": string(out), "isError": err != nil})
+		result = "ran it"
 	case "tool":
 		name, args, _ := strings.Cut(rest, " ")
 		if args == "" {

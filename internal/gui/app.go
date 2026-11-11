@@ -87,10 +87,12 @@ type App struct {
 	unsub              func()
 }
 
-// confirmation is a question to confirm before a destructive action.
+// confirmation is a question to confirm before a destructive or lasting action.
 type confirmation struct {
 	title, body, action string
 	run                 func()
+	// safe: the action loses nothing (marking a thread done keeps its branch), so its button isn't red.
+	safe bool
 }
 
 // New creates the UI over a backend.
@@ -283,8 +285,45 @@ func (a *App) runBusy(id, what string, f func(ctx context.Context) error) {
 	})
 }
 
-// markDone takes a thread out of the rail into History, with an Undo.
+// markDone takes a thread out of the rail into History, with an Undo. A thread whose changes haven't
+// landed asks first, saying its branch is kept.
 func (a *App) markDone(th core.ThreadView) {
+	if th.Unlanded {
+		a.confirm.Set(&confirmation{
+			title:  "Mark it done without landing?",
+			body:   doneText(th),
+			action: "Mark done",
+			safe:   true,
+			run:    func() { a.doMarkDone(th) },
+		})
+		return
+	}
+	a.doMarkDone(th)
+}
+
+// doneText says what marking a thread with unlanded changes done does, and how that differs from
+// discarding it.
+func doneText(th core.ThreadView) string {
+	what := "has changes that haven't landed"
+	if th.Changed < 0 {
+		what = "may have changes that haven't landed"
+	}
+	where := th.BaseBranch
+	if where == "" || th.MultiRepo() {
+		where = "its base branch"
+	}
+	branch := "its branch"
+	if th.Branch != "" && !th.MultiRepo() {
+		branch += " " + th.Branch
+	} else if th.MultiRepo() {
+		branch = "its branches"
+	}
+	return fmt.Sprintf("“%s” %s in %s. Marking it done stops it and removes its worktree, but keeps %s with all its work, "+
+		"so nothing is lost: Settings › History can restore it. To throw the work away, discard the thread instead.", th.Title, what, where, branch)
+}
+
+// doMarkDone marks a thread done.
+func (a *App) doMarkDone(th core.ThreadView) {
 	if a.openID.Peek() == th.ID {
 		a.closeThread()
 	}

@@ -12,7 +12,7 @@ Claude **worker threads**, each working in its own git worktree.
 | Orchestrator | One **global** session, resumed across restarts. Knowledge of live state comes from tools, not its transcript. |
 | Repos | Settings hold a list of folders; every git repo found under them is known to the orchestrator. A folder there that isn't in git (and holds no repo) is listed too and takes threads the way t3code does: the thread works directly in the folder (`Part.InPlace`), with no worktree, branch, diff or merge, alone (not with other repos), and Done or Discard never touch the folder. Settings or Solo's `init_repo` tool can put the folder in git instead: `git init` on main, a default `.gitignore` if it has none, and a first commit. |
 | Workers | One git worktree + branch per thread, `bypassPermissions`, no sandbox. |
-| Landing | Solo proposes; **you** click Open PR (GitHub via `gh`, GitLab via `glab`), then Merge once checks pass, or the forge auto-merges. Repos without a remote merge locally ("Merge locally"): `git merge-tree` builds the merge without touching a checkout, so it works with uncommitted changes or another branch checked out; a checkout on the base branch then fast-forwards, keeping your edits. A conflict goes back to the thread to resolve ("Resolving conflicts"), and the branch merges when it finishes (at most twice). A thread that commits its work straight into the base branch itself (clean worktree, its commit already in `main` or `origin/main`) is marked merged, ready for Done. |
+| Landing | Solo proposes; **you** click Open PR (GitHub via `gh`, GitLab via `glab`), then Merge once checks pass, or the forge auto-merges. Repos without a remote merge locally ("Merge locally"): `git merge-tree` builds the merge without touching a checkout, so it works with uncommitted changes or another branch checked out; a checkout on the base branch then fast-forwards, keeping your edits. A conflict goes back to the thread to resolve ("Resolving conflicts"), and the branch merges when it finishes (at most twice). Work that lands outside these buttons counts too (`internal/core/landed.go`): a PR the thread opens itself (`gh pr create`/`glab mr create` in its Bash output, also found in the saved transcript after a restart) or one opened from a branch it pushed (`gh pr list --head`, only PRs opened since the thread started) is linked and followed like Solo's own; and a clean worktree whose changes are already in `main` or a freshly fetched `origin/main`, by ancestry or by content (`git merge-tree` of the branch into the base changes nothing, so squash merges, rebases and cherry-picks count), is marked merged, ready for Done. These checks run when a turn ends, on load, and every 5 minutes for waiting threads. |
 | Layout | Title bar (go-to-thread, settings) · thread rail on the left · orchestrator chat · a thread panel that slides in from the right (50/50, resizable). The rail filters by repository when threads span several. |
 | Persistence | SQLite (`modernc.org/sqlite`, no cgo), owned by Go. Claude's own transcripts are used only for `resume`. |
 
@@ -180,9 +180,11 @@ Raw `SDKMessage`s are also appended to a per-session JSONL file for debugging an
   carried on 3 times within 5 minutes stays stopped (loop guard, logged in the `resume-log` setting), and
   Settings › General can turn this off. A thread waiting on a question stays waiting: the question is
   pending again, and its answer reaches the thread as a message. Threads the user stopped stay stopped.
-- Threads stay in the rail until the user marks them **Done**, which is offered only when nothing is
-  left to merge (merged, or no changes). Done sets `done_at`, removes a leftover worktree and branch,
-  and moves the thread to Settings › History; discarding marks it done too. **Restore** recreates the
+- Threads stay in the rail until the user marks them **Done**, offered for any thread that isn't working,
+  landed or not. Done sets `done_at`, removes its worktree, and moves the thread to Settings › History;
+  a thread whose work landed (or had none) loses its branch too. One with changes that haven't landed
+  (`Unlanded`) asks first, and keeps its branch with its uncommitted edits committed, so nothing is
+  lost; **Discard** is what deletes work. Discarding marks it done too. **Restore** recreates the
   worktree at the same path (on the branch if it survived, else a new one from the base branch's head),
   so the Claude session resumes.
 - Pull requests (`internal/forge`): the forge comes from origin's host, or `git config solo.forge

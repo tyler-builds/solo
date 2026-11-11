@@ -32,7 +32,9 @@ const (
 	StatusInterrupted = "interrupted" // stopped by the user, or by Solo closing
 	StatusMerged      = "merged"      // its branch was merged and its worktree removed
 	StatusDiscarded   = "discarded"   // its worktree and branch were deleted
-	StatusArchived    = "archived"    // marked done with no changes; its worktree and branch were removed
+	// StatusArchived: marked done before it merged. Its worktree was removed, and its branch too unless it
+	// held work that hadn't landed (ThreadView.Unlanded), which Restore brings back.
+	StatusArchived = "archived"
 )
 
 // Active reports whether a thread with the status is starting or working, its background work included.
@@ -87,6 +89,10 @@ type thread struct {
 	// the turn ends. resolveTries counts the hand-offs, so a merge that keeps conflicting stops.
 	resolving    bool
 	resolveTries int
+	// prHints are pull request addresses the thread printed opening them itself (gh pr create), not yet
+	// linked to a part; prScanned is set once its saved transcript was searched for them, after a load.
+	prHints   []string
+	prScanned bool
 }
 
 // BackgroundTask is work a thread's agent runs in the background: a command run with
@@ -158,9 +164,12 @@ type ThreadView struct {
 	CanMerge     bool
 	CanDiscard   bool
 	CanInterrupt bool
-	// CanDone: the user may mark it done, which takes it out of the rail into History. Only threads with
-	// nothing left to merge: merged, or finished without changes.
+	// CanDone: the user may mark it done, which takes it out of the rail into History: any worker that
+	// isn't working and isn't done yet, landed or not.
 	CanDone bool
+	// Unlanded: marking it done now leaves changes that haven't landed (or aren't counted yet). Done
+	// keeps its branch then, so nothing is lost; the user confirms first. Discard is what deletes work.
+	Unlanded bool
 	// Changed is how many files a worker's branch changes from where it started; -1 until counted.
 	Changed int
 	// NoChanges is a worker whose last turn finished with nothing to merge.
@@ -212,7 +221,7 @@ func (t *thread) view() ThreadView {
 		v.HasWorktree = v.HasWorktree || p.Worktree != ""
 	}
 	settled := v.IsWorker && v.HasWorktree && !Finished(t.row.Status) && !Active(t.row.Status) && t.row.Status != StatusQueued
-	allLanded := len(t.parts) > 0 // every part with changes has a merged or closed pull request
+	allLanded := len(t.parts) > 0 // every part with changes has a merged pull request
 	for _, p := range t.parts {
 		pv := PartView{Part: p.Part, Name: filepath.Base(p.Repo), Changed: p.changed, Forge: p.forge}
 		if p.PR != nil {
@@ -236,7 +245,7 @@ func (t *thread) view() ThreadView {
 		default:
 			v.Changed += p.changed
 		}
-		if p.changed != 0 && (p.PR == nil || p.PR.State == forge.StateOpen) {
+		if p.changed != 0 && (p.PR == nil || p.PR.State != forge.StateMerged) {
 			allLanded = false
 		}
 		v.Parts = append(v.Parts, pv)
@@ -248,11 +257,11 @@ func (t *thread) view() ThreadView {
 		v.Forge, v.PR = v.Parts[0].Forge, v.Parts[0].PR
 	}
 	v.NoChanges = settled && v.Changed == 0 && t.row.Status == StatusIdle
-	v.CanDone = v.IsWorker && t.row.DoneAt.IsZero() && !t.inTurn && len(t.bg) == 0 &&
-		(t.row.Status == StatusMerged || (settled && v.Changed == 0) || (allLanded && v.Changed > 0))
+	v.CanDone = v.IsWorker && t.row.DoneAt.IsZero() && !t.inTurn && len(t.bg) == 0 && !Active(t.row.Status) && t.row.Status != StatusQueued
+	landed := t.row.Status == StatusMerged || (settled && v.Changed == 0) || (allLanded && v.Changed > 0)
+	v.Unlanded = v.CanDone && v.HasWorktree && !landed && !Finished(t.row.Status)
 	if t.inPlace() {
-		v.InPlace = true
-		v.CanDone = v.IsWorker && t.row.DoneAt.IsZero() && !t.inTurn && len(t.bg) == 0 && !Active(t.row.Status) && t.row.Status != StatusQueued
+		v.InPlace, v.Unlanded = true, false
 	}
 	v.CanDiscard = v.IsWorker && !Finished(t.row.Status)
 	return v
@@ -1091,7 +1100,7 @@ func (c *Core) finishIfLanded(id string) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	c.closeSession(ctx, id)
-	c.removeWorktrees(ctx, id)
+	c.removeWorktrees(ctx, id, false)
 	c.mu.Lock()
 	var ch Change
 	if t := c.threads[id]; t != nil {
@@ -1102,8 +1111,8 @@ func (c *Core) finishIfLanded(id string) {
 	c.schedule()
 }
 
-// removeWorktrees removes a worker's worktrees and their local branches.
-func (c *Core) removeWorktrees(ctx context.Context, id string) {
+// removeWorktrees removes a worker's worktrees, and their local branches unless keepBranches.
+func (c *Core) removeWorktrees(ctx context.Context, id string, keepBranches bool) {
 	c.mu.Lock()
 	t := c.threads[id]
 	if t == nil {
@@ -1121,7 +1130,7 @@ func (c *Core) removeWorktrees(ctx context.Context, id string) {
 		if p.InPlace || (p.Worktree == "" && p.Branch == "") { // never touch a folder worked in directly
 			continue
 		}
-		if err := git.RemoveWorktree(ctx, p.Repo, p.Worktree, p.Branch, true); err != nil {
+		if err := git.RemoveWorktree(ctx, p.Repo, p.Worktree, p.Branch, !keepBranches); err != nil {
 			c.log.Warn("core: removing a worktree", "repo", p.Repo, "err", err)
 		}
 	}
@@ -1148,7 +1157,7 @@ func (c *Core) Discard(ctx context.Context, threadID string) error {
 		return fmt.Errorf("thread %q is already %s", v.Title, v.Status)
 	}
 	c.closeSession(ctx, threadID)
-	c.removeWorktrees(ctx, threadID)
+	c.removeWorktrees(ctx, threadID, false)
 	c.mu.Lock()
 	var ch Change
 	if t := c.threads[threadID]; t != nil {
@@ -1163,23 +1172,41 @@ func (c *Core) Discard(ctx context.Context, threadID string) error {
 	return nil
 }
 
-// Done marks a thread done: it leaves the rail for History. A thread that finished without changes
-// also loses its worktrees and branches (Restore brings them back). Only threads with nothing to merge
-// can be done; others are merged or discarded first.
+// Done marks a thread done: it leaves the rail for History, merged or not. Its session ends and its
+// worktrees go. A thread whose work landed (or that had none) loses its branches too; one with work
+// that hasn't landed (ThreadView.Unlanded) keeps them, its uncommitted edits committed, so nothing is
+// lost and Restore brings it back. Discard is what throws work away.
 func (c *Core) Done(ctx context.Context, threadID string) error {
 	v, ok := c.Thread(threadID)
 	if !ok {
 		return fmt.Errorf("no thread %s", threadID)
 	}
 	if !v.CanDone {
-		if v.Changed > 0 && !Finished(v.Status) {
-			return fmt.Errorf("thread %q has changes; merge or discard it", v.Title)
+		if !v.DoneAt.IsZero() {
+			return fmt.Errorf("thread %q is already done", v.Title)
 		}
-		return fmt.Errorf("thread %q can't be marked done while it is %s", v.Title, v.Status)
+		return fmt.Errorf("thread %q can't be marked done while it is %s; stop it first", v.Title, v.Status)
+	}
+	if v.Unlanded {
+		for _, p := range v.Parts {
+			if err := keepWork(ctx, v, p); err != nil {
+				return fmt.Errorf("keeping %s's work before marking it done: %w", p.Name, err)
+			}
+		}
 	}
 	if v.HasWorktree || v.InPlace {
 		c.closeSession(ctx, threadID)
-		c.removeWorktrees(ctx, threadID)
+		c.removeWorktrees(ctx, threadID, v.Unlanded)
+	}
+	if v.Unlanded {
+		var branches []string
+		for _, p := range v.Parts {
+			if p.Branch != "" && !p.InPlace {
+				branches = append(branches, p.Branch)
+			}
+		}
+		c.addNotice(threadID, "info", fmt.Sprintf("Marked done without landing. Its branch %s is kept; Settings › History can restore it.",
+			strings.Join(branches, ", ")))
 	}
 	c.mu.Lock()
 	t := c.threads[threadID]
@@ -1203,6 +1230,24 @@ func (c *Core) Done(ctx context.Context, threadID string) error {
 	}
 	c.notify(ch)
 	return nil
+}
+
+// keepWork commits what a part's worktree left uncommitted, onto its branch, so removing the worktree
+// loses nothing. A detached HEAD is put back on the part's branch first, so its commits stay reachable.
+func keepWork(ctx context.Context, v ThreadView, p PartView) error {
+	if p.InPlace || p.Worktree == "" || p.Branch == "" {
+		return nil
+	}
+	if _, err := os.Stat(p.Worktree); err != nil {
+		return nil // already gone
+	}
+	if git.CurrentBranch(ctx, p.Worktree) == "" {
+		if _, err := git.Run(ctx, p.Worktree, "checkout", "-q", "-B", p.Branch); err != nil {
+			return err
+		}
+	}
+	_, err := git.CommitAll(ctx, p.Worktree, uncommittedPrefix+v.Title)
+	return err
 }
 
 // Restore brings a done thread back to the rail. Its worktrees are recreated at the same paths, so its
@@ -1329,7 +1374,8 @@ func cleanBranchName(s string) string {
 }
 
 // countChanges counts the files each of a worker's branches changes, for Done and the landing
-// actions, finds each repository's forge, and pushes new commits to open pull requests.
+// actions, finds each repository's forge, pushes new commits to open pull requests, and looks for work
+// that landed outside Solo (findPRs, findLanded).
 func (c *Core) countChanges(id string) {
 	v, ok := c.Thread(id)
 	if !ok || !v.IsWorker || !v.HasWorktree || Finished(v.Status) {
@@ -1339,7 +1385,6 @@ func (c *Core) countChanges(id string) {
 	defer cancel()
 	counts := map[string]int{}
 	kinds := map[string]forge.Kind{}
-	var landed []PartView
 	for _, p := range v.Parts {
 		if p.Worktree == "" || p.BaseCommit == "" {
 			continue
@@ -1355,12 +1400,6 @@ func (c *Core) countChanges(id string) {
 		counts[p.Repo], kinds[p.Repo] = len(files), c.forgeFor(p.Repo)
 		if p.PR != nil && p.PR.State == forge.StateOpen && !v.InTurn {
 			c.pushPR(ctx, v, p)
-		}
-		// The thread put its work in the base branch itself (asked to commit straight to main, say):
-		// nothing is left to land.
-		if len(files) > 0 && p.PR == nil && !v.InTurn && v.Status == StatusIdle && git.InBase(ctx, p.Worktree, p.BaseBranch) {
-			counts[p.Repo] = 0
-			landed = append(landed, p)
 		}
 	}
 	c.mu.Lock()
@@ -1382,16 +1421,11 @@ func (c *Core) countChanges(id string) {
 		nv, _ := c.Thread(id)
 		c.notify(Change{Kind: ChangeThread, ThreadID: id, PrevStatus: nv.Status, Status: nv.Status})
 	}
-	if len(landed) > 0 {
-		for _, p := range landed {
-			where := p.BaseBranch
-			if v.MultiRepo() {
-				where += " in " + p.Name
-			}
-			c.addNotice(id, "info", "Already in "+where+": the thread committed its work there itself.")
-		}
-		c.finishIfLanded(id)
-	}
+	// Work that landed outside Solo's merge and PR buttons (landed.go).
+	lctx, lcancel := context.WithTimeout(context.Background(), time.Minute)
+	defer lcancel()
+	c.findPRs(lctx, id)
+	c.findLanded(lctx, id)
 }
 
 // removeAttachments deletes the images of a discarded thread's messages that no other thread uses

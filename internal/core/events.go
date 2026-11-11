@@ -118,6 +118,7 @@ func (c *Core) onEvent(e agent.Event) {
 		if itemID, ok := t.tools[e.ToolUseID]; ok {
 			c.updateToolLocked(itemID, func(d *ToolData) {
 				d.Result, d.IsError, d.Done = e.Text, e.IsError, true
+				t.notePRHintsLocked(*d) // a pull request it opened itself, linked when the turn ends
 			})
 			delete(t.tools, e.ToolUseID)
 			if t.step != nil && t.step.ID == e.ToolUseID {

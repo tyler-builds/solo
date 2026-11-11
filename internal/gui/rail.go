@@ -283,9 +283,9 @@ func rowTime(ctx *ui.Context, th core.ThreadView) (string, ui.Color) {
 }
 
 // rowEnd is the end of a rail row's first line: its time, or a Done button for a thread with nothing
-// left to merge.
+// left to land. One with unlanded changes is marked done from its panel's menu, which asks first.
 func (a *App) rowEnd(ctx *ui.Context, th core.ThreadView, when string, c ui.Color) ui.Element {
-	if th.CanDone {
+	if th.CanDone && !th.Unlanded {
 		return ui.Div().Height(ui.Px(16)).Row().Align(ui.Center).
 			Child(ui.IconButton(icons.Check).Ghost().Small().Label("Mark “" + th.Title + "” done").
 				Tooltip("Done: take it out of your list").OnClick(func() { a.markDone(th) }))

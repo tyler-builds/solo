@@ -706,7 +706,11 @@ func (a *App) confirmDialog(ctx *ui.Context) ui.Element {
 	if c == nil {
 		return nil
 	}
-	do := ui.Button(c.action).Danger().OnClick(func() {
+	do := ui.Button(c.action).Danger()
+	if c.safe {
+		do = ui.Button(c.action).Primary()
+	}
+	do = do.OnClick(func() {
 		a.confirm.Set(nil)
 		c.run()
 	})

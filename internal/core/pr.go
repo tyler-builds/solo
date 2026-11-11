@@ -321,13 +321,21 @@ func (c *Core) mergePR(ctx context.Context, v ThreadView, p PartView) error {
 	return nil
 }
 
-// pushPR pushes new commits on one repository's branch to its open pull request.
+// pushPR pushes new commits on one repository's branch to its open pull request. A pull request the
+// thread opened from another branch is pushed to only while its worktree is on that branch.
 func (c *Core) pushPR(ctx context.Context, v ThreadView, p PartView) {
-	ahead, err := git.Run(ctx, p.Worktree, "rev-list", "--count", "@{upstream}..HEAD")
+	head := p.Branch
+	if p.PR.Head != "" && p.PR.Head != p.Branch {
+		if git.CurrentBranch(ctx, p.Worktree) != p.PR.Head {
+			return
+		}
+		head = p.PR.Head
+	}
+	ahead, err := git.Run(ctx, p.Worktree, "rev-list", "--count", head+"@{upstream}.."+head)
 	if err == nil && strings.TrimSpace(ahead) == "0" {
 		return
 	}
-	if err := git.Push(ctx, p.Worktree, p.Branch); err != nil {
+	if err := git.Push(ctx, p.Worktree, head); err != nil {
 		c.addNotice(v.ID, "error", fmt.Sprintf("Couldn't push to %s #%d: %v", p.PR.Kind.Noun(), p.PR.Number, err))
 		return
 	}
@@ -359,6 +367,7 @@ func (c *Core) watchPRs() {
 		case <-c.pollNow:
 		}
 		c.CheckPRs(context.Background())
+		c.sweepLanded()
 	}
 }
 

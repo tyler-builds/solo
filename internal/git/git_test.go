@@ -312,3 +312,39 @@ func TestInitTooMany(t *testing.T) {
 		}
 	}
 }
+
+// Work squash-merged into main, after other work landed there, is in main by content though not by
+// ancestry; work only partly in main, or changed again since, isn't.
+func TestInBaseAfterSquashMerge(t *testing.T) {
+	ctx := context.Background()
+	repo := newRepo(t, filepath.Join(t.TempDir(), "r"))
+	wt := filepath.Join(t.TempDir(), "wt")
+	if _, err := AddWorktree(ctx, repo, wt, "feat", "main"); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(wt, "b.txt"), "b\n")
+	must(t, wt, "add", "-A")
+	must(t, wt, "commit", "-qm", "b")
+	write(t, filepath.Join(wt, "a.txt"), "one\ntwo\nthree\n")
+	must(t, wt, "commit", "-qam", "three")
+	if InBase(ctx, wt, "main") {
+		t.Fatal("in main before it landed")
+	}
+	write(t, filepath.Join(repo, "c.txt"), "c\n")
+	must(t, repo, "add", "-A")
+	must(t, repo, "commit", "-qm", "other work")
+	must(t, repo, "merge", "-q", "--squash", "feat")
+	must(t, repo, "commit", "-qm", "feat (#1)")
+	if !InBase(ctx, wt, "main") {
+		t.Fatal("squash-merged work not seen in main")
+	}
+	write(t, filepath.Join(wt, "d.txt"), "d\n")
+	if InBase(ctx, wt, "main") {
+		t.Fatal("uncommitted work counted as in main")
+	}
+	must(t, wt, "add", "-A")
+	must(t, wt, "commit", "-qm", "d")
+	if InBase(ctx, wt, "main") {
+		t.Fatal("a commit made after the squash counted as in main")
+	}
+}

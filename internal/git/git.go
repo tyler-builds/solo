@@ -581,17 +581,64 @@ func checkedOutAt(ctx context.Context, repo, ref string) (string, error) {
 }
 
 // InBase reports whether a worktree's work is already in base: nothing uncommitted, and its commit
-// is in the local base branch or origin's copy of it (the thread pushed or merged it there itself).
+// is in the local base branch or origin's copy of it (the thread pushed or merged it there itself), or
+// its changes are, as after a squash merge, a rebase or a cherry-pick (see ContentIn).
 func InBase(ctx context.Context, worktree, base string) bool {
 	if st, err := Run(ctx, worktree, "status", "--porcelain"); err != nil || st != "" {
 		return false
 	}
 	for _, ref := range []string{"refs/remotes/origin/" + base, "refs/heads/" + base} {
+		if _, err := Run(ctx, worktree, "rev-parse", "--verify", "-q", ref+"^{commit}"); err != nil {
+			continue
+		}
 		if _, err := Run(ctx, worktree, "merge-base", "--is-ancestor", "HEAD", ref); err == nil {
+			return true
+		}
+		if ContentIn(ctx, worktree, "HEAD", ref) {
 			return true
 		}
 	}
 	return false
+}
+
+// ContentIn reports whether the changes commit makes since it forked from ref are already in ref,
+// whatever their commits: merging commit into ref would change nothing. This sees work that landed
+// as a squash merge, a rebase or a cherry-pick, which ancestry doesn't. A later change in ref to the
+// same lines makes the merge conflict, so that reads as not in, never wrongly as in.
+func ContentIn(ctx context.Context, dir, commit, ref string) bool {
+	want, err := Run(ctx, dir, "rev-parse", "--verify", "-q", ref+"^{tree}")
+	if err != nil {
+		return false
+	}
+	tree, conflicts, err := mergeTree(ctx, dir, "", ref, commit)
+	return err == nil && len(conflicts) == 0 && tree == want
+}
+
+// Fetch updates origin's copy of branch.
+func Fetch(ctx context.Context, repo, branch string) error {
+	_, err := Run(ctx, repo, "fetch", "--quiet", "origin", branch)
+	return err
+}
+
+// CurrentBranch is the branch checked out in dir, or "" when its HEAD is detached.
+func CurrentBranch(ctx context.Context, dir string) string {
+	b, err := Run(ctx, dir, "symbolic-ref", "--short", "-q", "HEAD")
+	if err != nil {
+		return ""
+	}
+	return b
+}
+
+// Pushed reports whether branch was pushed to origin: origin has a copy of it, or it tracks one.
+func Pushed(ctx context.Context, dir, branch string) bool {
+	if branch == "" {
+		return false
+	}
+	if _, err := Run(ctx, dir, "rev-parse", "--verify", "-q", "refs/remotes/origin/"+branch); err == nil {
+		return true
+	}
+	_, err := Run(ctx, dir, "config", "--get", "branch."+branch+".merge")
+	return err == nil
 }
 
 // IsRepo reports whether dir is inside a git work tree.
