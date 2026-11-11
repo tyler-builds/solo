@@ -3,12 +3,14 @@ package orchestrator
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -30,6 +32,7 @@ func TestMain(m *testing.M) {
 		os.Setenv(k, v)
 	}
 	UpdateDelay = 50 * time.Millisecond
+	RetryDelay = 100 * time.Millisecond
 	os.Exit(m.Run())
 }
 
@@ -465,5 +468,58 @@ func TestUpdatesSayBackgroundWorkIsNotFinished(t *testing.T) {
 			}
 		}
 		return false
+	})
+}
+
+// An update that fails to reach Solo is tried again, with the ones that came in meanwhile; updates not
+// yet delivered are saved, so a restart delivers them instead of losing them.
+func TestUndeliveredUpdatesAreKept(t *testing.T) {
+	c, o := setup(t)
+	var mu sync.Mutex
+	fails := 2
+	send := o.update
+	o.mu.Lock()
+	o.update = func(ctx context.Context, id, hidden, text string) error {
+		mu.Lock()
+		defer mu.Unlock()
+		if fails > 0 {
+			fails--
+			return errors.New("agent: unknown session")
+		}
+		return send(ctx, id, hidden, text)
+	}
+	o.mu.Unlock()
+	call(t, o, "spawn_thread", map[string]any{"repo": "web", "title": "Retry", "prompt": "write a.txt x"})
+	eventually(t, "delivered on retry", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		if fails > 0 {
+			return false
+		}
+		var saved []string
+		c.State(pendingKey, &saved)
+		v, _ := c.Thread(core.OrchestratorID)
+		return len(saved) == 0 && v.HasTranscript && !v.InTurn
+	})
+	ms := syntheticMessages(c)
+	if last := ms[len(ms)-1]; !strings.Contains(last, `"Retry" (web) finished its turn`) {
+		t.Fatalf("last update: %q", last)
+	}
+
+	// Updates held back (here by pausing them) survive a restart and go out after it.
+	o.SetUpdates(false)
+	call(t, o, "spawn_thread", map[string]any{"repo": "web", "title": "Held", "prompt": "write b.txt y"})
+	eventually(t, "update saved", func() bool {
+		var saved []string
+		return c.State(pendingKey, &saved) && len(saved) == 1 && strings.Contains(saved[0], `"Held" (web) finished its turn`)
+	})
+	if _, err := New(c, t.TempDir(), nil); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "delivered after restart", func() bool {
+		ms := syntheticMessages(c)
+		var saved []string
+		c.State(pendingKey, &saved)
+		return strings.Contains(ms[len(ms)-1], `"Held" (web) finished its turn`) && len(saved) == 0
 	})
 }

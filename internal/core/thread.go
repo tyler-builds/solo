@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/tyler-builds/solo/internal/agent"
@@ -45,8 +46,11 @@ func Finished(status string) bool {
 	return status == StatusMerged || status == StatusDiscarded || status == StatusArchived
 }
 
-// thread is a thread's state. Guarded by Core.mu.
+// thread is a thread's state. Guarded by Core.mu, except sess.
 type thread struct {
+	// sess serializes the thread's use of its Claude session: opening and sending to it, and closing or
+	// replacing it. Take it before c.mu, never while holding c.mu.
+	sess    sync.Mutex
 	row     store.Thread
 	opened  bool // its session is registered with the agent manager
 	inTurn  bool
@@ -648,8 +652,6 @@ func (c *Core) send(ctx context.Context, threadID, text string, images []string,
 		c.mu.Unlock()
 		return fmt.Errorf("thread %q has not started yet", t.row.Title)
 	}
-	needOpen := !t.opened
-	row := t.row
 	// The user's message to a working thread steers it, as in t3code; a question it is waiting on is
 	// answered in its own card, so a message then waits for the turn like the others.
 	steer := from == FromUser && !synthetic && t.inTurn && len(t.asks) == 0
@@ -696,20 +698,41 @@ func (c *Core) send(ctx context.Context, threadID, text string, images []string,
 		c.addNotice(threadID, "error", "The message was not delivered: "+err.Error())
 		return err
 	}
-	params := c.openParams(row)
-	if needOpen {
-		if err := c.agent.Open(ctx, params); err != nil {
-			return fail(err)
-		}
-		c.mu.Lock()
-		t.opened = true
-		c.mu.Unlock()
-	}
-	if err := c.agent.SendUUID(ctx, agent.SendParams{SessionID: params.SessionID, UUID: uuid, Text: sent,
-		Images: blocks, Synthetic: synthetic, Steer: steer}); err != nil {
+	if err := c.deliver(ctx, t, agent.SendParams{UUID: uuid, Text: sent, Images: blocks, Synthetic: synthetic, Steer: steer}); err != nil {
 		return fail(err)
 	}
 	return nil
+}
+
+// deliver sends p to the thread's current session, opening it first if needed. It holds t.sess, so the
+// session can't be closed or replaced between the open and the send. A session the agent manager has
+// lost is opened again (resuming it), and the message sent once more.
+func (c *Core) deliver(ctx context.Context, t *thread, p agent.SendParams) error {
+	t.sess.Lock()
+	defer t.sess.Unlock()
+	for attempt := 0; ; attempt++ {
+		c.mu.Lock()
+		needOpen, row := !t.opened, t.row
+		c.mu.Unlock()
+		params := c.openParams(row)
+		if needOpen {
+			if err := c.agent.Open(ctx, params); err != nil {
+				return err
+			}
+			c.mu.Lock()
+			t.opened = true
+			c.mu.Unlock()
+		}
+		p.SessionID = params.SessionID
+		err := c.agent.SendUUID(ctx, p)
+		if err == nil || attempt > 0 || !errors.Is(err, agent.ErrUnknownSession) {
+			return err
+		}
+		c.log.Warn("core: reopening a session the agent lost", "thread", row.ID, "session", row.SessionID)
+		c.mu.Lock()
+		t.opened = false
+		c.mu.Unlock()
+	}
 }
 
 // SetThreadModel changes a thread's model and effort ("" effort: the default in Settings). A new model
@@ -1432,11 +1455,19 @@ func (c *Core) removeAttachments(ctx context.Context, threadID string) {
 func (c *Core) closeSession(ctx context.Context, threadID string) {
 	c.mu.Lock()
 	t := c.threads[threadID]
+	c.mu.Unlock()
 	if t == nil {
-		c.mu.Unlock()
 		return
 	}
-	sid := t.row.SessionID
+	t.sess.Lock()
+	defer t.sess.Unlock()
+	c.closeSessionHeld(ctx, t)
+}
+
+// closeSessionHeld closes the thread's session. Call with t.sess held.
+func (c *Core) closeSessionHeld(ctx context.Context, t *thread) {
+	c.mu.Lock()
+	threadID, sid := t.row.ID, t.row.SessionID
 	t.opened = false
 	for id, ch := range t.asks {
 		ch <- agent.AskResult{Cancelled: true}

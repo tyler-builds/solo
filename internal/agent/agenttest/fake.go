@@ -24,6 +24,8 @@
 //	                           finishes and, as Claude does, a turn of its own ("wake") reads it.
 //	                           session.stopTask stops it first, with no turn after.
 //	kill                       stops every background command inside the turn, as Claude's TaskStop
+//	slowclose <ms>             completes; closing the session later takes ms (and holds up every other
+//	                           request meanwhile, as one busy sidecar would)
 //	anything else              completes with result "echo: <text> resume=<bool>"
 //
 // It does not import package agent, so agent's own tests can use it.
@@ -74,6 +76,8 @@ type fakeSession struct {
 	bgMu   sync.Mutex
 	bg     []*fakeTask // running background commands, oldest first
 	closed bool
+	// closeDelay is how long session.close takes (slowclose).
+	closeDelay time.Duration
 }
 
 type fakeTask struct {
@@ -257,12 +261,15 @@ func run() {
 			reply(struct{}{})
 		case "session.close":
 			mu.Lock()
-			if s := sessions[p.SessionID]; s != nil {
+			s := sessions[p.SessionID]
+			mu.Unlock()
+			if s != nil {
 				s.bgMu.Lock()
 				s.closed = true // its background commands die with it, silently
+				delay := s.closeDelay
 				s.bgMu.Unlock()
+				time.Sleep(delay)
 			}
-			mu.Unlock()
 			event(p.SessionID, map[string]any{"kind": "exited"})
 			mu.Lock()
 			delete(sessions, p.SessionID)
@@ -409,6 +416,12 @@ func turn(s *fakeSession, sid, uuid, text string, event func(string, map[string]
 			}
 		}
 		result = fmt.Sprintf("stopped %d", len(running))
+	case "slowclose":
+		ms, _ := strconv.Atoi(rest)
+		s.bgMu.Lock()
+		s.closeDelay = time.Duration(ms) * time.Millisecond
+		s.bgMu.Unlock()
+		result = "slow to close"
 	case "fail":
 		status, errText = "failed", "scripted failure"
 	case "lose":
