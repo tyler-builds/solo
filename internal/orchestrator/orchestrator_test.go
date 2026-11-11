@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -417,5 +418,21 @@ func TestFreshSessionCarriesARecap(t *testing.T) {
 	}
 	if c.State(carryKey, &carry); carry != "" {
 		t.Fatalf("recap not cleared: %q", carry)
+	}
+}
+
+// Solo's own session runs any Bash command: the sidecar's allow policy approves every request, with no
+// read-only allowlist. Code changes still go to workers by process, so Edit and Write aren't offered.
+func TestOrchestratorRunsAnyBash(t *testing.T) {
+	_, o := setup(t)
+	p := o.openParams()
+	if p.ToolPolicy != agent.ToolPolicyAllow {
+		t.Fatalf("tool policy = %q, want %q", p.ToolPolicy, agent.ToolPolicyAllow)
+	}
+	if len(p.BashAllow) != 0 {
+		t.Fatalf("bash allowlist = %q, want none", p.BashAllow)
+	}
+	if !slices.Contains(p.Tools, "Bash") {
+		t.Fatalf("tools %q lack Bash", p.Tools)
 	}
 }

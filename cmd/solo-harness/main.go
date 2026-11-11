@@ -27,7 +27,7 @@ func main() {
 	cwd, _ := os.Getwd()
 	dir := flag.String("cwd", cwd, "working directory for the session")
 	model := flag.String("model", "", "model alias or ID (default: Claude's default)")
-	readonly := flag.Bool("readonly", false, "read-only session (orchestrator policy) instead of bypassPermissions")
+	readonly := flag.Bool("readonly", false, "read-only session (read tools and a few git commands) instead of bypassPermissions")
 	resume := flag.String("resume", "", "resume this session ID")
 	verbose := flag.Bool("v", false, "log the sidecar's stderr")
 	probe := flag.Bool("probe", false, "print the models and account, then exit")

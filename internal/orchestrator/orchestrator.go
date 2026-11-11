@@ -1,7 +1,7 @@
-// Package orchestrator is the long-running manager the user talks to. It is a Claude session that
-// reads but never edits code, and runs the work through Solo's tools: it starts worker threads, follows
-// them, relays their questions, and proposes merges. Live state always comes from the tools, so nothing
-// important depends on what is still in its context window.
+// Package orchestrator is the long-running manager the user talks to. It is a Claude session that reads
+// code and may run any shell command, but leaves code changes to workers. It runs the work through Solo's
+// tools: it starts worker threads, follows them, relays their questions, and proposes merges. Live state
+// always comes from the tools, so nothing important depends on what is still in its context window.
 package orchestrator
 
 import (
@@ -211,20 +211,14 @@ func (o *Orchestrator) openParams() agent.OpenParams {
 		SystemAppend:          systemPrompt(o.c),
 		AdditionalDirectories: dirs,
 		PermissionMode:        agent.PermissionDefault,
-		ToolPolicy:            agent.ToolPolicyReadOnly,
-		Tools:                 []string{"Read", "Grep", "Glob", "Bash", "WebFetch", "WebSearch", "AskUserQuestion"}, // the user's to-do list (add_todo) takes the place of TodoWrite,
-		BashAllow:             bashAllow,
-		MCPServerName:         "solo",
-		MCPTools:              toolSpecs,
-		ClaudePath:            agent.FindClaude(s.ClaudePath).Path,
+		// Bash may run anything (compound commands, cd, builds, git writes); Edit and Write aren't offered,
+		// as code changes go to workers. The user's to-do list (add_todo) takes the place of TodoWrite.
+		ToolPolicy:    agent.ToolPolicyAllow,
+		Tools:         []string{"Read", "Grep", "Glob", "Bash", "WebFetch", "WebSearch", "AskUserQuestion"},
+		MCPServerName: "solo",
+		MCPTools:      toolSpecs,
+		ClaudePath:    agent.FindClaude(s.ClaudePath).Path,
 	}
-}
-
-// bashAllow are the shell commands the orchestrator may run: reading git state and listing files.
-var bashAllow = []string{
-	`git( -C \S+)? (status|log|diff|show|branch|remote|rev-parse|ls-files|blame|shortlog|describe|tag)( .*)?`,
-	`ls( .*)?`,
-	`wc( .*)?`,
 }
 
 // onChange queues an update when a worker reaches a state the orchestrator should hear about.
