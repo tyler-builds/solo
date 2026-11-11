@@ -74,7 +74,43 @@ func (a *App) orchestratorBar(ctx *ui.Context, v core.ThreadView) ui.Element {
 		BorderEdges(ui.Edges{Bottom: 1}, t.Border).
 		Child(brandMark(20)).
 		Child(ui.Text("Solo").FontSize(14).Semibold().NoWrap()).
-		Child(state)
+		Child(state).
+		Child(ui.Div().Grow(1)).
+		Child(a.threadsSummary(ctx))
+}
+
+// threadsSummary sums up the threads at the right of Solo's bar: how many work, and how many wait on
+// the user, so an idle Solo never reads as nothing going on.
+func (a *App) threadsSummary(ctx *ui.Context) ui.Element {
+	t := ctx.Theme()
+	working, need := 0, 0
+	for _, th := range a.threads.Get() {
+		if !inRail(th) {
+			continue
+		}
+		if th.InTurn && th.Status != core.StatusWaiting || th.Status == core.StatusQueued || th.Status == core.StatusStarting {
+			working++
+		}
+		if needsUser(th) {
+			need++
+		}
+	}
+	row := ui.Div().Row().Align(ui.Center).Gap(space3).Shrink(0)
+	if working > 0 {
+		row = row.Child(ui.Div().Row().Align(ui.Center).Gap(6).Tooltip("Threads at work").
+			Child(dot(workingColor(t), 7)).
+			Child(ui.Text(fmt.Sprintf("%d working", working)).FontSize(12).TextColor(t.TextMuted).NoWrap()))
+	}
+	if need > 0 {
+		label := fmt.Sprintf("%d need you", need)
+		if need == 1 {
+			label = "1 needs you"
+		}
+		row = row.Child(ui.Div().Row().Align(ui.Center).Gap(6).Tooltip("Questions, failures and work to land · Ctrl+J opens the next").
+			Child(dot(t.Warning, 7)).
+			Child(ui.Text(label).FontSize(12).Medium().TextColor(t.Warning).NoWrap()))
+	}
+	return row
 }
 
 func (a *App) welcome(ctx *ui.Context) ui.Element {
@@ -489,7 +525,8 @@ func (a *App) stepsView(ctx *ui.Context, steps []*core.Item, threadID string) ui
 			}
 			latest = strings.TrimSpace(verb + " " + detail)
 		}
-		var state ui.Element = ui.Div().Tooltip("Done").Child(ui.Icon(icons.CircleCheck).Size(14).Color(t.Success.Alpha(0.75)))
+		// Only what needs a look gets a mark: a step at work, or one that failed. Done is the quiet default.
+		var state ui.Element
 		if running {
 			state = ui.ProgressRing().Size(ui.RingSmall).Label("Running")
 		}
@@ -512,10 +549,8 @@ func (a *App) stepsView(ctx *ui.Context, steps []*core.Item, threadID string) ui
 			Child(ui.If(threadID != "", a.threadChip(ctx, threadID))).
 			Child(ui.Text(label).FontSize(13).Medium().TextColor(t.TextMuted).NoWrap().Shrink(0)).
 			Child(failedText).
+			Child(ui.If(state != nil, state)).
 			Child(ui.Text(latest).FontSize(12).TextColor(t.TextSubtle).Truncate().Grow(1).MinWidth(ui.Px(0)))
-		if state != nil {
-			head = head.Child(state)
-		}
 		col := ui.Div().Column().Gap(2).Child(head)
 		if open.Get() {
 			inner := ui.Div().Column().Gap(2).PaddingLeft(space3).MarginLeft(space3).
@@ -543,6 +578,9 @@ var checkURL = regexp.MustCompile(` \(https?://[^)]*\)`)
 // update is one line of a thread update the app sent Solo.
 type update struct {
 	threadID, name, repo, what string
+	// quiet: news that asks nothing of the user (merged, a PR opened, checks passed), shown lighter
+	// than what does (a question, a failure, finished work to review).
+	quiet bool
 	icon                       *icons.Icon
 	color                      ui.Color
 }
@@ -561,6 +599,8 @@ func (a *App) parseUpdates(t *ui.Theme, text string) []update {
 		}
 		u := update{threadID: a.findThreadID(m[1]), name: name, repo: m[3], what: m[4], icon: icons.Activity, color: t.TextMuted}
 		describeUpdate(t, &u, m[4])
+		u.quiet = u.color == ui.Hex(pal(t).info) || u.color == t.TextSubtle ||
+			strings.HasPrefix(u.what, "checks passed")
 		out = append(out, u)
 	}
 	return out
@@ -646,19 +686,23 @@ func cutChangeRequest(s string) (cr, tail string, ok bool) {
 // updateLine renders one thread update; trailing goes before the chevron (an actions toggle).
 func (a *App) updateRow(ctx *ui.Context, u update, trailing ui.Element) *ui.DivElement {
 	t := ctx.Theme()
+	name := ui.Text(u.name).FontSize(13).Medium()
+	if u.quiet {
+		name = ui.Text(u.name).FontSize(13).TextColor(t.TextMuted)
+	}
 	var line *ui.DivElement
 	if a.chatWidth(ctx) < 640 {
 		// Narrow: the thread on one line and what happened under it, so neither is cut to a few words.
 		line = ui.Div().Row().Align(ui.Start).Gap(space2).PaddingX(space2).PaddingY(3).Radius(radiusS).
 			Child(ui.Div().Height(ui.Px(18)).Row().Align(ui.Center).Child(ui.Icon(u.icon).Size(14).Color(u.color))).
 			Child(ui.Div().Column().Gap(1).Grow(1).MinWidth(ui.Px(0)).
-				Child(ui.Text(u.name).FontSize(13).Medium().Truncate()).
+				Child(name.Truncate()).
 				Child(ui.Text(u.repo + " · " + u.what).FontSize(12).TextColor(t.TextMuted).Truncate()))
 	} else {
 		line = ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space2).Height(ui.Px(26)).Radius(radiusS).
 			Child(ui.Icon(u.icon).Size(14).Color(u.color)).
 			Child(ui.Text(u.repo).FontSize(12).TextColor(t.TextSubtle).NoWrap().Shrink(0)).
-			Child(ui.Text(u.name).FontSize(13).Medium().NoWrap().Shrink(0).MaxWidth(ui.Percent(45)).Truncate()).
+			Child(name.NoWrap().Shrink(0).MaxWidth(ui.Percent(45)).Truncate()).
 			Child(ui.Text(u.what).FontSize(12).TextColor(t.TextMuted).Truncate().Grow(1).MinWidth(ui.Px(0)))
 	}
 	if trailing != nil {
@@ -832,20 +876,20 @@ func (a *App) toolView(ctx *ui.Context, d core.ToolData) ui.Element {
 		case d.IsError:
 			state = ui.Icon(icons.CircleAlert).Size(13).Color(t.Danger)
 		default:
-			state = ui.Icon(icons.Check).Size(13).Color(t.TextSubtle)
+			state = ui.Div() // done is the quiet default
 		}
 		head := ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space2).Height(ui.Px(26)).Radius(radiusS).
 			Cursor(ui.CursorPointer).Hover(ui.Style{Background: t.SurfaceHover}).
 			Role(access.RoleButton).Label(label + " " + detail).TabIndex(0).
 			OnClick(func() { open.Update(func(o bool) bool { return !o }) }).
 			Child(ui.Icon(icon).Size(14).Color(t.TextMuted)).
-			Child(ui.Text(label).FontSize(13).Medium().TextColor(t.TextMuted).NoWrap().Shrink(0))
+			Child(ui.Text(label).FontSize(13).Medium().TextColor(t.TextMuted).NoWrap().Shrink(0)).
+			Child(state)
 		if threadID != "" {
 			head = head.Child(a.threadChip(ctx, threadID)).Child(ui.Div().Grow(1))
 		} else {
 			head = head.Child(ui.Text(detail).FontSize(12).TextColor(t.TextSubtle).Truncate().Grow(1).MinWidth(ui.Px(0)))
 		}
-		head = head.Child(state)
 		col := ui.Div().Column().Gap(space1).Child(head)
 		if open.Get() {
 			body := ui.Div().Column().Gap(space2).MarginLeft(space6).Padding(space3).Radius(radiusM).
@@ -1044,11 +1088,11 @@ func (a *App) proposalCard(ctx *ui.Context, d core.ProposalData, steps []*core.I
 				}))
 		}
 		if n := countSteps(steps); n > 0 {
-			label := fmt.Sprintf("%d actions", n)
+			label := fmt.Sprintf("%d steps by Solo", n)
 			if n == 1 {
-				label = "1 action"
+				label = "1 step by Solo"
 			}
-			tip := label + " Solo took on this thread"
+			tip := "What Solo did to check this thread"
 			if a.chatWidth(ctx) < 640 {
 				label = fmt.Sprint(n) // narrow: the count alone, with its tooltip
 			}
@@ -1241,31 +1285,51 @@ func (a *App) questionStrip(ctx *ui.Context) ui.Element {
 		}
 	}
 	col := ui.Div().Column().Gap(space1 + 2)
+	var rest []ask
 	for _, k := range asks {
-		key := k.pq.ToolUseID
-		if key != open {
-			col = col.Child(a.foldedAsk(ctx, k.th, k.pq).Key("ask-" + key))
-			continue
+		if key := k.pq.ToolUseID; key == open {
+			col = col.Child(ui.Div().Key("ask-" + key).
+				Child(a.askForm(ctx, k.th.ID, key, k.pq.Questions, k.th.Title+" asks")))
+		} else {
+			rest = append(rest, k)
 		}
-		col = col.Child(ui.Div().Key("ask-" + key).
-			Child(a.askForm(ctx, k.th.ID, key, k.pq.Questions, k.th.Title+" asks")))
+	}
+	switch {
+	case len(rest) == 1:
+		col = col.Child(a.foldedAsk(ctx, rest[0].th, rest[0].pq, "").Key("ask-" + rest[0].pq.ToolUseID))
+	case len(rest) > 1:
+		// The others wait in one line: how many, and the next one, which a click opens.
+		label := fmt.Sprintf("%d questions waiting", len(rest))
+		if open != "" {
+			label = fmt.Sprintf("%d more questions", len(rest))
+		}
+		col = col.Child(a.foldedAsk(ctx, rest[0].th, rest[0].pq, label).Key("asks"))
 	}
 	_, h := ctx.WindowSize()
 	return col.MaxHeight(ui.Px(max(h*0.5, 200))).ScrollY()
 }
 
-// foldedAsk is a pinned question folded to one line.
-func (a *App) foldedAsk(ctx *ui.Context, th core.ThreadView, pq core.PendingQuestion) *ui.DivElement {
+// foldedAsk is a pinned question folded to one line. With a lead ("3 questions waiting") it stands for
+// several, and shows the lead before the next question.
+func (a *App) foldedAsk(ctx *ui.Context, th core.ThreadView, pq core.PendingQuestion, lead string) *ui.DivElement {
 	t := ctx.Theme()
 	q := ""
 	if len(pq.Questions) > 0 {
 		q = pq.Questions[0].Question
 	}
 	key := pq.ToolUseID
+	label := "Show the question from " + th.Title
+	if lead != "" {
+		label = lead + ". Show the next, from " + th.Title
+	}
+	qText := ui.Text(q).FontSize(13).Medium().Truncate().Grow(1).MinWidth(ui.Px(0))
+	if lead != "" {
+		qText = ui.Text(q).FontSize(13).TextColor(t.TextMuted).Truncate().Grow(1).MinWidth(ui.Px(0))
+	}
 	return ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space3).Height(ui.Px(38)).Radius(radiusL).
-		Background(t.Surface).Border(1, t.Warning.Alpha(0.4)).Cursor(ui.CursorPointer).
-		Hover(ui.Style{BorderColor: t.Warning.Alpha(0.7)}).
-		Role(access.RoleButton).Label("Show the question from " + th.Title).TabIndex(0).
+		Background(t.Surface).Border(1, t.BorderStrong).Cursor(ui.CursorPointer).
+		Hover(ui.Style{BorderColor: t.Warning.Alpha(0.6)}).
+		Role(access.RoleButton).Label(label).TabIndex(0).
 		OnClick(func() {
 			next := map[string]bool{}
 			for k, v := range a.foldedAsks.Peek() {
@@ -1278,7 +1342,8 @@ func (a *App) foldedAsk(ctx *ui.Context, th core.ThreadView, pq core.PendingQues
 		}).
 		Tooltip(q + "\n" + repoLabel(th) + " · " + th.Title).
 		Child(ui.Icon(icons.MessageCircleQuestionMark).Size(15).Color(t.Warning)).
-		Child(ui.Text(q).FontSize(13).Medium().Truncate().Grow(1).MinWidth(ui.Px(0))).
+		Child(ui.If(lead != "", ui.Text(lead).FontSize(13).Semibold().NoWrap().Shrink(0))).
+		Child(qText).
 		Child(ui.If(a.chatWidth(ctx) >= 640, // narrow, the tooltip and a click name the thread
 			ui.Text(repoLabel(th)+" · "+th.Title).FontSize(12).TextColor(t.TextSubtle).NoWrap().Shrink(1).MaxWidth(ui.Px(220)).MinWidth(ui.Px(60)).Truncate())).
 		Child(ui.Text("Answer").FontSize(12).Medium().TextColor(t.TextMuted).NoWrap()).
@@ -1394,7 +1459,7 @@ func (a *App) composer(ctx *ui.Context, v core.ThreadView, key, placeholder stri
 		round := ui.Style{Radius: 999}
 		var sendBtn *ui.ButtonElement
 		switch {
-		case v.InTurn && empty:
+		case v.InTurn && empty && !v.PendingAsk:
 			id := v.ID
 			sendBtn = ui.IconButton(icons.Square).Small().Style(round).Secondary().Label("Stop").
 				Tooltip("Stop the current turn").

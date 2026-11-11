@@ -29,7 +29,7 @@ var railGroups = []struct {
 	{"No changes", []string{statusNoChanges}},
 	{"Merged", []string{core.StatusMerged}},
 	{"Stopped", []string{core.StatusInterrupted}},
-	// Last, and pinned to the bottom of the rail: work in progress needs nothing from the user.
+	// Last, one line each: work in progress needs nothing from the user.
 	{"Working", []string{core.StatusRunning, core.StatusStarting, core.StatusQueued}},
 }
 
@@ -90,23 +90,10 @@ func (a *App) rail(ctx *ui.Context) ui.Element {
 		ctx.After(time.Second, func() { tick.Update(func(n int) int { return n + 1 }) })
 	}
 
-	need := 0
-	for _, th := range open {
-		if needsUser(th) {
-			need++
-		}
-	}
 	head := ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space4).Height(ui.Px(44)).Shrink(0).
 		Child(ui.Text("Threads").FontSize(14).Semibold().NoWrap()).
 		Child(ui.Div().Column().Justify(ui.Center).Shrink(1).MinWidth(ui.Px(0)).Child(a.repoMenu(ctx))).
 		Child(ui.Div().Grow(1))
-	if need > 0 {
-		label := fmt.Sprintf("%d need you", need)
-		if need == 1 {
-			label = "1 needs you"
-		}
-		head = head.Child(ui.Text(label).FontSize(12).Medium().TextColor(t.Warning).NoWrap())
-	}
 
 	list := ui.Div().Column().Gap(space1).PaddingX(space2).PaddingBottom(space3)
 	if len(open) == 0 {
@@ -287,14 +274,18 @@ func (a *App) rowEnd(ctx *ui.Context, th core.ThreadView, when string, c ui.Colo
 // activity.
 func (a *App) rowDetail(ctx *ui.Context, repo, line string, c ui.Color) ui.Element {
 	t := ctx.Theme()
-	l := ui.Div().Row().Align(ui.Center).Gap(6).PaddingLeft(space5 + 2).MinWidth(ui.Px(0))
+	l := ui.Div().Row().Align(ui.Start).Gap(6).PaddingLeft(space5 + 2).MinWidth(ui.Px(0))
 	if a.repoFilter() == "" {
 		l = l.Child(ui.Text(repo).FontSize(12).TextColor(t.TextSubtle).NoWrap())
 		if line != "" {
 			l = l.Child(ui.Text("·").FontSize(12).TextColor(t.TextSubtle))
 		}
 	}
-	return l.Child(ui.Text(line).FontSize(12).TextColor(c).Truncate().Grow(1).MinWidth(ui.Px(0)))
+	text := ui.Text(line).FontSize(12).TextColor(c).Grow(1).MinWidth(ui.Px(0))
+	if strings.HasPrefix(line, "Asks: ") {
+		return l.Child(text.MaxLines(2)) // the question is what the user needs to see
+	}
+	return l.Child(text.Truncate())
 }
 
 func branchLabel(th core.ThreadView) string {

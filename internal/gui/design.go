@@ -59,7 +59,7 @@ var darkPalette = palette{
 	dark:       true,
 	background: "#0e0e10", panel: "#08080a", surface: "#19191d", surfaceHover: "#202025", surfaceActive: "#2a2a30",
 	border: "#222227", borderStrong: "#313137",
-	text: "#f2f2f4", textMuted: "#a9a9b3", textSubtle: "#75757f",
+	text: "#f2f2f4", textMuted: "#acacb6", textSubtle: "#85858f",
 	accent: "#ececf0", accentHover: "#ffffff", accentActive: "#d0d0d6", accentText: "#0e0e10", link: "#ff94aa",
 	brand:   "#ff5a80",
 	success: "#3ecf8e", warning: "#f5b544", danger: "#e03e3e", info: "#7aa7ff",
@@ -69,10 +69,10 @@ var darkPalette = palette{
 var lightPalette = palette{
 	background: "#ffffff", panel: "#f5f5f6", surface: "#ffffff", surfaceHover: "#f6f6f8", surfaceActive: "#ececef",
 	border: "#e8e8ec", borderStrong: "#d8d8de",
-	text: "#0c0c0e", textMuted: "#5d5d66", textSubtle: "#9a9aa3",
+	text: "#0c0c0e", textMuted: "#55555e", textSubtle: "#777781",
 	accent: "#18181b", accentHover: "#2c2c31", accentActive: "#3f3f46", accentText: "#ffffff", link: "#bb1a43",
 	brand:   "#d6214f",
-	success: "#15803d", warning: "#b45309", danger: "#b91c1c", info: "#2459c7",
+	success: "#15803d", warning: "#a94e07", danger: "#b91c1c", info: "#2459c7",
 	scrollbar: "#d0d0d6", scrim: "#0c0c0e59",
 }
 
