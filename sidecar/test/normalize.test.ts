@@ -142,3 +142,34 @@ function assistant(text: string): SDKMessage {
     session_id: "s",
   } as SDKMessage;
 }
+
+// A recorded orchestrator turn (claude 2.1.321, opus, summarized thinking), content replaced with
+// synthetic text: a Read call, then a thought, then the reply. As Claude sends it, the thought's summary
+// arrives in one burst just before the finished thinking block. The app's core replays the events this
+// produces (orchestrator-thinking.events.jsonl, in internal/core's tests), so the two must stay in step.
+describe("recorded orchestrator turn with thinking", () => {
+  const events = run(fixture("orchestrator-thinking.jsonl"));
+
+  test("matches the events the core replays", () => {
+    const want = readFileSync(join(import.meta.dir, "fixtures", "orchestrator-thinking.events.jsonl"), "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((l) => {
+        const { sessionId: _, ...e } = JSON.parse(l);
+        return e;
+      });
+    expect(JSON.parse(JSON.stringify(events))).toEqual(want);
+  });
+
+  test("streams the thought's text before its finished block", () => {
+    const deltas = events.filter((e) => e.kind === "thinking_delta") as Extract<AgentEventBody, { kind: "thinking_delta" }>[];
+    const done = events.find((e) => e.kind === "assistant" && e.blocks.some((b) => b.type === "thinking")) as Extract<
+      AgentEventBody,
+      { kind: "assistant" }
+    >;
+    expect(deltas.length).toBeGreaterThan(1);
+    expect(deltas.map((d) => d.text).join("")).toBe((done.blocks[0] as { text: string }).text);
+    expect(new Set(deltas.map((d) => d.messageId))).toEqual(new Set([done.messageId]));
+    expect(events.indexOf(deltas[deltas.length - 1])).toBeLessThan(events.indexOf(done));
+  });
+});

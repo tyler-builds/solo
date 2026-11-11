@@ -37,6 +37,7 @@ func (c *Core) onEvent(e agent.Event) {
 	case agent.EventTurnStart:
 		if !t.inTurn { // after a steer the turn carries on, and keeps its start
 			t.turnStart = now()
+			t.thought = ""
 		}
 		t.inTurn = true
 		t.retry = ""
@@ -65,6 +66,9 @@ func (c *Core) onEvent(e agent.Event) {
 			t.live = append(t.live, k)
 		}
 		b.Text += e.Text
+		if b.Thinking {
+			t.thought = b.Text
+		}
 		t.retry = ""
 		streamChanged = true
 
@@ -81,6 +85,7 @@ func (c *Core) onEvent(e agent.Event) {
 			case "thinking":
 				if b.Text != "" {
 					c.addItemLocked(t, ItemThinking, "", TextData{Text: b.Text})
+					t.thought = b.Text
 				}
 			case "tool_use":
 				itemID := c.addItemLocked(t, ItemTool, b.ID, ToolData{ID: b.ID, Name: b.Name, Input: b.Input})
@@ -195,6 +200,7 @@ func (c *Core) onEvent(e agent.Event) {
 		}
 		t.step = nil
 		t.retry = ""
+		t.thought = ""
 		t.live, t.liveTxt = nil, nil
 		// Tool calls the turn never answered (an interrupt) are done, without a result.
 		for _, itemID := range t.tools {

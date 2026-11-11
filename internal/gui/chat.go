@@ -407,24 +407,28 @@ func visible(it *core.Item) bool {
 	return true
 }
 
+// workingLabel is what Solo's in-chat working line says: an API retry, the tool call in progress, or a
+// line of what Solo last thought this turn, in place of the thoughts themselves.
+func (a *App) workingLabel(v core.ThreadView) string {
+	switch {
+	case v.Retry != "":
+		return v.Retry
+	case v.Step != nil:
+		return a.stepLabel(*v.Step) + "…"
+	}
+	if s := thoughtExcerpt(v.Thought); s != "" {
+		return s
+	}
+	return "Thinking…"
+}
+
 func (a *App) rowView(ctx *ui.Context, v core.ThreadView, r row) ui.Element {
 	t := ctx.Theme()
 	switch {
 	case r.busy:
-		label := "Thinking…"
-		if v.Retry != "" {
-			label = v.Retry
-		} else if v.Step != nil {
-			label = a.stepLabel(*v.Step) + "…"
-		} else if n := len(v.Live); n > 0 && v.Live[n-1].Thinking {
-			// A line of what Solo is thinking, in place of the thoughts themselves.
-			if s := thoughtExcerpt(v.Live[n-1].Text); s != "" {
-				label = s
-			}
-		}
 		return lineRow().Align(ui.Center).Gap(space2).MinWidth(ui.Px(0)).
 			Child(ui.ProgressRing().Size(ui.RingSmall).Label("Working")).
-			Child(caption(ctx, label).Truncate().Grow(1).MinWidth(ui.Px(0)))
+			Child(caption(ctx, a.workingLabel(v)).Truncate().Grow(1).MinWidth(ui.Px(0)))
 	case r.live != nil:
 		if r.live.Thinking {
 			return thinkingView(ctx, r.live.Text, true)

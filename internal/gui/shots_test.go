@@ -92,12 +92,12 @@ func TestShots(t *testing.T) {
 			a.items = map[string]*ui.Signal[[]core.Item]{}
 		}},
 		{"thinking", func(a *App, f *fakeBackend) {
-			// Solo mid-thought: its working line shows the newest paragraph's first line.
+			// Solo mid-turn: its working line shows the first line of its newest thought's last paragraph.
 			for i := range f.threads {
 				if th := &f.threads[i]; th.ID == core.OrchestratorID {
 					th.Status, th.InTurn = core.StatusRunning, true
-					th.Live = []core.LiveBlock{{Thinking: true, Text: "The user wants the forms thread merged.\n\n" +
-						"**Checking the merge state** of the forms thread before I land it, since its checks were still pending an hour ago and the base may have moved.\nThen I'll merge."}}
+					th.Thought = "The user wants the forms thread merged.\n\n" +
+						"**Checking the merge state** of the forms thread before I land it, since its checks were still pending an hour ago and the base may have moved.\nThen I'll merge."
 				}
 			}
 			a.threads.Set(f.Threads())

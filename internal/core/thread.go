@@ -53,9 +53,11 @@ type thread struct {
 	// step is the tool call in progress, and turnStart when the current turn began.
 	step      *ToolData
 	turnStart time.Time
-	retry     string // the latest API retry, while it lasts
-	asks      map[string]chan agent.AskResult
-	askQs     map[string][]agent.Question
+	// thought is the running turn's newest thinking, streaming or finished.
+	thought string
+	retry   string // the latest API retry, while it lasts
+	asks    map[string]chan agent.AskResult
+	askQs   map[string][]agent.Question
 	// staleAsks are questions asked before Solo last closed (tool use id → item id): nothing waits on
 	// them any more, so an answer goes to the thread as a message instead.
 	staleAsks map[string]int64
@@ -81,14 +83,18 @@ type liveKey struct {
 // ThreadView is a snapshot of a thread.
 type ThreadView struct {
 	store.Thread
-	InTurn       bool
-	TurnStarted  time.Time // when the running turn began
-	Step         *ToolData // the tool call in progress, if any
-	ActualModel  string
-	Retry        string
-	PendingAsk   bool
+	InTurn      bool
+	TurnStarted time.Time // when the running turn began
+	Step        *ToolData // the tool call in progress, if any
+	// Thought is the running turn's newest thinking, streaming or finished. Claude sends a summary of
+	// its thinking only when that thinking is done, often all at once just before the finished block
+	// replaces the live one, so Live rarely holds any for long; Thought keeps the newest until the next.
+	Thought     string
+	ActualModel string
+	Retry       string
+	PendingAsk  bool
 	// Resolving: the worker is resolving merge conflicts, and its branch merges when it finishes.
-	Resolving bool
+	Resolving    bool
 	Live         []LiveBlock
 	IsWorker     bool
 	HasWorktree  bool
@@ -133,6 +139,7 @@ func (t *thread) view() ThreadView {
 		InTurn:      t.inTurn,
 		TurnStarted: t.turnStart,
 		Step:        t.step,
+		Thought:     t.thought,
 		ActualModel: t.model,
 		Retry:       t.retry,
 		PendingAsk:  len(t.asks)+len(t.staleAsks) > 0,

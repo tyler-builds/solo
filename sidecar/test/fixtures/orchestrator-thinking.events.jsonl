@@ -1,0 +1,57 @@
+{"sessionId":"orch","kind":"init","model":"claude-opus-5-5","cwd":"/work","tools":["Read"],"claudeVersion":"2.1.321","permissionMode":"default","apiKeySource":"none","mcpServers":[]}
+{"sessionId":"orch","kind":"rate_limit","status":"allowed","resetsAt":1794387600,"rateLimitType":"five_hour"}
+{"sessionId":"orch","kind":"turn_start","uuids":["00000000-0000-4000-8000-000000000001"]}
+{"sessionId":"orch","kind":"assistant","messageId":"msg_synthetic02","blocks":[{"type":"tool_use","id":"toolu_synthetic03","name":"Read","input":{"file_path":"/work/deploy.yaml"}}],"parentToolUseId":null}
+{"sessionId":"orch","kind":"tool_result","toolUseId":"toolu_synthetic03","isError":false,"text":"1\tname: sample\n2\tretries: 3\n3\ttimeout: 30s\n","parentToolUseId":null}
+{"sessionId":"orch","kind":"thinking_delta","messageId":"msg_synthetic04","index":0,"text":"I'm ch","parentToolUseId":null}
+{"sessionId":"orch","kind":"thinking_delta","messageId":"msg_synthetic04","index":0,"text":"ecking ","parentToolUseId":null}
+{"sessionId":"orch","kind":"thinking_delta","messageId":"msg_synthetic04","index":0,"text":"the de","parentToolUseId":null}
+{"sessionId":"orch","kind":"thinking_delta","messageId":"msg_synthetic04","index":0,"text":"ploy s","parentToolUseId":null}
+{"sessionId":"orch","kind":"thinking_delta","messageId":"msg_synthetic04","index":0,"text":"etting","parentToolUseId":null}
+{"sessionId":"orch","kind":"thinking_delta","messageId":"msg_synthetic04","index":0,"text":"s befor","parentToolUseId":null}
+{"sessionId":"orch","kind":"thinking_delta","messageId":"msg_synthetic04","index":0,"text":"e I st","parentToolUseId":null}
+{"sessionId":"orch","kind":"thinking_delta","messageId":"msg_synthetic04","index":0,"text":"art a ","parentToolUseId":null}
+{"sessionId":"orch","kind":"thinking_delta","messageId":"msg_synthetic04","index":0,"text":"thread,","parentToolUseId":null}
+{"sessionId":"orch","kind":"thinking_delta","messageId":"msg_synthetic04","index":0,"text":" since","parentToolUseId":null}
+{"sessionId":"orch","kind":"thinking_delta","messageId":"msg_synthetic04","index":0,"text":" the r","parentToolUseId":null}
+{"sessionId":"orch","kind":"thinking_delta","messageId":"msg_synthetic04","index":0,"text":"etry b","parentToolUseId":null}
+{"sessionId":"orch","kind":"thinking_delta","messageId":"msg_synthetic04","index":0,"text":"lock de","parentToolUseId":null}
+{"sessionId":"orch","kind":"thinking_delta","messageId":"msg_synthetic04","index":0,"text":"cides ","parentToolUseId":null}
+{"sessionId":"orch","kind":"thinking_delta","messageId":"msg_synthetic04","index":0,"text":"how lo","parentToolUseId":null}
+{"sessionId":"orch","kind":"thinking_delta","messageId":"msg_synthetic04","index":0,"text":"ng a fa","parentToolUseId":null}
+{"sessionId":"orch","kind":"thinking_delta","messageId":"msg_synthetic04","index":0,"text":"iling ","parentToolUseId":null}
+{"sessionId":"orch","kind":"thinking_delta","messageId":"msg_synthetic04","index":0,"text":"call t","parentToolUseId":null}
+{"sessionId":"orch","kind":"thinking_delta","messageId":"msg_synthetic04","index":0,"text":"akes t","parentToolUseId":null}
+{"sessionId":"orch","kind":"thinking_delta","messageId":"msg_synthetic04","index":0,"text":"o surfa","parentToolUseId":null}
+{"sessionId":"orch","kind":"thinking_delta","messageId":"msg_synthetic04","index":0,"text":"ce.\n\nT","parentToolUseId":null}
+{"sessionId":"orch","kind":"thinking_delta","messageId":"msg_synthetic04","index":0,"text":"he tim","parentToolUseId":null}
+{"sessionId":"orch","kind":"thinking_delta","messageId":"msg_synthetic04","index":0,"text":"eout in","parentToolUseId":null}
+{"sessionId":"orch","kind":"thinking_delta","messageId":"msg_synthetic04","index":0,"text":" deplo","parentToolUseId":null}
+{"sessionId":"orch","kind":"thinking_delta","messageId":"msg_synthetic04","index":0,"text":"y.yaml","parentToolUseId":null}
+{"sessionId":"orch","kind":"thinking_delta","messageId":"msg_synthetic04","index":0,"text":" is th","parentToolUseId":null}
+{"sessionId":"orch","kind":"thinking_delta","messageId":"msg_synthetic04","index":0,"text":"e likel","parentToolUseId":null}
+{"sessionId":"orch","kind":"thinking_delta","messageId":"msg_synthetic04","index":0,"text":"y caus","parentToolUseId":null}
+{"sessionId":"orch","kind":"thinking_delta","messageId":"msg_synthetic04","index":0,"text":"e, so ","parentToolUseId":null}
+{"sessionId":"orch","kind":"thinking_delta","messageId":"msg_synthetic04","index":0,"text":"I'll sa","parentToolUseId":null}
+{"sessionId":"orch","kind":"thinking_delta","messageId":"msg_synthetic04","index":0,"text":"y that","parentToolUseId":null}
+{"sessionId":"orch","kind":"thinking_delta","messageId":"msg_synthetic04","index":0,"text":" and s","parentToolUseId":null}
+{"sessionId":"orch","kind":"thinking_delta","messageId":"msg_synthetic04","index":0,"text":"uggest","parentToolUseId":null}
+{"sessionId":"orch","kind":"thinking_delta","messageId":"msg_synthetic04","index":0,"text":" loweri","parentToolUseId":null}
+{"sessionId":"orch","kind":"thinking_delta","messageId":"msg_synthetic04","index":0,"text":"ng it.","parentToolUseId":null}
+{"sessionId":"orch","kind":"thinking_delta","messageId":"msg_synthetic04","index":0,"text":"\n\n","parentToolUseId":null}
+{"sessionId":"orch","kind":"assistant","messageId":"msg_synthetic04","blocks":[{"type":"thinking","text":"I'm checking the deploy settings before I start a thread, since the retry block decides how long a failing call takes to surface.\n\nThe timeout in deploy.yaml is the likely cause, so I'll say that and suggest lowering it.\n\n"}],"parentToolUseId":null}
+{"sessionId":"orch","kind":"text_delta","messageId":"msg_synthetic04","index":1,"text":"The likel","parentToolUseId":null}
+{"sessionId":"orch","kind":"text_delta","messageId":"msg_synthetic04","index":1,"text":"y cause i","parentToolUseId":null}
+{"sessionId":"orch","kind":"text_delta","messageId":"msg_synthetic04","index":1,"text":"s `timeout","parentToolUseId":null}
+{"sessionId":"orch","kind":"text_delta","messageId":"msg_synthetic04","index":1,"text":": 30s` in","parentToolUseId":null}
+{"sessionId":"orch","kind":"text_delta","messageId":"msg_synthetic04","index":1,"text":" `deploy.","parentToolUseId":null}
+{"sessionId":"orch","kind":"text_delta","messageId":"msg_synthetic04","index":1,"text":"yaml`: wi","parentToolUseId":null}
+{"sessionId":"orch","kind":"text_delta","messageId":"msg_synthetic04","index":1,"text":"th `retrie","parentToolUseId":null}
+{"sessionId":"orch","kind":"text_delta","messageId":"msg_synthetic04","index":1,"text":"s: 3` a f","parentToolUseId":null}
+{"sessionId":"orch","kind":"text_delta","messageId":"msg_synthetic04","index":1,"text":"ailing ca","parentToolUseId":null}
+{"sessionId":"orch","kind":"text_delta","messageId":"msg_synthetic04","index":1,"text":"ll takes ","parentToolUseId":null}
+{"sessionId":"orch","kind":"text_delta","messageId":"msg_synthetic04","index":1,"text":"about two ","parentToolUseId":null}
+{"sessionId":"orch","kind":"text_delta","messageId":"msg_synthetic04","index":1,"text":"minutes t","parentToolUseId":null}
+{"sessionId":"orch","kind":"text_delta","messageId":"msg_synthetic04","index":1,"text":"o report.","parentToolUseId":null}
+{"sessionId":"orch","kind":"assistant","messageId":"msg_synthetic04","blocks":[{"type":"text","text":"The likely cause is `timeout: 30s` in `deploy.yaml`: with `retries: 3` a failing call takes about two minutes to report."}],"parentToolUseId":null}
+{"sessionId":"orch","kind":"turn_end","uuids":["00000000-0000-4000-8000-000000000001"],"status":"completed","result":"The likely cause is `timeout: 30s` in `deploy.yaml`: with `retries: 3` a failing call takes about two minutes to report.","numTurns":2,"durationMs":6461,"totalCostUsd":0.5920358899999999,"usage":{"inputTokens":4,"outputTokens":332,"cacheReadTokens":6006,"cacheCreationTokens":73007},"contextTokens":73785,"queuedTurns":0}
