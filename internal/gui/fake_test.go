@@ -25,23 +25,24 @@ import (
 
 // fakeBackend serves canned data for screenshots and UI tests.
 type fakeBackend struct {
-	mu       sync.Mutex
-	threads  []core.ThreadView
-	rate     []agent.Event // usage limits, for RateLimits
-	items    map[string][]core.Item
-	pending  map[string][]core.PendingQuestion
-	changes  map[string][]git.FileChange
-	diffs    map[string]string
-	settings core.Settings
-	repos    []string
-	plain    []string
-	inited   []string
-	sent     []string
-	sentImgs [][]string // the images sent with each message in sent
-	merged   []string
-	opened   []string
-	nextID   int64
-	todos    []core.Todo
+	mu          sync.Mutex
+	threads     []core.ThreadView
+	rate        []agent.Event // usage limits, for RateLimits
+	items       map[string][]core.Item
+	pending     map[string][]core.PendingQuestion
+	changes     map[string][]git.FileChange
+	diffs       map[string]string
+	settings    core.Settings
+	repos       []string
+	plain       []string
+	inited      []string
+	sent        []string
+	sentImgs    [][]string // the images sent with each message in sent
+	merged      []string
+	mergedRepos []string // "id repo" for each MergeRepo, repo "" for all
+	opened      []string
+	nextID      int64
+	todos       []core.Todo
 }
 
 func (f *fakeBackend) Threads() []core.ThreadView {
@@ -164,6 +165,9 @@ func (f *fakeBackend) OpenPRFor(ctx context.Context, id, repo string, draft bool
 	return []forge.PR{pr}, err
 }
 func (f *fakeBackend) MergeRepo(ctx context.Context, id, repo string) (string, error) {
+	f.mu.Lock()
+	f.mergedRepos = append(f.mergedRepos, id+" "+repo)
+	f.mu.Unlock()
 	return f.Merge(ctx, id)
 }
 func (f *fakeBackend) OpenPR(_ context.Context, id string, draft bool) (forge.PR, error) {
