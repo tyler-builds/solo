@@ -63,6 +63,7 @@ type App struct {
 	busy        *ui.Signal[map[string]bool] // threads with a landing action under way (merge, open PR)
 	railQuery   *ui.Signal[string]          // the rail's filter
 	imgs        map[string]*ui.ImageSource  // decoded attachments, by path (UI thread only)
+	lists       map[string]*ui.ListHandle   // transcript lists, by scope, so a send can scroll one (UI thread only)
 
 	items map[string]*ui.Signal[[]core.Item] // UI thread only
 

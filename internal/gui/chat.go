@@ -47,7 +47,7 @@ func (a *App) orchestratorView(ctx *ui.Context) ui.Element {
 		Child(ui.Div().Column().Align(ui.Center).PaddingX(space6).PaddingBottom(space4).Shrink(0).
 			Child(ui.Div().Column().Gap(space2).Width(ui.Full).MaxWidth(ui.Px(chatMaxWidth)).
 				Child(a.questionStrip(ctx)).
-				Child(a.composer(ctx, v, "orch-draft", "Message Solo…", func(text string, images []string) error {
+				Child(a.composer(ctx, v, "orch-draft", "orch", "Message Solo…", func(text string, images []string) error {
 					return a.b.SendToOrchestrator(context.Background(), text, images...)
 				})))).
 		Background(t.Background)
@@ -195,9 +195,10 @@ func (a *App) transcript(ctx *ui.Context, v core.ThreadView, items []core.Item, 
 	if v.InTurn && !v.IsWorker && v.Status != core.StatusWaiting && (len(v.Live) == 0 || v.Live[len(v.Live)-1].Thinking) {
 		rows = append(rows, row{key: "busy", busy: true})
 	}
-	h := ui.Local(ctx, scope+"-list", ui.NewListHandle()).Peek()
+	h := a.listHandle(scope)
 	atEnd := ui.Local(ctx, scope+"-at-end", true)
-	// Open on the latest message; after that the list follows new ones while it is at the end.
+	// Open on the latest message; after that the list follows new ones while it is at the end, and
+	// a message the user sends brings it back there (see composer).
 	if started := ui.Local(ctx, scope+"-started", false); !started.Peek() && len(rows) > 0 {
 		started.Set(true)
 		h.ScrollToEnd()
@@ -230,6 +231,19 @@ func (a *App) transcript(ctx *ui.Context, v core.ThreadView, items []core.Item, 
 		Child(ui.Component(func(ctx *ui.Context) ui.Element { return a.offscreenPill(ctx, rows, h, true) })).
 		Child(view).
 		Child(ui.Component(func(ctx *ui.Context) ui.Element { return a.offscreenPill(ctx, rows, h, false) }))
+}
+
+// listHandle is the handle of the transcript list of scope ("orch", or "thread-" and its ID).
+func (a *App) listHandle(scope string) *ui.ListHandle {
+	if a.lists == nil {
+		a.lists = map[string]*ui.ListHandle{}
+	}
+	h := a.lists[scope]
+	if h == nil {
+		h = ui.NewListHandle()
+		a.lists[scope] = h
+	}
+	return h
 }
 
 // toLatestButton floats a round down-arrow button over the foot of a conversation, centred above its
@@ -1431,7 +1445,10 @@ func (a *App) foldedAsk(ctx *ui.Context, th core.ThreadView, pq core.PendingQues
 
 // composer is a message box: Enter sends, Shift+Enter starts a new line. Images come in by pasting,
 // dropping files on it, or the attach button, and show as thumbnails above the text.
-func (a *App) composer(ctx *ui.Context, v core.ThreadView, key, placeholder string, send func(string, []string) error) ui.Element {
+// composer is the box a message is written in. Sending scrolls the transcript of scope to its latest
+// message, even when the user had scrolled up: they are here now, and the list then follows their
+// message and the reply in.
+func (a *App) composer(ctx *ui.Context, v core.ThreadView, key, scope, placeholder string, send func(string, []string) error) ui.Element {
 	return ui.Component(func(ctx *ui.Context) ui.Element {
 		t := ctx.Theme()
 		draft := ui.Local(ctx, key, "")
@@ -1449,6 +1466,7 @@ func (a *App) composer(ctx *ui.Context, v core.ThreadView, key, placeholder stri
 			}
 			draft.Set("")
 			images.Set(nil)
+			a.listHandle(scope).ScrollToEnd()
 			a.run("Sending", func(context.Context) error { return send(text, imgs) })
 		}
 		// attach adds images as they load; refocus puts the caret back in the text, for images that came
