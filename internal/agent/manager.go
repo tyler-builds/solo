@@ -40,6 +40,10 @@ func NewManager(command Command, cb Callbacks, log *slog.Logger) *Manager {
 	return &Manager{command: command, cb: cb, log: log, sessions: map[string]*session{}}
 }
 
+// ErrUnknownSession is returned for a session the manager doesn't know: never opened, or closed. Open
+// it again (with Resume if it has a transcript) to use it.
+var ErrUnknownSession = errors.New("agent: unknown session")
+
 // NewUUID returns a random version 4 UUID.
 func NewUUID() string {
 	var b [16]byte
@@ -169,7 +173,7 @@ func (m *Manager) ensureOpen(ctx context.Context, id string) error {
 	s := m.sessions[id]
 	if s == nil {
 		m.mu.Unlock()
-		return fmt.Errorf("agent: unknown session %s", id)
+		return fmt.Errorf("%w %s", ErrUnknownSession, id)
 	}
 	if s.gen == gen {
 		m.mu.Unlock()

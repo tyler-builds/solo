@@ -231,36 +231,48 @@ func (c *Core) proposalChecksLocked(threadID, event string) (bool, error) {
 // ResetSession starts the thread on a new Claude session the next time it is used. The transcript
 // shown in Solo is kept.
 func (c *Core) ResetSession(ctx context.Context, threadID string) error {
-	return c.resetSession(ctx, threadID, "Started a new conversation with Claude.")
+	return c.resetSession(ctx, threadID, "Started a new conversation with Claude.", false)
 }
 
 // RotateSession moves the thread to a fresh Claude session, as ResetSession does, without a notice: the
-// user sees one conversation throughout.
+// user sees one conversation throughout. It doesn't rotate while a message is on its way to Claude.
 func (c *Core) RotateSession(ctx context.Context, threadID string) error {
-	return c.resetSession(ctx, threadID, "")
+	return c.resetSession(ctx, threadID, "", true)
 }
 
-func (c *Core) resetSession(ctx context.Context, threadID, notice string) error {
+// resetSession closes the thread's session and moves it to a new session ID. It holds the thread's
+// session lock throughout, so a message being sent meanwhile goes wholly to the old session (before)
+// or the new one (after), never opens the old session again after it closed, and never leaves the
+// new one marked open when it isn't.
+func (c *Core) resetSession(ctx context.Context, threadID, notice string, quiet bool) error {
 	c.mu.Lock()
 	t := c.threads[threadID]
+	c.mu.Unlock()
 	if t == nil {
-		c.mu.Unlock()
 		return fmt.Errorf("no thread %s", threadID)
 	}
-	if t.inTurn {
+	t.sess.Lock()
+	defer t.sess.Unlock()
+	c.mu.Lock()
+	// Running outside a turn: a message was just sent, and its turn hasn't started yet.
+	if t.inTurn || (quiet && t.row.Status == StatusRunning) {
 		c.mu.Unlock()
 		return errors.New("wait for the current turn to finish, or interrupt it")
 	}
 	c.mu.Unlock()
-	c.closeSession(ctx, threadID)
+	c.closeSessionHeld(ctx, t)
 	c.mu.Lock()
 	delete(c.bySession, t.row.SessionID)
 	t.row.SessionID = agent.NewUUID()
 	t.row.HasTranscript = false
 	t.row.ContextTokens = 0
 	t.row.CostBase = t.row.CostUSD // the thread's cost runs on across sessions
+	t.opened = false
 	c.bySession[t.row.SessionID] = t
-	ch := c.setStatusLocked(t, StatusIdle, "")
+	var ch Change
+	if t.row.Status != StatusRunning { // running: a message waits to go to the new session
+		ch = c.setStatusLocked(t, StatusIdle, "")
+	}
 	c.mu.Unlock()
 	if notice != "" {
 		c.addNotice(threadID, "info", notice)

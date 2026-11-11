@@ -42,6 +42,16 @@ var (
 // carryKey is where a recap waiting for Solo's next message is kept, so a restart doesn't lose it.
 const carryKey = "orchestrator_carry"
 
+// pendingKey is where thread updates not yet delivered are kept, so a restart doesn't lose them.
+const pendingKey = "orchestrator_pending"
+
+// An update that fails to reach Solo is tried again after RetryDelay, doubling with each failure, up
+// to RetryLimit times; after that it waits for the next update, the end of Solo's turn, or a restart.
+var (
+	RetryDelay = 5 * time.Second
+	RetryLimit = 5
+)
+
 // Orchestrator wires the orchestrator thread into a Core.
 type Orchestrator struct {
 	c       *core.Core
@@ -49,12 +59,15 @@ type Orchestrator struct {
 	workDir string
 
 	mu       sync.Mutex
-	pending  []string // thread updates not yet delivered
+	pending  []string // thread updates not yet delivered (saved)
 	timer    *time.Timer
+	failures int    // deliveries failed in a row
 	paused   bool   // proactive updates are off (SetUpdates)
 	carry    string // a recap for the next message, after NewConversation or a rotation (saved)
 	rotating bool
 	rotateAt int // overrides the size in Settings, for tests; 0 uses Settings
+	// update sends thread updates to Solo (a field so tests can make it fail).
+	update func(ctx context.Context, threadID, hidden, text string) error
 	// recalls counts recall calls in the turn that began at recallTurn (takeRecall).
 	recallTurn time.Time
 	recalls    int
@@ -66,7 +79,7 @@ func New(c *core.Core, dataDir string, log *slog.Logger) (*Orchestrator, error) 
 	if log == nil {
 		log = slog.Default()
 	}
-	o := &Orchestrator{c: c, log: log, workDir: filepath.Join(dataDir, "orchestrator")}
+	o := &Orchestrator{c: c, log: log, workDir: filepath.Join(dataDir, "orchestrator"), update: c.SendSyntheticWithContext}
 	if err := os.MkdirAll(o.workDir, 0o755); err != nil {
 		return nil, err
 	}
@@ -77,7 +90,9 @@ func New(c *core.Core, dataDir string, log *slog.Logger) (*Orchestrator, error) 
 	c.SetToolHandler(o.handleTool)
 	c.SetRecap(o.recap)
 	c.State(carryKey, &o.carry)
+	c.State(pendingKey, &o.pending)
 	c.Subscribe(o.onChange)
+	o.schedule() // updates a restart interrupted
 	return o, nil
 }
 
@@ -126,6 +141,21 @@ func (o *Orchestrator) putCarry(c string) {
 	o.carry = c
 	o.saveCarry(c)
 	o.mu.Unlock()
+}
+
+// queue adds thread updates for Solo, and saves them.
+func (o *Orchestrator) queue(lines ...string) {
+	o.mu.Lock()
+	o.pending = append(o.pending, lines...)
+	o.savePendingLocked()
+	o.mu.Unlock()
+	o.schedule()
+}
+
+func (o *Orchestrator) savePendingLocked() {
+	if err := o.c.SetState(pendingKey, o.pending); err != nil {
+		o.log.Warn("orchestrator: saving thread updates", "err", err)
+	}
 }
 
 func (o *Orchestrator) saveCarry(c string) {
@@ -274,10 +304,7 @@ func (o *Orchestrator) onChange(ch core.Change) {
 				line += " Have the thread fix them with message_thread (it can read the failures with gh pr checks or glab ci view); Solo pushes its new commits to the " + pr.Kind.Noun() + "."
 			}
 		}
-		o.mu.Lock()
-		o.pending = append(o.pending, line)
-		o.mu.Unlock()
-		o.schedule()
+		o.queue(line)
 		return
 	}
 	if ch.PrevStatus == ch.Status {
@@ -311,10 +338,7 @@ func (o *Orchestrator) onChange(ch core.Change) {
 	default:
 		return
 	}
-	o.mu.Lock()
-	o.pending = append(o.pending, line)
-	o.mu.Unlock()
-	o.schedule()
+	o.queue(line)
 }
 
 // schedule delivers pending updates after UpdateDelay, once the orchestrator is between turns.
@@ -336,6 +360,7 @@ func (o *Orchestrator) deliver() {
 		o.mu.Unlock()
 		return
 	}
+	// The saved copy keeps these lines until they are delivered.
 	lines := o.pending
 	o.pending = nil
 	o.mu.Unlock()
@@ -352,15 +377,25 @@ func (o *Orchestrator) deliver() {
 	}
 	text := b.String()
 	carry := o.takeCarry()
-	if err := o.c.SendSyntheticWithContext(context.Background(), core.OrchestratorID, carry, text); err != nil {
+	if err := o.update(context.Background(), core.OrchestratorID, carry, text); err != nil {
 		if carry != "" {
 			o.putCarry(carry)
 		}
 		o.log.Warn("orchestrator: delivering updates", "err", err)
 		o.mu.Lock()
 		o.pending = append(lines, o.pending...)
+		o.savePendingLocked()
+		o.failures++
+		if o.failures <= RetryLimit && o.timer == nil && !o.paused {
+			o.timer = time.AfterFunc(RetryDelay<<(o.failures-1), o.deliver)
+		}
 		o.mu.Unlock()
+		return
 	}
+	o.mu.Lock()
+	o.failures = 0
+	o.savePendingLocked() // what came in meanwhile, if anything
+	o.mu.Unlock()
 }
 
 // recap catches a fresh orchestrator session up: what's open now, from the app's state, and the last
