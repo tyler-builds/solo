@@ -249,6 +249,20 @@ func (m *Manager) Interrupt(ctx context.Context, sessionID string) error {
 	return sc.call(ctx, "session.interrupt", map[string]string{"sessionId": sessionID}, nil)
 }
 
+// StopTask stops one of the session's background tasks. Claude hears that it stopped, but no turn
+// starts for it.
+func (m *Manager) StopTask(ctx context.Context, sessionID, taskID string) error {
+	m.mu.Lock()
+	s := m.sessions[sessionID]
+	open := s != nil && s.gen == m.gen && m.sc != nil
+	sc := m.sc
+	m.mu.Unlock()
+	if !open {
+		return nil
+	}
+	return sc.call(ctx, "session.stopTask", map[string]string{"sessionId": sessionID, "taskId": taskID}, nil)
+}
+
 // SetModel switches the session's model for its next turns.
 func (m *Manager) SetModel(ctx context.Context, sessionID, model string) error {
 	m.mu.Lock()

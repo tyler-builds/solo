@@ -250,7 +250,7 @@ func statusColor(ctx *ui.Context, status string) ui.Color {
 		return ui.Hex(pal(t).info)
 	case statusChecksFailed:
 		return t.Danger
-	case core.StatusRunning, core.StatusStarting:
+	case core.StatusRunning, core.StatusStarting, core.StatusBackground:
 		return workingColor(t)
 	case core.StatusWaiting:
 		return t.Warning
@@ -273,6 +273,8 @@ func statusLabel(v core.ThreadView) string {
 		return "Starting"
 	case core.StatusRunning:
 		return "Working"
+	case core.StatusBackground:
+		return "Waiting on background work"
 	case core.StatusWaiting:
 		return "Needs answer"
 	case core.StatusIdle, core.StatusInterrupted:
@@ -408,6 +410,11 @@ func statusMark(ctx *ui.Context, status string) *ui.DivElement {
 		return box.Child(dot(c, 8).Play("pulse", []ui.Keyframe{
 			{At: 0.5, Motion: ui.Grow(1.35).Opacity(0.45)},
 		}, ui.Animation{Duration: 1200 * time.Millisecond, Repeat: true}))
+	case core.StatusBackground:
+		// Still at work, but waiting rather than busy: an hourglass that breathes slowly.
+		return box.Child(ui.Div().Center().Child(ui.Icon(icons.Hourglass).Size(13).Color(c)).Play("breathe", []ui.Keyframe{
+			{At: 0.5, Motion: ui.Fade().Opacity(0.4)},
+		}, ui.Animation{Duration: 2400 * time.Millisecond, Repeat: true}))
 	case core.StatusIdle, statusNoChanges, statusFinished:
 		return box.Child(ui.Icon(icons.CircleCheck).Size(14).Color(c))
 	case statusInReview:
@@ -439,6 +446,8 @@ func statusMeaning(status string) string {
 		return "Starting: setting up its worktree"
 	case core.StatusRunning:
 		return "Working"
+	case core.StatusBackground:
+		return "Waiting on background work: its turn ended, but a command or subagent it started still runs. It carries on when that finishes."
 	case core.StatusWaiting:
 		return "Needs your answer"
 	case core.StatusIdle:
@@ -480,12 +489,40 @@ func statusIcon(status string) *icons.Icon {
 		return icons.CircleCheck
 	case core.StatusRunning, core.StatusStarting, core.StatusQueued:
 		return icons.CircleDot
+	case core.StatusBackground:
+		return icons.Hourglass
 	case core.StatusMerged:
 		return icons.GitMerge
 	case core.StatusInterrupted:
 		return icons.CircleStop
 	}
 	return icons.Circle
+}
+
+// bgSince is when a thread's oldest background work started; zero without any.
+func bgSince(v core.ThreadView) time.Time {
+	var t time.Time
+	for _, b := range v.Background {
+		if t.IsZero() || (!b.Started.IsZero() && b.Started.Before(t)) {
+			t = b.Started
+		}
+	}
+	return t
+}
+
+// bgLine says what a thread waits on in the background: "Run benchmarks", or "Run benchmarks and 2 more".
+func bgLine(v core.ThreadView) string {
+	if len(v.Background) == 0 {
+		return ""
+	}
+	s := v.Background[0].Description
+	if s == "" {
+		s = "a " + v.Background[0].Kind()
+	}
+	if n := len(v.Background) - 1; n > 0 {
+		s += fmt.Sprintf(" and %d more", n)
+	}
+	return s
 }
 
 // elapsed formats a running duration: "45s", "2m 14s", "1h 05m".

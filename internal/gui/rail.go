@@ -31,7 +31,7 @@ var railGroups = []struct {
 	{"Stopped", []string{core.StatusInterrupted}},
 	// Pinned to the foot of the rail, one line each: work in progress needs nothing from the user, but
 	// stays in sight.
-	{"Working", []string{core.StatusRunning, core.StatusStarting, core.StatusQueued}},
+	{"Working", []string{core.StatusRunning, core.StatusStarting, core.StatusQueued, core.StatusBackground}},
 }
 
 func emptyRailText(query string) string {
@@ -82,7 +82,7 @@ func (a *App) rail(ctx *ui.Context) ui.Element {
 			continue
 		}
 		open = append(open, th)
-		running = running || th.InTurn
+		running = running || th.InTurn || len(th.Background) > 0
 	}
 	// Elapsed times tick while anything works.
 	if running {
@@ -214,10 +214,7 @@ func groupHeader(ctx *ui.Context, title string, n int, status string) ui.Element
 func (a *App) threadRow(ctx *ui.Context, th core.ThreadView) ui.Element {
 	t := ctx.Theme()
 	selected := a.openID.Get() == th.ID
-	when, whenColor := shortAgo(th.UpdatedAt), t.TextSubtle
-	if th.InTurn && !th.TurnStarted.IsZero() {
-		when, whenColor = elapsed(th.TurnStarted), t.TextMuted
-	}
+	when, whenColor := rowTime(ctx, th)
 	// The mark and the group carry the state; the line stays neutral.
 	line, lineColor := a.activityLine(th), t.TextMuted
 	repo := repoLabel(th)
@@ -247,10 +244,7 @@ func (a *App) threadRow(ctx *ui.Context, th core.ThreadView) ui.Element {
 // progress needs nothing from the user, so it takes little room.
 func (a *App) workingRow(ctx *ui.Context, th core.ThreadView) ui.Element {
 	t := ctx.Theme()
-	when, whenColor := shortAgo(th.UpdatedAt), t.TextSubtle
-	if th.InTurn && !th.TurnStarted.IsZero() {
-		when, whenColor = elapsed(th.TurnStarted), t.TextMuted
-	}
+	when, whenColor := rowTime(ctx, th)
 	row := ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space2 + 2).Height(ui.Px(28)).Radius(radiusM).
 		Cursor(ui.CursorPointer).Hover(ui.Style{Background: t.SurfaceHover}).
 		Role(access.RoleButton).Label(th.Title).TabIndex(0).Key("card-" + th.ID).
@@ -273,6 +267,19 @@ func (a *App) workingRow(ctx *ui.Context, th core.ThreadView) ui.Element {
 		row = row.Background(t.SurfaceActive)
 	}
 	return row
+}
+
+// rowTime is a rail row's time: how long its turn has run, how long its background work has run while
+// it waits on it, or else how long ago it changed.
+func rowTime(ctx *ui.Context, th core.ThreadView) (string, ui.Color) {
+	t := ctx.Theme()
+	switch {
+	case th.InTurn && !th.TurnStarted.IsZero():
+		return elapsed(th.TurnStarted), t.TextMuted
+	case th.Status == core.StatusBackground && !bgSince(th).IsZero():
+		return elapsed(bgSince(th)), t.TextMuted
+	}
+	return shortAgo(th.UpdatedAt), t.TextSubtle
 }
 
 // rowEnd is the end of a rail row's first line: its time, or a Done button for a thread with nothing
@@ -350,6 +357,11 @@ func (a *App) activityLine(th core.ThreadView) string {
 			}
 		}
 		return "Thinking"
+	case core.StatusBackground:
+		if len(th.Background) == 0 {
+			return "Reading its background work's results"
+		}
+		return "Waiting on " + bgLine(th)
 	case core.StatusInterrupted:
 		return "Stopped"
 	case core.StatusMerged:

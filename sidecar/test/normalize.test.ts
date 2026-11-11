@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { SDKMessage, SDKResultMessage } from "@anthropic-ai/claude-agent-sdk";
-import { Normalizer, rateLimitWindows, turnStatus } from "../src/normalize";
+import { backgroundTasks, Normalizer, rateLimitWindows, turnStatus } from "../src/normalize";
 import type { AgentEventBody } from "../src/protocol";
 
 // A recorded worker session (claude 2.1.x, haiku): a plain turn, an interrupted turn, a turn killed by
@@ -217,5 +217,54 @@ describe("rate_limit_event", () => {
     expect(rateLimitWindows({ unifiedWindows: { seven_day: { utilization: 0.1 } } })).toEqual({
       windows: [{ rateLimitType: "seven_day", utilization: 0.1 }],
     });
+  });
+});
+
+// Recorded with claude 2.1.321 (haiku): a Bash command run with run_in_background. In the first, the
+// turn ends while it runs, the command finishes by itself, and Claude starts a turn to read its result.
+// In the second, Claude stops it (TaskStop) in a later turn, so no turn follows.
+describe("recorded background work", () => {
+  const backgrounds = (events: AgentEventBody[]) =>
+    events.flatMap((e) => (e.kind === "background" ? [e.tasks.map((t) => t.description)] : []));
+
+  test("a command that finishes wakes Claude for another turn", () => {
+    const events = run(fixture("background-complete.jsonl"));
+    expect(backgrounds(events)).toEqual([["Sleep then echo"], []]);
+    const seq = kinds(events).filter((k) => ["turn_start", "turn_end", "background", "task"].includes(k));
+    // started → turn ends while it runs → it ends → the list empties → Claude's own turn reads it.
+    expect(seq).toEqual(["turn_start", "background", "task", "turn_end", "task", "task", "background", "turn_start", "turn_end"]);
+    const started = events.find((e) => e.kind === "task" && e.phase === "started");
+    expect(started).toMatchObject({ taskType: "local_bash", background: true, description: "Sleep then echo" });
+    const ended = events.find((e) => e.kind === "task" && e.phase === "ended");
+    expect(ended).toMatchObject({ status: "completed" });
+    const wake = events.filter((e) => e.kind === "turn_start")[1];
+    expect(wake).toMatchObject({ uuids: [] });
+  });
+
+  test("a command Claude stops ends inside its turn, with status stopped", () => {
+    const events = run(fixture("background-kill.jsonl"));
+    expect(backgrounds(events)).toEqual([["Long sleep"], []]);
+    const ends = events.flatMap((e, i) => (e.kind === "turn_end" ? [i] : []));
+    const emptied = events.findIndex((e) => e.kind === "background" && e.tasks.length === 0);
+    expect(ends.length).toBe(2);
+    expect(emptied).toBeGreaterThan(ends[0]);
+    expect(emptied).toBeLessThan(ends[1]);
+    expect(events.find((e) => e.kind === "task" && e.phase === "ended")).toMatchObject({ status: "stopped" });
+  });
+
+  test("backgroundTasks leaves out housekeeping and malformed entries", () => {
+    expect(
+      backgroundTasks([
+        { task_id: "b1", task_type: "local_bash", description: "Run tests" },
+        { task_id: "w1", task_type: "monitor", description: "watch", ambient: true },
+        { task_id: "a1", task_type: "local_agent", description: "Review", parent_task_id: "a0" },
+        { description: "no id" },
+        null,
+      ]),
+    ).toEqual([
+      { taskId: "b1", taskType: "local_bash", description: "Run tests" },
+      { taskId: "a1", taskType: "local_agent", description: "Review", parentTaskId: "a0" },
+    ]);
+    expect(backgroundTasks(undefined)).toEqual([]);
   });
 });

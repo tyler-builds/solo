@@ -96,7 +96,7 @@ func (a *App) todoRow(ctx *ui.Context, td core.Todo) ui.Element {
 			Tooltip(title).
 			OnClick(func() { a.openThread(id, "conversation") })
 		// A thread at work shows no mark here: its pulse would keep the list moving. The rail shows it.
-		if s := shownStatus(*th); s != core.StatusRunning && s != core.StatusStarting {
+		if s := shownStatus(*th); s != core.StatusRunning && s != core.StatusStarting && s != core.StatusBackground {
 			row = row.Child(ui.Div().Height(ui.Px(20)).Row().Align(ui.Center).Child(statusMark(ctx, s)))
 		}
 	}

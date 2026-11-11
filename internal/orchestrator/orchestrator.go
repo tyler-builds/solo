@@ -289,6 +289,10 @@ func (o *Orchestrator) onChange(ch core.Change) {
 		if v.Resolving {
 			line = fmt.Sprintf("%s resolved the conflicts its merge had; Solo is merging it now, so don't propose it again.", label(v))
 		}
+	case core.StatusBackground:
+		line = fmt.Sprintf("%s ended its turn but isn't finished: it waits on work it runs in the background (%s), "+
+			"and carries on by itself when that ends. Don't review it or propose landing yet; you hear when its next turn finishes. "+
+			"Summary so far: %s", label(v), core.DescribeBackground(v.Background), clip(oneLine(v.Summary), 400))
 	case core.StatusFailed:
 		line = fmt.Sprintf("%s failed: %s", label(v), clip(oneLine(v.Error), 400))
 	case core.StatusWaiting:

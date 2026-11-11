@@ -20,6 +20,10 @@
 //	crash                      starts a turn and exits the process
 //	fail                       ends the turn with status "failed"
 //	lose                       fails as Claude does when a resumed conversation is missing
+//	bg <ms> <description...>   starts a background command and completes; after ms the command
+//	                           finishes and, as Claude does, a turn of its own ("wake") reads it.
+//	                           session.stopTask stops it first, with no turn after.
+//	kill                       stops every background command inside the turn, as Claude's TaskStop
 //	anything else              completes with result "echo: <text> resume=<bool>"
 //
 // It does not import package agent, so agent's own tests can use it.
@@ -31,6 +35,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -65,6 +70,47 @@ type fakeSession struct {
 	interrupt chan struct{}
 	// steer reaches a "slow" turn waiting on it (unbuffered: a steer with no such turn is a plain send).
 	steer chan steerMsg
+
+	bgMu   sync.Mutex
+	bg     []*fakeTask // running background commands, oldest first
+	closed bool
+}
+
+type fakeTask struct {
+	id, desc string
+	stop     chan struct{}
+}
+
+// startBg adds a background command; tasks lists those still running, as a background event does.
+func (s *fakeSession) startBg(id, desc string) *fakeTask {
+	s.bgMu.Lock()
+	defer s.bgMu.Unlock()
+	t := &fakeTask{id: id, desc: desc, stop: make(chan struct{})}
+	s.bg = append(s.bg, t)
+	return t
+}
+
+// endBg removes a background command, and reports whether it was still running and the session open.
+func (s *fakeSession) endBg(id string) bool {
+	s.bgMu.Lock()
+	defer s.bgMu.Unlock()
+	for i, t := range s.bg {
+		if t.id == id {
+			s.bg = append(s.bg[:i], s.bg[i+1:]...)
+			return !s.closed
+		}
+	}
+	return false
+}
+
+func (s *fakeSession) tasks() []any {
+	s.bgMu.Lock()
+	defer s.bgMu.Unlock()
+	out := []any{}
+	for _, t := range s.bg {
+		out = append(out, map[string]any{"taskId": t.id, "taskType": "local_bash", "description": t.desc})
+	}
+	return out
 }
 
 type steerMsg struct{ uuid, text string }
@@ -187,7 +233,36 @@ func run() {
 				}
 			}
 			reply(map[string]any{"stillQueued": []string{}})
+		case "session.stopTask":
+			var q struct {
+				TaskID string `json:"taskId"`
+			}
+			json.Unmarshal(m.Params, &q)
+			mu.Lock()
+			s := sessions[p.SessionID]
+			mu.Unlock()
+			if s != nil {
+				s.bgMu.Lock()
+				for _, t := range s.bg {
+					if t.id == q.TaskID {
+						select {
+						case <-t.stop:
+						default:
+							close(t.stop)
+						}
+					}
+				}
+				s.bgMu.Unlock()
+			}
+			reply(struct{}{})
 		case "session.close":
+			mu.Lock()
+			if s := sessions[p.SessionID]; s != nil {
+				s.bgMu.Lock()
+				s.closed = true // its background commands die with it, silently
+				s.bgMu.Unlock()
+			}
+			mu.Unlock()
 			event(p.SessionID, map[string]any{"kind": "exited"})
 			mu.Lock()
 			delete(sessions, p.SessionID)
@@ -225,7 +300,11 @@ func run() {
 
 func turn(s *fakeSession, sid, uuid, text string, event func(string, map[string]any),
 	request func(string, any) (int64, chan json.RawMessage), write func(any)) {
-	event(sid, map[string]any{"kind": "turn_start", "uuids": []string{uuid}})
+	uuids := []string{uuid}
+	if uuid == "" {
+		uuids = []string{} // a turn Claude starts itself
+	}
+	event(sid, map[string]any{"kind": "turn_start", "uuids": uuids})
 	status, result, errText := "completed", "", ""
 	cmd, rest, _ := strings.Cut(text, " ")
 	switch cmd {
@@ -288,6 +367,48 @@ func turn(s *fakeSession, sid, uuid, text string, event func(string, map[string]
 			return
 		case <-time.After(30 * time.Second):
 		}
+	case "bg":
+		msText, desc, _ := strings.Cut(rest, " ")
+		ms, _ := strconv.Atoi(msText)
+		id := fmt.Sprintf("b%d", time.Now().UnixNano())
+		toolID := "toolu_" + id
+		event(sid, map[string]any{"kind": "assistant", "messageId": "m-" + uuid, "blocks": []any{
+			map[string]any{"type": "tool_use", "id": toolID, "name": "Bash",
+				"input": map[string]any{"command": "sleep", "description": desc, "run_in_background": true}},
+		}})
+		t := s.startBg(id, desc)
+		event(sid, map[string]any{"kind": "background", "tasks": s.tasks()})
+		event(sid, map[string]any{"kind": "task", "phase": "started", "taskId": id, "toolUseId": toolID,
+			"taskType": "local_bash", "description": desc, "background": true})
+		event(sid, map[string]any{"kind": "tool_result", "toolUseId": toolID, "text": "Command running in background with ID: " + id})
+		go func() {
+			ended := "completed"
+			select {
+			case <-t.stop:
+				ended = "stopped"
+			case <-time.After(time.Duration(ms) * time.Millisecond):
+			}
+			if !s.endBg(id) {
+				return
+			}
+			event(sid, map[string]any{"kind": "task", "phase": "ended", "taskId": id, "toolUseId": toolID, "status": ended})
+			event(sid, map[string]any{"kind": "background", "tasks": s.tasks()})
+			if ended == "completed" {
+				turn(s, sid, "", "wake "+desc, event, request, write)
+			}
+		}()
+		result = "started " + desc
+	case "kill":
+		s.bgMu.Lock()
+		running := append([]*fakeTask(nil), s.bg...)
+		s.bgMu.Unlock()
+		for _, t := range running {
+			if s.endBg(t.id) {
+				event(sid, map[string]any{"kind": "task", "phase": "ended", "taskId": t.id, "status": "stopped"})
+				event(sid, map[string]any{"kind": "background", "tasks": s.tasks()})
+			}
+		}
+		result = fmt.Sprintf("stopped %d", len(running))
 	case "fail":
 		status, errText = "failed", "scripted failure"
 	case "lose":

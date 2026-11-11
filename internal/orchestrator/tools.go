@@ -440,7 +440,7 @@ func (o *Orchestrator) listThreads(repo string, includeClosed bool) (string, err
 		}
 		n++
 		fmt.Fprintf(&b, "- %s %q in %s: %s", short(t.ID), t.Title, filepath.Base(t.RepoPath), statusText(t))
-		if t.Summary != "" && t.Status == core.StatusIdle {
+		if t.Summary != "" && (t.Status == core.StatusIdle || t.Status == core.StatusBackground) {
 			fmt.Fprintf(&b, " — %s", clip(oneLine(t.Summary), 160))
 		}
 		if t.Error != "" {
@@ -461,6 +461,12 @@ func statusText(t core.ThreadView) string {
 	}
 	if t.Status == core.StatusQueued {
 		s += " (about to start)"
+	}
+	if t.Status == core.StatusBackground {
+		s += " (not finished: its turn ended, but it waits on work it runs in the background, " +
+			core.DescribeBackground(t.Background) + "; it carries on when that ends, so don't propose landing yet)"
+	} else if len(t.Background) > 0 {
+		s += " (also running in the background: " + core.DescribeBackground(t.Background) + ")"
 	}
 	if t.NoChanges {
 		s += " (finished; it changed no files, so there is nothing to merge)"

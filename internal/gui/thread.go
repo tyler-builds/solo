@@ -79,6 +79,60 @@ func (a *App) landControl(ctx *ui.Context, th core.ThreadView) ui.Element {
 	return e
 }
 
+// landAction is what a thread's header and its merge card offer to land it: landControl when it can
+// land, or while it is busy with changes to land (working, or waiting on background work) the
+// disabled button of landBlocked. nil with nothing to land.
+func (a *App) landAction(ctx *ui.Context, th core.ThreadView) ui.Element {
+	if th.Resolving {
+		return a.landControl(ctx, th) // it merges by itself once the conflicts are resolved
+	}
+	busy := core.Active(th.Status) || th.Status == core.StatusQueued
+	if busy && th.IsWorker && !th.InPlace && (th.Changed > 0 || len(openPRs(th)) > 0) {
+		return landBlocked(th)
+	}
+	if !th.CanOpenPR && !th.CanMerge && !th.CanMarkReady && len(openPRs(th)) == 0 {
+		return nil
+	}
+	return a.landControl(ctx, th)
+}
+
+// landBlocked is the landing button of a thread that can't land now, disabled, its tooltip saying why:
+// Open PR, or Merge, as it will be once it can.
+func landBlocked(th core.ThreadView) ui.Element {
+	label, icon := "Merge", icons.GitMerge
+	if th.Forge != forge.None && len(openPRs(th)) == 0 {
+		label, icon = "Open "+th.Forge.Noun(), icons.GitPullRequestArrow
+	}
+	return ui.Button(label).Icon(icon).Secondary().Small().Disabled(true).Tooltip(landBlockedReason(th)).
+		Key("land-blocked-" + th.ID)
+}
+
+// landBlockedReason says why a thread can't land now.
+func landBlockedReason(th core.ThreadView) string {
+	switch {
+	case th.Status == core.StatusBackground:
+		what := "Background work is still running"
+		if l := bgLine(th); l != "" {
+			what += ": " + l
+			if s := bgSince(th); !s.IsZero() {
+				what += " (" + elapsed(s) + ")"
+			}
+		}
+		return what + ". The thread carries on when it finishes; land it after that."
+	case th.Status == core.StatusWaiting:
+		return "The thread is waiting for your answer. Land it once it has finished."
+	case core.Active(th.Status) || th.Status == core.StatusQueued:
+		return "The thread is still working. Land it once it has finished."
+	case th.Status == core.StatusMerged:
+		return "Already merged."
+	case th.NoChanges || th.Changed == 0:
+		return "It changed no files, so there is nothing to land."
+	case th.Changed < 0:
+		return "Counting its changes…"
+	}
+	return "Nothing to land right now."
+}
+
 // landButton is landControl's button, without the busy state.
 func (a *App) landButton(ctx *ui.Context, th core.ThreadView) ui.Element {
 	t := ctx.Theme()
@@ -337,7 +391,7 @@ func (a *App) threadPanel(ctx *ui.Context) ui.Element {
 		added += f.Added
 		removed += f.Removed
 	}
-	if th.InTurn {
+	if th.InTurn || len(th.Background) > 0 {
 		tick := ui.Local(ctx, "tick", 0)
 		tick.Get()
 		ctx.After(time.Second, func() { tick.Update(func(n int) int { return n + 1 }) })
@@ -357,9 +411,9 @@ func (a *App) threadPanel(ctx *ui.Context) ui.Element {
 				OnClick(func() { a.openTerminal(dir) }))
 	}
 	actions = actions.Child(a.prLink(ctx, th))
-	switch {
-	case th.CanOpenPR || th.CanMerge || th.CanMarkReady || len(openPRs(th)) > 0:
-		actions = actions.Child(a.landControl(ctx, th))
+	switch land := a.landAction(ctx, th); {
+	case land != nil:
+		actions = actions.Child(land)
 	case th.CanDone:
 		actions = actions.Child(ui.Button("Done").Icon(icons.Check).Primary().Small().
 			Tooltip("Take it out of your list. Settings › History can restore it.").
@@ -371,7 +425,11 @@ func (a *App) threadPanel(ctx *ui.Context) ui.Element {
 			func() []ui.MenuItem {
 				var items []ui.MenuItem
 				if th.CanInterrupt {
-					items = append(items, ui.MenuItem{Label: "Stop", Icon: icons.Square, OnClick: func() {
+					label := "Stop"
+					if !th.InTurn {
+						label = "Stop background work"
+					}
+					items = append(items, ui.MenuItem{Label: label, Icon: icons.Square, OnClick: func() {
 						a.run("Stopping", func(ctx context.Context) error { return a.b.Interrupt(ctx, id) })
 					}})
 				}
@@ -450,12 +508,32 @@ func (a *App) threadPanel(ctx *ui.Context) ui.Element {
 		Child(ui.Div().Column().Grow(1).MinHeight(ui.Px(0)).Child(content))
 }
 
-// workingLine is pinned above a working thread's composer: how long it has worked, and its step.
+// workingLine is pinned above a working thread's composer: how long it has worked, and its step. A
+// thread waiting on background work says what it waits on, for how long.
 func (a *App) workingLine(ctx *ui.Context, th core.ThreadView) ui.Element {
+	t := ctx.Theme()
+	if !th.InTurn && th.Status == core.StatusBackground {
+		text := "Waiting on background work"
+		if s := bgSince(th); !s.IsZero() {
+			text += " · " + elapsed(s)
+		}
+		what := bgLine(th)
+		if what == "" {
+			what = "Reading the results"
+		}
+		tip := "Its turn ended, but work it started in the background still runs. It carries on when that finishes."
+		for _, b := range th.Background {
+			tip += "\n• " + b.Description + " (" + b.Kind() + ", " + elapsed(b.Started) + ")"
+		}
+		return ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space3).Height(ui.Px(30)).Radius(radiusM).
+			Background(t.Surface).Border(1, t.Border).Tooltip(tip).Key("background-line").
+			Child(statusMark(ctx, core.StatusBackground)).
+			Child(ui.Text(text).FontSize(12).Semibold().TextColor(t.Text).NoWrap()).
+			Child(ui.Text(what).FontSize(12).TextColor(t.TextMuted).Truncate().Grow(1).MinWidth(ui.Px(0)))
+	}
 	if !th.InTurn {
 		return ui.Div()
 	}
-	t := ctx.Theme()
 	if th.Status == core.StatusWaiting {
 		return ui.Div() // its question card asks in the conversation
 	}

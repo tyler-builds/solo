@@ -153,6 +153,13 @@ export type AgentEvent = { sessionId: string; seq: number } & (
       background?: boolean;
       ambient?: boolean;
     }
+  /**
+   * The work the session runs in the background (commands, subagents) after a change: every such task
+   * still running, replacing the previous list. Housekeeping tasks (ambient) are left out. When a task
+   * finishes by itself between turns, Claude starts a turn to read its result; one stopped (stopTask, or
+   * by Claude) does not.
+   */
+  | { kind: "background"; tasks: BackgroundTask[] }
   | { kind: "compact"; trigger: "manual" | "auto"; preTokens: number; postTokens?: number }
   | { kind: "state"; state: "idle" | "running" | "requires_action" }
   | { kind: "api_retry"; attempt: number; maxRetries: number; delayMs: number; error: string }
@@ -189,6 +196,16 @@ export type AgentEvent = { sessionId: string; seq: number } & (
   /** The session's claude process is gone. A later send reopens it with resume. */
   | { kind: "exited"; error?: string }
 );
+
+/** A task running in the background, from background_tasks_changed. */
+export interface BackgroundTask {
+  taskId: string;
+  /** local_bash, local_agent, … */
+  taskType: string;
+  description: string;
+  /** The subagent task that started it, when not the main agent. */
+  parentTaskId?: string;
+}
 
 /** One subscription rate-limit window, from rate_limit_info.unifiedWindows. */
 export interface RateLimitWindow {

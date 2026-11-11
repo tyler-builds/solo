@@ -140,6 +140,7 @@ const (
 	EventAssistant     = "assistant"
 	EventToolResult    = "tool_result"
 	EventTask          = "task"
+	EventBackground    = "background"
 	EventCompact       = "compact"
 	EventState         = "state"
 	EventAPIRetry      = "api_retry"
@@ -212,6 +213,9 @@ type Event struct {
 	Background   bool   `json:"background,omitempty"`
 	Ambient      bool   `json:"ambient,omitempty"`
 
+	// background: every task still running in the background, replacing the previous list
+	Tasks []BackgroundTask `json:"tasks,omitempty"`
+
 	// compact
 	Trigger    string `json:"trigger,omitempty"`
 	PreTokens  int    `json:"preTokens,omitempty"`
@@ -250,6 +254,15 @@ type Event struct {
 
 	// notice
 	Level string `json:"level,omitempty"`
+}
+
+// BackgroundTask is work a session runs in the background (a command, a subagent), from a background
+// event.
+type BackgroundTask struct {
+	TaskID       string `json:"taskId"`
+	TaskType     string `json:"taskType"` // local_bash, local_agent, …
+	Description  string `json:"description"`
+	ParentTaskID string `json:"parentTaskId,omitempty"`
 }
 
 // RateLimitWindow is one subscription rate-limit window of a rate_limit event (five_hour, seven_day, …).

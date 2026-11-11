@@ -2,7 +2,7 @@
 // state, so it is tested against recorded and synthetic message streams (normalize.test.ts).
 
 import type { SDKMessage, SDKResultMessage } from "@anthropic-ai/claude-agent-sdk";
-import type { AgentEventBody, Block, RateLimitWindow, TurnStatus, Usage } from "./protocol";
+import type { AgentEventBody, BackgroundTask, Block, RateLimitWindow, TurnStatus, Usage } from "./protocol";
 
 const TOOL_RESULT_LIMIT = 16_000;
 
@@ -182,6 +182,9 @@ export class Normalizer {
           ...opt("description", m.patch?.description),
           ...opt("background", m.patch?.is_backgrounded),
         });
+        return;
+      case "background_tasks_changed":
+        out.push({ kind: "background", tasks: backgroundTasks(m.tasks) });
         return;
       case "task_notification":
         out.push({
@@ -378,4 +381,23 @@ export function rateLimitWindows(info: unknown): { windows?: RateLimitWindow[] }
     });
   }
   return windows.length ? { windows } : {};
+}
+
+/**
+ * The tasks of a background_tasks_changed message that are work in progress: housekeeping (ambient)
+ * tasks such as watchers are left out, as the SDK asks hosts to. Entries that don't parse are skipped.
+ */
+export function backgroundTasks(raw: unknown): BackgroundTask[] {
+  if (!Array.isArray(raw)) return [];
+  const out: BackgroundTask[] = [];
+  for (const t of raw) {
+    if (!t || typeof t !== "object" || typeof t.task_id !== "string" || t.ambient === true) continue;
+    out.push({
+      taskId: t.task_id,
+      taskType: typeof t.task_type === "string" ? t.task_type : "",
+      description: typeof t.description === "string" ? t.description : "",
+      ...(typeof t.parent_task_id === "string" ? { parentTaskId: t.parent_task_id } : {}),
+    });
+  }
+  return out;
 }

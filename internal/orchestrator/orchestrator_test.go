@@ -436,3 +436,34 @@ func TestOrchestratorRunsAnyBash(t *testing.T) {
 		t.Fatalf("tools %q lack Bash", p.Tools)
 	}
 }
+
+// A thread whose turn ends with background work still running is reported as not finished, in its
+// update and in get_thread and list_threads; it is reported finished after the turn that reads the work.
+func TestUpdatesSayBackgroundWorkIsNotFinished(t *testing.T) {
+	c, o := setup(t)
+	call(t, o, "spawn_thread", map[string]any{"repo": "web", "title": "Bench", "prompt": "bg 1500 Run benchmarks"})
+	eventually(t, "waiting on background work", func() bool { return onlyWorker(c).Status == core.StatusBackground })
+	w := onlyWorker(c)
+	if got := call(t, o, "get_thread", map[string]any{"id": w.ID}); !strings.Contains(got, `Status: background (not finished: its turn ended, but it waits on work it runs in the background, command "Run benchmarks", running`) {
+		t.Fatalf("get_thread:\n%s", got)
+	}
+	if got := call(t, o, "list_threads", map[string]any{}); !strings.Contains(got, `"Bench" in web: background (not finished`) {
+		t.Fatalf("list_threads:\n%s", got)
+	}
+	eventually(t, "background update", func() bool {
+		for _, m := range syntheticMessages(c) {
+			if strings.Contains(m, `"Bench" (web) ended its turn but isn't finished: it waits on work it runs in the background (command "Run benchmarks", running`) {
+				return !strings.Contains(m, "finished its turn")
+			}
+		}
+		return false
+	})
+	eventually(t, "finished update", func() bool {
+		for _, m := range syntheticMessages(c) {
+			if strings.Contains(m, `"Bench" (web) finished its turn. Summary: echo: wake Run benchmarks`) {
+				return true
+			}
+		}
+		return false
+	})
+}

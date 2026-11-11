@@ -259,7 +259,8 @@ func New(cfg Config) (*Core, error) {
 		// A thread that was working when the app stopped lost its process. It shows as stopped until
 		// ResumeInterrupted carries it on, and the steps it had running end.
 		switch t.row.Status {
-		case StatusStarting, StatusRunning:
+		case StatusStarting, StatusRunning, StatusBackground:
+			// Work it ran in the background stopped with Claude too: the resume note names it.
 			stopped := c.settleItems(t.row.ID, false)
 			c.resume = append(c.resume, resumeInfo{id: t.row.ID, stopped: stopped})
 			t.row.Status = StatusInterrupted

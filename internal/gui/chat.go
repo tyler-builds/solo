@@ -66,6 +66,9 @@ func (a *App) orchestratorBar(ctx *ui.Context, v core.ThreadView) ui.Element {
 		}
 		state = state.Child(ui.ProgressRing().Size(ui.RingSmall).Label("Working")).
 			Child(ui.Text(label).FontSize(12).TextColor(t.TextMuted).Truncate().MinWidth(ui.Px(0)))
+	} else if len(v.Background) > 0 {
+		state = state.Child(statusMark(ctx, core.StatusBackground)).
+			Child(ui.Text("Waiting on " + bgLine(v)).FontSize(12).TextColor(t.TextMuted).Truncate().MinWidth(ui.Px(0)))
 	}
 	return ui.Div().Row().Align(ui.Center).Gap(space3).PaddingX(space4).Height(ui.Px(52)).Shrink(0).
 		BorderEdges(ui.Edges{Bottom: 1}, t.Border).
@@ -76,28 +79,29 @@ func (a *App) orchestratorBar(ctx *ui.Context, v core.ThreadView) ui.Element {
 		Child(a.threadsSummary(ctx))
 }
 
-// threadsSummary sums up the threads at the right of Solo's bar, in the rail's own groups and
-// counts: how many work, failed and are ready. Each opens the newest thread of its group.
+// threadsSummary sums up the threads at the right of Solo's bar, as the rail groups them: how many
+// work, wait on background work, failed and are ready. Each opens the newest thread of its group.
 func (a *App) threadsSummary(ctx *ui.Context) ui.Element {
 	t := ctx.Theme()
-	type group struct{ title, status, label string }
-	// Questions have their own line above the composer, so they aren't counted again here.
+	type group struct {
+		title, status, label string
+		statuses             []string // the shown statuses it counts
+	}
+	// Questions have their own line above the composer, so they aren't counted again here. Threads
+	// waiting on background work sit in the rail's Working group, but are counted apart: they aren't
+	// busy, and they aren't ready either.
 	groups := []group{
-		{"Working", core.StatusRunning, "working"},
-		{"Failed", core.StatusFailed, "failed"},
-		{"Ready", core.StatusIdle, "ready"},
+		{"Working", core.StatusRunning, "working", []string{core.StatusRunning, core.StatusStarting, core.StatusQueued}},
+		{"Waiting on background work", core.StatusBackground, "in background", []string{core.StatusBackground}},
+		{"Failed", core.StatusFailed, "failed", railStatuses("Failed")},
+		{"Ready", core.StatusIdle, "ready", railStatuses("Ready")},
 	}
 	row := ui.Div().Row().Align(ui.Center).Gap(space1).Shrink(0)
 	for _, g := range groups {
 		var in []core.ThreadView
-		for _, rg := range railGroups {
-			if rg.title != g.title {
-				continue
-			}
-			for _, th := range a.threads.Get() {
-				if inRail(th) && slices.Contains(rg.statuses, shownStatus(th)) {
-					in = append(in, th)
-				}
+		for _, th := range a.threads.Get() {
+			if inRail(th) && slices.Contains(g.statuses, shownStatus(th)) {
+				in = append(in, th)
 			}
 		}
 		if len(in) == 0 {
@@ -116,6 +120,16 @@ func (a *App) threadsSummary(ctx *ui.Context) ui.Element {
 			Child(ui.Text(text).FontSize(12).TextColor(t.TextMuted).NoWrap()))
 	}
 	return row
+}
+
+// railStatuses are the shown statuses of the rail group with the title.
+func railStatuses(title string) []string {
+	for _, g := range railGroups {
+		if g.title == title {
+			return g.statuses
+		}
+	}
+	return nil
 }
 
 func (a *App) welcome(ctx *ui.Context) ui.Element {
@@ -651,6 +665,16 @@ func describeUpdate(t *ui.Theme, u *update, rest string) {
 		if s := strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(rest, "finished its turn."), " Summary:")); s != "" {
 			u.what += " · " + firstSentence(stripMarkdown(s))
 		}
+	case strings.HasPrefix(rest, "ended its turn but isn't finished"):
+		// "… waits on work it runs in the background (command "Run benchmarks", running 4m), …"
+		u.icon, u.color, u.what = icons.Hourglass, t.TextMuted, "waiting on background work"
+		if _, after, ok := strings.Cut(rest, "in the background ("); ok {
+			if what, _, ok := strings.Cut(after, ", running"); ok {
+				if q, err := strconv.Unquote(strings.TrimPrefix(strings.TrimPrefix(strings.TrimPrefix(what, "command "), "subagent "), "task ")); err == nil {
+					u.what += " · " + q
+				}
+			}
+		}
 	case strings.HasPrefix(rest, "resolved the conflicts"):
 		u.icon, u.color, u.what = icons.GitMerge, info, "resolved its merge conflicts"
 	case strings.HasPrefix(rest, "failed:"):
@@ -1105,9 +1129,11 @@ func (a *App) proposalCard(ctx *ui.Context, d core.ProposalData, steps []*core.I
 			}
 			// A narrow chat column keeps Merge and Review changes on the row and moves the rest to "…".
 			narrow := a.chatWidth(ctx) < 640
-			land := a.landControl(ctx, th)
+			// The same control as the thread's header, and when it can't land yet, the same disabled
+			// button saying why.
+			land := a.landAction(ctx, th)
 			if land == nil {
-				land = ui.Button("Merge").Icon(icons.GitMerge).Primary().Small().Disabled(true)
+				land = landBlocked(th)
 			}
 			actions = ui.Div().Row().Align(ui.Center).Gap(space2).
 				Child(land).
