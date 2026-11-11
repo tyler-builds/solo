@@ -39,8 +39,6 @@ var (
 	RotateIdleTokens = 15_000
 )
 
-const rotateNotice = "Solo started a fresh session. Its memory and this conversation carry over."
-
 // carryKey is where a recap waiting for Solo's next message is kept, so a restart doesn't lose it.
 const carryKey = "orchestrator_carry"
 
@@ -156,7 +154,7 @@ func (o *Orchestrator) rotate(ctx context.Context) {
 		return
 	}
 	recap := o.recap(v)
-	if err := o.c.RotateSession(ctx, core.OrchestratorID, rotateNotice); err != nil {
+	if err := o.c.RotateSession(ctx, core.OrchestratorID); err != nil {
 		o.log.Warn("orchestrator: starting a fresh session", "err", err)
 		return
 	}
