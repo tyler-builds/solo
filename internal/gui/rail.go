@@ -275,17 +275,20 @@ func (a *App) rowEnd(ctx *ui.Context, th core.ThreadView, when string, c ui.Colo
 func (a *App) rowDetail(ctx *ui.Context, repo, line string, c ui.Color) ui.Element {
 	t := ctx.Theme()
 	l := ui.Div().Row().Align(ui.Start).Gap(6).PaddingLeft(space5 + 2).MinWidth(ui.Px(0))
+	if strings.HasPrefix(line, "Asks: ") {
+		// The question is what the user needs to see: two lines, wrapping under the title.
+		if a.repoFilter() == "" {
+			line = repo + " · " + line
+		}
+		return l.Child(ui.Text(line).FontSize(12).TextColor(c).MaxLines(2).Grow(1).MinWidth(ui.Px(0)))
+	}
 	if a.repoFilter() == "" {
 		l = l.Child(ui.Text(repo).FontSize(12).TextColor(t.TextSubtle).NoWrap())
 		if line != "" {
 			l = l.Child(ui.Text("·").FontSize(12).TextColor(t.TextSubtle))
 		}
 	}
-	text := ui.Text(line).FontSize(12).TextColor(c).Grow(1).MinWidth(ui.Px(0))
-	if strings.HasPrefix(line, "Asks: ") {
-		return l.Child(text.MaxLines(2)) // the question is what the user needs to see
-	}
-	return l.Child(text.Truncate())
+	return l.Child(ui.Text(line).FontSize(12).TextColor(c).Truncate().Grow(1).MinWidth(ui.Px(0)))
 }
 
 func branchLabel(th core.ThreadView) string {

@@ -67,8 +67,8 @@ var darkPalette = palette{
 }
 
 var lightPalette = palette{
-	background: "#ffffff", panel: "#f5f5f6", surface: "#ffffff", surfaceHover: "#f6f6f8", surfaceActive: "#ececef",
-	border: "#e8e8ec", borderStrong: "#d8d8de",
+	background: "#ffffff", panel: "#efeff2", surface: "#ffffff", surfaceHover: "#f6f6f8", surfaceActive: "#ececef",
+	border: "#e3e3e8", borderStrong: "#d4d4db",
 	text: "#0c0c0e", textMuted: "#55555e", textSubtle: "#777781",
 	accent: "#18181b", accentHover: "#2c2c31", accentActive: "#3f3f46", accentText: "#ffffff", link: "#bb1a43",
 	brand:   "#d6214f",
