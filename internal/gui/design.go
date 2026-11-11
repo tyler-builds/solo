@@ -75,6 +75,10 @@ var lightPalette = palette{
 	scrollbar: "#d0d0d6", scrim: "#0c0c0e59",
 }
 
+// workingColor marks work in progress: a calm blue, so a running thread never reads as an error or
+// as the crimson of the brand and primary actions.
+func workingColor(t *ui.Theme) ui.Color { return ui.Hex(pal(t).info) }
+
 func pal(t *ui.Theme) palette {
 	if t.Dark {
 		return darkPalette
@@ -237,7 +241,7 @@ func statusColor(ctx *ui.Context, status string) ui.Color {
 	case statusChecksFailed:
 		return t.Danger
 	case core.StatusRunning, core.StatusStarting:
-		return ui.Hex(pal(t).brand)
+		return workingColor(t)
 	case core.StatusWaiting:
 		return t.Warning
 	case core.StatusIdle:

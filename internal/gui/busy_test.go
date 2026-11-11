@@ -128,14 +128,6 @@ func busyBackend() *fakeBackend {
 	f.add(o, core.ItemTool, tool("b4", "mcp__solo__spawn_thread", map[string]any{"repo": "docs", "title": "Dark mode for the docs site"}, "Started thread b2b2b2b2"))
 	f.add(o, core.ItemTool, tool("b5", "mcp__solo__spawn_thread", map[string]any{"repo": "infra", "title": "Split the Terraform state by environment"}, "Started thread a4a4a4a4"))
 	f.add(o, core.ItemAssistant, core.TextData{Text: "Started four threads: **webhook signing** and **retries** in `billing` (separate branches, since both touch `send.go`), **dark mode** in `docs`, and the **Terraform split** in `infra`."})
-	upd(`Thread e2e2e2e2 "Tighten the docs Content-Security-Policy" (docs): the user opened PR #40 (https://github.com/acme/docs/pull/40). Auto-merge is on, so it merges once its required checks pass.`,
-		`Thread c5c5c5c5 "Sign outgoing webhooks with HMAC" (billing) finished its turn. Summary: Signs every delivery with an HMAC-SHA256 header; 96 tests pass.`)
-	f.add(o, core.ItemTool, tool("b6", "mcp__solo__get_diff", map[string]any{"id": "c5c5c5c5"}, "diff --git …"))
-	f.add(o, core.ItemProposal, core.ProposalData{ThreadID: webhooks.ID, Title: webhooks.Title,
-		Summary: "Adds an `X-Acme-Signature` header to each delivery and a verification helper in the SDK docs. Checks passed on PR #214."})
-	upd(`Thread e2e2e2e2 "Tighten the docs Content-Security-Policy" (docs): PR #40 merged into main.`,
-		`Thread e3e3e3e3 "Backfill ledger entries for March" (billing) is merged into main.`)
-	f.add(o, core.ItemAssistant, core.TextData{Text: "The CSP change and the March ledger backfill both landed. I ticked **Tighten the docs CSP** off the list."})
 	upd(`Thread c7c7c7c7 "Handle expired magic-link deep links" (mobile): checks failed on PR #57 (https://github.com/acme/mobile/pull/57): ios-build, e2e (android). The user handles failed checks themselves: tell them, and don't ask the thread to fix it.`,
 		`Thread d3d3d3d3 "Add CPU alarms for the job runners" (infra) failed: terraform validate: Reference to undeclared resource aws_sns_topic.oncall.`)
 	f.add(o, core.ItemAssistant, core.TextData{Text: "Two problems:\n\n- **Deep links** (mobile): PR #57 failed `ios-build` and `e2e (android)`. The iOS failure is a signing timeout on the runner, not the code; re-running it is likely enough.\n- **CPU alarms** (infra): `alarms.tf` points at an SNS topic that only exists in the prod state. It needs the topic moved to the shared module first."})
@@ -144,7 +136,15 @@ func busyBackend() *fakeBackend {
 	upd(`Thread b2b2b2b2 "Dark mode for the docs site" (docs) is asking a question (see get_thread).`,
 		`Thread b3b3b3b3 "Retry failed webhook deliveries" (billing) is asking a question (see get_thread).`,
 		`Thread c6c6c6c6 "Load translations lazily" (web): the user opened PR #91 (https://github.com/acme/web/pull/91). Auto-merge is on, so it merges once its required checks pass.`)
-	f.add(o, core.ItemAssistant, core.TextData{Text: "Three threads are waiting on you: the **docs theme default**, the **webhook retry schedule**, and the **upload rate limiter's store**. Their questions are pinned below. Lazy translations has auto-merge on and will land when checks pass."})
+	f.add(o, core.ItemAssistant, core.TextData{Text: "Three threads are waiting on you: the **docs theme default**, the **webhook retry schedule**, and the **upload rate limiter's store**. Their questions are pinned below."})
+	upd(`Thread e2e2e2e2 "Tighten the docs Content-Security-Policy" (docs): the user opened PR #40 (https://github.com/acme/docs/pull/40). Auto-merge is on, so it merges once its required checks pass.`,
+		`Thread c5c5c5c5 "Sign outgoing webhooks with HMAC" (billing) finished its turn. Summary: Signs every delivery with an HMAC-SHA256 header; 96 tests pass.`)
+	f.add(o, core.ItemTool, tool("b6", "mcp__solo__get_diff", map[string]any{"id": "c5c5c5c5"}, "diff --git …"))
+	f.add(o, core.ItemProposal, core.ProposalData{ThreadID: webhooks.ID, Title: webhooks.Title,
+		Summary: "Adds an `X-Acme-Signature` header to each delivery and a verification helper in the SDK docs. Checks passed on PR #214."})
+	upd(`Thread e2e2e2e2 "Tighten the docs Content-Security-Policy" (docs): PR #40 merged into main.`,
+		`Thread e3e3e3e3 "Backfill ledger entries for March" (billing) is merged into main.`)
+	f.add(o, core.ItemAssistant, core.TextData{Text: "The CSP change and the March ledger backfill both landed. I ticked **Tighten the docs CSP** off the list."})
 	// The rate limiter's own conversation, up to its open question.
 	l := "b7e21a90-limit"
 	f.add(l, core.ItemNotice, core.NoticeData{Level: "info", Text: "Working on branch solo/b7e21a90 from main."})

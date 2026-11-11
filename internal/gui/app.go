@@ -56,6 +56,7 @@ type App struct {
 	orchDraft   *ui.Signal[string] // the message being written to Solo
 	orchFocus   *ui.FocusHandle
 	foldedAsks  *ui.Signal[map[string]bool] // pinned questions the user folded, by tool-use ID
+	askOpen     *ui.Signal[string]          // the pinned question the user last opened, by tool-use ID
 	lightbox    *ui.Signal[string]          // the image shown full size, or ""
 	settingsTab string                      // the tab Settings opens on
 	orchImages  *ui.Signal[[]string]        // images attached to the message being written to Solo
@@ -116,6 +117,7 @@ func New(b Backend) *App {
 		orchDraft:  ui.NewSignal(""),
 		orchFocus:  ui.NewFocusHandle(),
 		foldedAsks: ui.NewSignal(map[string]bool{}),
+		askOpen:    ui.NewSignal(""),
 		lightbox:   ui.NewSignal(""),
 		orchImages: ui.NewSignal([]string(nil)),
 		busy:       ui.NewSignal(map[string]bool{}),

@@ -66,7 +66,7 @@ func (a *App) orchestratorBar(ctx *ui.Context, v core.ThreadView) ui.Element {
 			label = a.stepLabel(*v.Step) + "…"
 		}
 		state = state.Child(ui.ProgressRing().Size(ui.RingSmall).Label("Working")).
-			Child(ui.Text(label).FontSize(12).TextColor(ui.Hex(pal(t).brand)).Truncate().MinWidth(ui.Px(0)))
+			Child(ui.Text(label).FontSize(12).TextColor(t.TextMuted).Truncate().MinWidth(ui.Px(0)))
 	} else {
 		state = state.Child(dot(t.TextSubtle, 6)).Child(caption(ctx, "Idle"))
 	}
@@ -157,11 +157,12 @@ func (a *App) transcript(ctx *ui.Context, v core.ThreadView, items []core.Item, 
 				Child(ui.Div().Column().Width(ui.Full).MaxWidth(ui.Px(chatMaxWidth)).PaddingY(space1 + 2).
 					Child(a.rowView(rctx, v, r)))
 		})
-	}).Bottom().Handle(h).SelectionContainer().Key(scope + "-transcript").Label("Conversation").
+	}).Handle(h).SelectionContainer().Key(scope + "-transcript").Label("Conversation").
 		Style(ui.Style{Grow: 1, Padding: ui.Edges{Top: space4, Bottom: space2}})
 	if scope != "orch" {
-		return list
+		return list // a thread reads from its top, like a document, rather than sinking to the composer
 	}
+	list = list.Bottom()
 	return ui.Div().Column().Grow(1).MinHeight(ui.Px(0)).
 		Child(ui.Component(func(ctx *ui.Context) ui.Element { return a.offscreenPill(ctx, rows, h, true) })).
 		Child(list).
@@ -1053,7 +1054,7 @@ func (a *App) proposalCard(ctx *ui.Context, d core.ProposalData, steps []*core.I
 		card := ui.Div().Column().Gap(space3).Padding(space4).Radius(radiusL).Background(t.Surface).
 			Border(1, brand.Alpha(0.35)).
 			Child(a.cardHeader(ctx, icons.GitMerge, brand, "Merge proposed", d.ThreadID, checksBadge(ctx, th))).
-			Child(ui.Text(d.Summary).FontSize(13).TextColor(t.Text)).
+			Child(a.md(ctx, d.Summary, a.threadBases(d.ThreadID))).
 			Child(actions)
 		if open.Get() {
 			inner := ui.Div().Column().Gap(2).PaddingTop(space2).BorderEdges(ui.Edges{Top: 1}, t.Border)
@@ -1169,7 +1170,8 @@ func (a *App) askForm(ctx *ui.Context, threadID, toolUseID string, qs []agent.Qu
 		otherRow := ui.Div().Row().Align(ui.Center).Gap(space2).
 			Child(ui.TextInput(other).Placeholder("Your answer").Label("Your answer").Small().Width(ui.Full).
 				OnSubmit(func(string) { sendOther() })).
-			Child(ui.Button("Send").Secondary().Small().Disabled(strings.TrimSpace(other.Get()) == "").OnClick(sendOther)).
+			Child(ui.IfElse(strings.TrimSpace(other.Get()) != "", ui.Button("Send").Primary().Small().OnClick(sendOther),
+				ui.Button("Send").Secondary().Small().Disabled(true))).
 			Child(ui.Button("Skip").Ghost().Small().
 				Tooltip("Skip the question; the agent carries on with its own judgment").
 				OnClick(func() {
@@ -1197,26 +1199,46 @@ func (a *App) askForm(ctx *ui.Context, threadID, toolUseID string, qs []agent.Qu
 	})
 }
 
-// questionStrip shows the workers' open questions above the orchestrator's composer.
+// questionStrip shows the workers' open questions above the orchestrator's composer. One is open at a
+// time, so a busy afternoon's questions never push Solo's chat away: the rest wait folded to a line
+// each, and a click opens one. The thread open beside the chat asks in its own panel instead.
 func (a *App) questionStrip(ctx *ui.Context) ui.Element {
 	pending := a.pending.Get()
-	col := ui.Div().Column().Gap(space2)
+	folded := a.foldedAsks.Get()
+	writing := strings.TrimSpace(a.orchDraft.Get()) != "" // the question folds while the user writes to Solo
+	type ask struct {
+		th core.ThreadView
+		pq core.PendingQuestion
+	}
+	var asks []ask
 	for _, th := range a.threads.Get() {
 		qs := pending[th.ID]
-		if len(qs) == 0 || th.ID == core.OrchestratorID {
+		if len(qs) == 0 || th.ID == core.OrchestratorID || th.ID == a.openID.Get() {
 			continue
 		}
-		key := qs[0].ToolUseID
-		// Folded while the user writes to Solo, or when they fold it; a click unfolds it.
-		folded := a.foldedAsks.Get()[key] || strings.TrimSpace(a.orchDraft.Get()) != ""
-		if folded {
-			col = col.Child(a.foldedAsk(ctx, th, qs[0]).Key("ask-" + key))
+		asks = append(asks, ask{th, qs[0]})
+	}
+	open := ""
+	if !writing {
+		want := a.askOpen.Get()
+		for _, k := range asks {
+			if key := k.pq.ToolUseID; !folded[key] && (open == "" || key == want) {
+				open = key
+			}
+		}
+	}
+	col := ui.Div().Column().Gap(space1 + 2)
+	for _, k := range asks {
+		key := k.pq.ToolUseID
+		if key != open {
+			col = col.Child(a.foldedAsk(ctx, k.th, k.pq).Key("ask-" + key))
 			continue
 		}
 		col = col.Child(ui.Div().Key("ask-" + key).
-			Child(a.askForm(ctx, th.ID, key, qs[0].Questions, th.Title+" asks")))
+			Child(a.askForm(ctx, k.th.ID, key, k.pq.Questions, k.th.Title+" asks")))
 	}
-	return col
+	_, h := ctx.WindowSize()
+	return col.MaxHeight(ui.Px(max(h*0.5, 200))).ScrollY()
 }
 
 // foldedAsk is a pinned question folded to one line.
@@ -1238,6 +1260,7 @@ func (a *App) foldedAsk(ctx *ui.Context, th core.ThreadView, pq core.PendingQues
 			}
 			delete(next, key)
 			a.foldedAsks.Set(next)
+			a.askOpen.Set(key)
 			a.orchDraft.Set(strings.TrimRight(a.orchDraft.Peek(), " "))
 		}).
 		Child(ui.Icon(icons.MessageCircleQuestionMark).Size(15).Color(t.Warning)).
@@ -1358,7 +1381,7 @@ func (a *App) composer(ctx *ui.Context, v core.ThreadView, key, placeholder stri
 		switch {
 		case v.InTurn && empty:
 			id := v.ID
-			sendBtn = ui.IconButton(icons.Square).Small().Style(round).Danger().Label("Stop").
+			sendBtn = ui.IconButton(icons.Square).Small().Style(round).Secondary().Label("Stop").
 				Tooltip("Stop the current turn").
 				OnClick(func() {
 					a.run("Stopping", func(ctx context.Context) error { return a.b.Interrupt(ctx, id) })

@@ -127,13 +127,12 @@ func (a *App) rail(ctx *ui.Context) ui.Element {
 		}
 		slices.SortStableFunc(group, func(x, y core.ThreadView) int { return y.UpdatedAt.Compare(x.UpdatedAt) })
 		if gi == len(railGroups)-1 {
-			col := ui.Div().Column().Gap(space1).PaddingX(space2).PaddingBottom(space2).Opacity(0.72).
-				Hover(ui.Style{Opacity: 1}).Transition(150 * time.Millisecond).
+			col := ui.Div().Column().Gap(2).PaddingX(space2).PaddingBottom(space2).
 				Child(groupHeader(ctx, g.title, len(group), g.statuses[0]))
 			for _, th := range group {
 				col = col.Child(a.workingRow(ctx, th))
 			}
-			working = ui.Div().Column().Shrink(0).MaxHeight(ui.Percent(45)).ScrollY().
+			working = ui.Div().Column().Shrink(0).MaxHeight(ui.Percent(34)).ScrollY().
 				BorderEdges(ui.Edges{Top: 1}, t.Border).Child(col)
 			continue
 		}
@@ -223,7 +222,7 @@ func (a *App) threadRow(ctx *ui.Context, th core.ThreadView) ui.Element {
 	selected := a.openID.Get() == th.ID
 	when, whenColor := shortAgo(th.UpdatedAt), t.TextSubtle
 	if th.InTurn && !th.TurnStarted.IsZero() {
-		when, whenColor = elapsed(th.TurnStarted), ui.Hex(pal(t).brand)
+		when, whenColor = elapsed(th.TurnStarted), t.TextMuted
 	}
 	// The mark and the group carry the state; the line stays neutral.
 	line, lineColor := a.activityLine(th), t.TextMuted
@@ -256,7 +255,7 @@ func (a *App) workingRow(ctx *ui.Context, th core.ThreadView) ui.Element {
 	t := ctx.Theme()
 	when, whenColor := shortAgo(th.UpdatedAt), t.TextSubtle
 	if th.InTurn && !th.TurnStarted.IsZero() {
-		when, whenColor = elapsed(th.TurnStarted), ui.Hex(pal(t).brand)
+		when, whenColor = elapsed(th.TurnStarted), t.TextMuted
 	}
 	row := ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space2 + 2).Height(ui.Px(28)).Radius(radiusM).
 		Cursor(ui.CursorPointer).Hover(ui.Style{Background: t.SurfaceHover}).
@@ -270,12 +269,12 @@ func (a *App) workingRow(ctx *ui.Context, th core.ThreadView) ui.Element {
 				a.openThread(th.ID, "conversation")
 			}
 		}).
-		Child(statusMark(ctx, shownStatus(th)))
+		Child(statusMark(ctx, shownStatus(th))).
+		Child(ui.Text(th.Title).FontSize(13).Truncate().Grow(1).MinWidth(ui.Px(0)))
 	if a.repoFilter() == "" {
-		row = row.Child(ui.Text(repoLabel(th)).FontSize(12).TextColor(t.TextSubtle).NoWrap().Shrink(0))
+		row = row.Child(ui.Text(repoLabel(th)).FontSize(11).TextColor(t.TextSubtle).NoWrap().Shrink(0))
 	}
-	row = row.Child(ui.Text(th.Title).FontSize(13).Medium().Truncate().Grow(1).MinWidth(ui.Px(0))).
-		Child(ui.Text(when).FontSize(11).TextColor(whenColor).NoWrap().Shrink(0))
+	row = row.Child(ui.Text(when).FontSize(11).TextColor(whenColor).NoWrap().Shrink(0).MinWidth(ui.Px(30)).Align(ui.End))
 	if a.openID.Get() == th.ID {
 		row = row.Background(t.SurfaceActive)
 	}
