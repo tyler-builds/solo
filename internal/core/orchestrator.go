@@ -151,10 +151,10 @@ func (c *Core) ResetSession(ctx context.Context, threadID string) error {
 	return c.resetSession(ctx, threadID, "Started a new conversation with Claude.")
 }
 
-// RotateSession moves the thread to a fresh Claude session, as ResetSession does, saying so with the
-// notice ("" for none).
-func (c *Core) RotateSession(ctx context.Context, threadID, notice string) error {
-	return c.resetSession(ctx, threadID, notice)
+// RotateSession moves the thread to a fresh Claude session, as ResetSession does, without a notice: the
+// user sees one conversation throughout.
+func (c *Core) RotateSession(ctx context.Context, threadID string) error {
+	return c.resetSession(ctx, threadID, "")
 }
 
 func (c *Core) resetSession(ctx context.Context, threadID, notice string) error {

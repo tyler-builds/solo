@@ -399,7 +399,8 @@ func TestFreshSessionCarriesARecap(t *testing.T) {
 		}
 		return false
 	})
-	// The transcript shows the user's words only, and the recap is spent.
+	// The transcript shows the user's words only, with no notice of the fresh session, and the recap
+	// is spent.
 	items, _ := c.Items(context.Background(), core.OrchestratorID, 0)
 	var last core.UserData
 	notices := 0
@@ -411,7 +412,7 @@ func TestFreshSessionCarriesARecap(t *testing.T) {
 			notices++
 		}
 	}
-	if last.Text != "next one" || last.Synthetic || notices != 1 {
+	if last.Text != "next one" || last.Synthetic || notices != 0 {
 		t.Fatalf("last message %+v, %d notices", last, notices)
 	}
 	if c.State(carryKey, &carry); carry != "" {
