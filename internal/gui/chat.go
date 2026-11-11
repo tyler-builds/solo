@@ -344,10 +344,15 @@ func (a *App) rowView(ctx *ui.Context, v core.ThreadView, r row) ui.Element {
 			label = v.Retry
 		} else if v.Step != nil {
 			label = a.stepLabel(*v.Step) + "…"
+		} else if n := len(v.Live); n > 0 && v.Live[n-1].Thinking {
+			// A line of what Solo is thinking, in place of the thoughts themselves.
+			if s := thoughtExcerpt(v.Live[n-1].Text); s != "" {
+				label = s
+			}
 		}
-		return ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space2).
+		return ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space2).MinWidth(ui.Px(0)).
 			Child(ui.ProgressRing().Size(ui.RingSmall).Label("Working")).
-			Child(caption(ctx, label))
+			Child(caption(ctx, label).Truncate().Grow(1).MinWidth(ui.Px(0)))
 	case r.live != nil:
 		if r.live.Thinking {
 			return thinkingView(ctx, r.live.Text, true)
