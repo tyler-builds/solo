@@ -110,8 +110,10 @@ Raw `SDKMessage`s are also appended to a per-session JSONL file for debugging an
 ## Orchestrator
 
 - **Session:** `cwd` = app data dir, `additionalDirectories` = configured repo folders. Tools are
-  read-only built-ins (Read, Grep, Glob, plus read-only git through Bash with a `canUseTool`
-  allowlist) and the `solo` MCP tools. It does not edit code itself.
+  Read, Grep, Glob, Bash, WebFetch, WebSearch, AskUserQuestion and the `solo` MCP tools, under the
+  `allow` tool policy: Bash runs any command (compound commands, `cd`, builds, scripts, git writes).
+  Edit and Write aren't offered. By process, not permission, code changes to repositories go to worker
+  threads so they get a branch, diff and review.
 - **MCP tools:** `list_repos`, `list_threads`, `get_thread(id)` (status, last summary, files changed,
   pending question), `read_thread(id, tail)`, `spawn_thread(repo, title, prompt, model?, base?)`,
   `message_thread(id, text)`, `interrupt_thread(id)`, `get_diff(id)`,

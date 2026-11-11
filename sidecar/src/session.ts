@@ -62,6 +62,31 @@ const EXIT_WAIT_MS = 10_000;
 /** Built-in tools a read-only session may use without asking. */
 const READ_TOOLS = new Set(["Read", "Grep", "Glob", "LS", "WebFetch", "WebSearch", "TodoWrite", "ToolSearch"]);
 
+/**
+ * toolDenial says why a session's tool policy refuses a tool request, or undefined when it allows it.
+ * "allow" approves everything (any Bash command included); "readonly" allows read tools, the app's own
+ * MCP tools, and the Bash commands `bashAllow` matches.
+ */
+export function toolDenial(
+  p: Pick<OpenParams, "toolPolicy" | "bashAllow">,
+  toolName: string,
+  input: Record<string, unknown>,
+  mcpSource?: string,
+): string | undefined {
+  if (p.toolPolicy === "allow") return undefined;
+  if (READ_TOOLS.has(toolName)) return undefined;
+  if (toolName.startsWith("mcp__") && mcpSource === "sdk") return undefined;
+  if (toolName === "Bash" && typeof input.command === "string" && bashAllowed(p.bashAllow, input.command))
+    return undefined;
+  return `${toolName} is not available to this session: it only reads. Start a worker thread to make changes.`;
+}
+
+function bashAllowed(allow: string[] | undefined, command: string): boolean {
+  // Chaining or redirection could smuggle a write past an allowlisted prefix.
+  if (/[;&|`$<>]|\n/.test(command)) return false;
+  return (allow ?? []).some((re) => new RegExp(`^(?:${re})$`).test(command.trim()));
+}
+
 // A watcher shares the CLI's process group and holds fd 3, a pipe only this sidecar writes. When the
 // sidecar exits (even by crashing) the pipe reaches EOF and the watcher stops the whole group, so MCP
 // servers and shells the CLI started don't outlive us. From t3code's spawnClaudeProcessGroup.
@@ -377,26 +402,10 @@ export class Session {
   private canUseTool: CanUseTool = async (toolName, input, opts) => {
     const toolUseID = opts.toolUseID;
     if (toolName === "AskUserQuestion") return this.ask(input, toolUseID, opts.signal);
-    if (this.params.toolPolicy === "allow") return { behavior: "allow", updatedInput: input, toolUseID };
-
-    // Read-only policy.
-    if (READ_TOOLS.has(toolName)) return { behavior: "allow", updatedInput: input, toolUseID };
-    if (toolName.startsWith("mcp__") && opts.mcpServer?.source === "sdk")
-      return { behavior: "allow", updatedInput: input, toolUseID };
-    if (toolName === "Bash" && typeof input.command === "string" && this.bashAllowed(input.command))
-      return { behavior: "allow", updatedInput: input, toolUseID };
-    return {
-      behavior: "deny",
-      message: `${toolName} is not available to this session: it only reads. Start a worker thread to make changes.`,
-      toolUseID,
-    } satisfies PermissionResult;
+    const denied = toolDenial(this.params, toolName, input, opts.mcpServer?.source);
+    if (denied) return { behavior: "deny", message: denied, toolUseID } satisfies PermissionResult;
+    return { behavior: "allow", updatedInput: input, toolUseID };
   };
-
-  private bashAllowed(command: string): boolean {
-    // Chaining or redirection could smuggle a write past an allowlisted prefix.
-    if (/[;&|`$<>]|\n/.test(command)) return false;
-    return (this.params.bashAllow ?? []).some((re) => new RegExp(`^(?:${re})$`).test(command.trim()));
-  }
 
   private async ask(input: Record<string, unknown>, toolUseID: string | undefined, signal: AbortSignal) {
     const questions = normalizeQuestions(input.questions);
