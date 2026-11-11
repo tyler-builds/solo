@@ -37,6 +37,8 @@ func TestShots(t *testing.T) {
 		"scrolled-up":        "orch-transcript",
 		"scrolled-up-thread": "thread-c3d4e5f6-forms-transcript",
 	}
+	// Text selected once the window is up, by its start: the Quote button floats by it.
+	selecting := map[string]string{"quote-select": "The settings migration is done"}
 	shots := []struct {
 		name  string
 		setup func(a *App, f *fakeBackend)
@@ -153,6 +155,16 @@ func TestShots(t *testing.T) {
 		}},
 		{"done", func(a *App, f *fakeBackend) { a.openThread("a0b1c2d3-audit", "conversation") }},
 		{"in-place", func(a *App, f *fakeBackend) { a.openThread("a7a7a7a7-subs", "conversation") }},
+		// Quoting: text selected in the chat offers Quote; quotes wait above the composer, and a
+		// message sent with one shows it as a blockquote.
+		{"quote-select", func(a *App, f *fakeBackend) {}},
+		{"quote", func(a *App, f *fakeBackend) {
+			f.add(core.OrchestratorID, core.ItemUser, core.UserData{Text: quoteMessage([]string{"Redis works across instances, and the API already runs it for sessions."}, "Go with Redis, then.")})
+			a.items = map[string]*ui.Signal[[]core.Item]{}
+			a.addQuote(core.OrchestratorID, "The settings migration is done and reviewed; it's ready to merge.")
+			a.addQuote(core.OrchestratorID, "Redis works across instances")
+			a.orchDraft.Set("Merge it first")
+		}},
 		// Markdown in the composer, formatted: its syntax shows only where the caret is.
 		{"composer-markdown", func(a *App, f *fakeBackend) { a.orchDraft.Set(composerMarkdown) }},
 		{"history", func(a *App, f *fakeBackend) { a.settingsTab = "history"; a.settings.Set(true) }},
@@ -235,6 +247,10 @@ func TestShots(t *testing.T) {
 				for i := 0; i < 10; i++ {
 					u.Advance(100 * time.Millisecond)
 				}
+			}
+			if prefix := selecting[sh.name]; prefix != "" {
+				selectSpan(t, u, prefix, 300)
+				u.Advance(100 * time.Millisecond)
 			}
 			if text := typing[sh.name]; text != "" {
 				u.Type(text)

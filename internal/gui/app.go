@@ -67,6 +67,11 @@ type App struct {
 
 	items map[string]*ui.Signal[[]core.Item] // UI thread only
 
+	// Quotes waiting for each conversation's next message, and the threads' composers, for focusing
+	// them when a quote is added (quote.go). UI thread only.
+	quotes  map[string]*ui.Signal[[]string]
+	focuses map[string]*ui.FocusHandle
+
 	// Changes arrive on core goroutines; refresh collects them and applies them on the UI thread.
 	mu         sync.Mutex
 	post       func(func())
