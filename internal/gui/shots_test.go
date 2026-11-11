@@ -31,6 +31,11 @@ func TestShots(t *testing.T) {
 	useBundledFont(t)
 	light, dark := Themes()
 	typing := map[string]string{"search": "token"} // typed once the window is up
+	// The transcript scrolled up from its end, once the window is up.
+	scrollUp := map[string]string{
+		"scrolled-up":        "orch-transcript",
+		"scrolled-up-thread": "thread-c3d4e5f6-forms-transcript",
+	}
 	shots := []struct {
 		name  string
 		setup func(a *App, f *fakeBackend)
@@ -118,6 +123,13 @@ func TestShots(t *testing.T) {
 			a.threads.Set(f.Threads())
 			a.items = map[string]*ui.Signal[[]core.Item]{}
 		}},
+		// Scrolled up from the latest message: the round button above the composer goes back down.
+		{"scrolled-up", func(a *App, f *fakeBackend) { longChat(f); a.items = map[string]*ui.Signal[[]core.Item]{} }},
+		{"scrolled-up-thread", func(a *App, f *fakeBackend) {
+			longChat(f)
+			a.items = map[string]*ui.Signal[[]core.Item]{}
+			a.openThread("c3d4e5f6-forms", "conversation")
+		}},
 		{"lightbox", func(a *App, f *fakeBackend) {
 			a.lightbox.Set(sampleScreenshot(t.TempDir(), color.RGBA{47, 214, 193, 255}))
 		}},
@@ -172,7 +184,8 @@ func TestShots(t *testing.T) {
 			if only := os.Getenv("SOLO_SHOTS_ONLY"); only != "" && !strings.HasPrefix(sh.name, only) {
 				continue
 			}
-			if theme.name == "light" && sh.name != "main" && sh.name != "changes" && !busy {
+			if theme.name == "light" && sh.name != "main" && sh.name != "changes" && sh.name != "land-cards" &&
+				sh.name != "scrolled-up" && !busy {
 				continue
 			}
 			f := demoBackend()
@@ -199,6 +212,12 @@ func TestShots(t *testing.T) {
 				u.Advance(100 * time.Millisecond)
 				time.Sleep(20 * time.Millisecond)
 			}
+			if key := scrollUp[sh.name]; key != "" {
+				u.Get(key).Scroll(0, -3000)
+				for i := 0; i < 10; i++ {
+					u.Advance(100 * time.Millisecond)
+				}
+			}
 			if text := typing[sh.name]; text != "" {
 				u.Type(text)
 				for i := 0; i < 5; i++ {
@@ -213,6 +232,16 @@ func TestShots(t *testing.T) {
 			png.Encode(file, u.Screenshot())
 			file.Close()
 			u.Close()
+		}
+	}
+}
+
+// longChat gives Solo's chat and the forms thread more than a window's worth of messages.
+func longChat(f *fakeBackend) {
+	for _, id := range []string{core.OrchestratorID, "c3d4e5f6-forms"} {
+		for i := 0; i < 8; i++ {
+			f.add(id, core.ItemUser, core.UserData{Text: fmt.Sprintf("How is the OAuth fix going? (%d)", i+1)})
+			f.add(id, core.ItemAssistant, core.TextData{Text: "Still running the auth tests. The refresh path now retries once on a 401; the remaining work is the test for an expired refresh token, which the worker is writing now. I'll tell you when it finishes."})
 		}
 	}
 }

@@ -182,6 +182,7 @@ func (a *App) transcript(ctx *ui.Context, v core.ThreadView, items []core.Item, 
 		rows = append(rows, row{key: "busy", busy: true})
 	}
 	h := ui.Local(ctx, scope+"-list", ui.NewListHandle()).Peek()
+	atEnd := ui.Local(ctx, scope+"-at-end", true)
 	// Open on the latest message; after that the list follows new ones while it is at the end.
 	if started := ui.Local(ctx, scope+"-started", false); !started.Peek() && len(rows) > 0 {
 		started.Set(true)
@@ -199,15 +200,43 @@ func (a *App) transcript(ctx *ui.Context, v core.ThreadView, items []core.Item, 
 					Child(a.rowView(rctx, v, r)))
 		})
 	}).Handle(h).SelectionContainer().Key(scope + "-transcript").Label("Conversation").
-		Style(ui.Style{Grow: 1, Padding: ui.Edges{Top: space4, Bottom: space2}})
-	if scope != "orch" {
-		return list // a thread reads from its top, like a document, rather than sinking to the composer
+		Style(ui.Style{Grow: 1, Padding: ui.Edges{Top: space4, Bottom: space2}}).
+		OnAtEnd(func(end bool) { atEnd.Set(end) })
+	if scope == "orch" {
+		list = list.Bottom() // a thread reads from its top, like a document, rather than sinking to the composer
 	}
-	list = list.Bottom()
+	// The list and, floating over its foot, the way back to the latest message.
+	view := ui.Div().Column().Grow(1).MinHeight(ui.Px(0)).
+		Child(list).
+		Child(ui.Component(func(ctx *ui.Context) ui.Element { return toLatestButton(ctx, atEnd, h) }))
+	if scope != "orch" {
+		return view
+	}
 	return ui.Div().Column().Grow(1).MinHeight(ui.Px(0)).
 		Child(ui.Component(func(ctx *ui.Context) ui.Element { return a.offscreenPill(ctx, rows, h, true) })).
-		Child(list).
+		Child(view).
 		Child(ui.Component(func(ctx *ui.Context) ui.Element { return a.offscreenPill(ctx, rows, h, false) }))
+}
+
+// toLatestButton floats a round down-arrow button over the foot of a conversation, centred above its
+// composer, while the conversation is scrolled up from its latest message; a click goes back down.
+// It reads atEnd alone, so scrolling re-renders only the button.
+func toLatestButton(ctx *ui.Context, atEnd *ui.Signal[bool], h *ui.ListHandle) ui.Element {
+	t := ctx.Theme()
+	// A strip of no height, so the conversation under it still takes clicks and the wheel.
+	strip := ui.Div().Absolute().Left(0).Right(0).Bottom(space3).Height(ui.Px(0)).ZIndex(1).
+		Row().Justify(ui.Center).Align(ui.End)
+	if atEnd.Get() {
+		return strip
+	}
+	const size = 32
+	return strip.Child(ui.Div().Size(ui.Px(size), ui.Px(size)).Radius(size/2).Center().Shrink(0).
+		Background(t.Surface).Border(1, t.BorderStrong).Shadow(ui.ShadowMd).
+		Cursor(ui.CursorPointer).Hover(ui.Style{Background: t.SurfaceHover}).
+		Role(access.RoleButton).Label("Scroll to the latest message").TabIndex(0).Tooltip("Scroll to the latest").
+		Key("to-latest").
+		OnClick(func() { h.ScrollToEnd() }).
+		Child(ui.Icon(icons.ArrowDown).Size(16).Color(t.TextMuted)))
 }
 
 // orchRows lays out Solo's chat one exchange at a time: each message to Solo, one quiet folded line
