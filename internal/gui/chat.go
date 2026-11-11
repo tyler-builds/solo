@@ -393,7 +393,7 @@ func (a *App) rowView(ctx *ui.Context, v core.ThreadView, r row) ui.Element {
 				label = s
 			}
 		}
-		return ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space2).MinWidth(ui.Px(0)).
+		return lineRow().Align(ui.Center).Gap(space2).MinWidth(ui.Px(0)).
 			Child(ui.ProgressRing().Size(ui.RingSmall).Label("Working")).
 			Child(caption(ctx, label).Truncate().Grow(1).MinWidth(ui.Px(0)))
 	case r.live != nil:
@@ -465,7 +465,7 @@ func (a *App) stepView(ctx *ui.Context, it *core.Item, v core.ThreadView) ui.Ele
 	case core.ItemAssistant:
 		var d core.TextData
 		it.Decode(&d)
-		return ui.Div().PaddingX(space2).Child(a.md(ctx, d.Text, viewBases(v)))
+		return a.md(ctx, d.Text, viewBases(v)) // on the edge of the steps around it
 	case core.ItemThinking:
 		var d core.TextData
 		it.Decode(&d)
@@ -546,7 +546,7 @@ func (a *App) stepsView(ctx *ui.Context, steps []*core.Item, threadID string) ui
 				state = nil
 			}
 		}
-		head := ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space2).Height(ui.Px(28)).Radius(radiusS).
+		head := lineRow().Align(ui.Center).Gap(space2).Height(ui.Px(28)).Radius(radiusS).
 			Cursor(ui.CursorPointer).Hover(ui.Style{Background: t.SurfaceHover}).
 			Role(access.RoleButton).Label(label).TabIndex(0).
 			OnClick(func() { open.Update(func(o bool) bool { return !o }) }).
@@ -558,8 +558,7 @@ func (a *App) stepsView(ctx *ui.Context, steps []*core.Item, threadID string) ui
 			Child(ui.Text(latest).FontSize(12).TextColor(t.TextSubtle).Truncate().Grow(1).MinWidth(ui.Px(0)))
 		col := ui.Div().Column().Gap(2).Child(head)
 		if open.Get() {
-			inner := ui.Div().Column().Gap(2).PaddingLeft(space3).MarginLeft(space3).
-				BorderEdges(ui.Edges{Left: 1}, t.Border)
+			inner := unfoldedSteps(ctx)
 			for _, it := range steps {
 				inner = inner.Child(a.stepView(ctx, it, core.ThreadView{}))
 			}
@@ -699,13 +698,13 @@ func (a *App) updateRow(ctx *ui.Context, u update, trailing ui.Element) *ui.DivE
 	var line *ui.DivElement
 	if a.chatWidth(ctx) < 640 {
 		// Narrow: the thread on one line and what happened under it, so neither is cut to a few words.
-		line = ui.Div().Row().Align(ui.Start).Gap(space2).PaddingX(space2).PaddingY(3).Radius(radiusS).
+		line = lineRow().Align(ui.Start).Gap(space2).PaddingY(3).Radius(radiusS).
 			Child(ui.Div().Height(ui.Px(18)).Row().Align(ui.Center).Child(ui.Icon(u.icon).Size(14).Color(iconColor))).
 			Child(ui.Div().Column().Gap(1).Grow(1).MinWidth(ui.Px(0)).
 				Child(name.Truncate()).
 				Child(ui.Text(u.repo + " · " + u.what).FontSize(12).TextColor(whatColor).Truncate()))
 	} else {
-		line = ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space2).Height(ui.Px(26)).Radius(radiusS).
+		line = lineRow().Align(ui.Center).Gap(space2).Height(ui.Px(26)).Radius(radiusS).
 			Child(ui.Icon(u.icon).Size(14).Color(iconColor)).
 			Child(ui.Text(u.repo).FontSize(12).TextColor(t.TextSubtle).Width(ui.Px(56)).Shrink(0).Truncate()).
 			Child(name.NoWrap().Shrink(0).MaxWidth(ui.Percent(45)).Truncate()).
@@ -748,7 +747,7 @@ func (a *App) updateWithSteps(ctx *ui.Context, u update, steps []*core.Item) ui.
 			Child(ui.Icon(map[bool]*icons.Icon{true: icons.ChevronDown, false: icons.ChevronRight}[open.Get()]).Size(12).Color(t.TextSubtle))
 		col := ui.Div().Column().Gap(2).Child(a.updateRow(ctx, u, toggle))
 		if open.Get() {
-			inner := ui.Div().Column().Gap(2).PaddingLeft(space3).MarginLeft(space3).BorderEdges(ui.Edges{Left: 1}, t.Border)
+			inner := unfoldedSteps(ctx)
 			for _, it := range steps {
 				inner = inner.Child(a.stepView(ctx, it, core.ThreadView{}))
 			}
@@ -803,7 +802,7 @@ func (a *App) quietSteps(ctx *ui.Context, steps []*core.Item) ui.Element {
 		if n == 1 {
 			label = "1 step"
 		}
-		head := ui.Div().Row().Align(ui.Center).Gap(space1).PaddingX(space2).Height(ui.Px(22)).Radius(radiusS).
+		head := lineRow().Align(ui.Center).Gap(space1).Height(ui.Px(22)).Radius(radiusS).
 			AlignSelf(ui.Start).Cursor(ui.CursorPointer).Hover(ui.Style{Background: t.SurfaceHover}).
 			Role(access.RoleButton).Label("Show what Solo did: " + label).TabIndex(0).
 			OnClick(func() { open.Update(func(o bool) bool { return !o }) }).
@@ -812,7 +811,7 @@ func (a *App) quietSteps(ctx *ui.Context, steps []*core.Item) ui.Element {
 			Child(ui.Icon(map[bool]*icons.Icon{true: icons.ChevronDown, false: icons.ChevronRight}[open.Get()]).Size(12).Color(t.TextSubtle))
 		col := ui.Div().Column().Gap(2).Child(head)
 		if open.Get() {
-			inner := ui.Div().Column().Gap(2).PaddingLeft(space3).MarginLeft(space3).BorderEdges(ui.Edges{Left: 1}, t.Border)
+			inner := unfoldedSteps(ctx)
 			for _, it := range steps {
 				inner = inner.Child(a.stepView(ctx, it, core.ThreadView{}))
 			}
@@ -853,7 +852,7 @@ func thinkingView(ctx *ui.Context, text string, live bool) ui.Element {
 		if live {
 			label = "Thinking"
 		}
-		head := ui.Div().Row().Align(ui.Center).Gap(6).PaddingX(space2).Height(ui.Px(26)).Cursor(ui.CursorPointer).
+		head := lineRow().Align(ui.Center).Gap(6).Height(ui.Px(26)).Cursor(ui.CursorPointer).
 			Role(access.RoleButton).Label(label).TabIndex(0).
 			OnClick(func() { open.Update(func(o bool) bool { return !o }) }).
 			Child(ui.Icon(icons.Brain).Size(13).Color(t.TextSubtle)).
@@ -861,7 +860,8 @@ func thinkingView(ctx *ui.Context, text string, live bool) ui.Element {
 			Child(ui.Icon(map[bool]*icons.Icon{true: icons.ChevronDown, false: icons.ChevronRight}[open.Get()]).Size(12).Color(t.TextSubtle))
 		col := ui.Div().Column().Gap(space1).Child(head)
 		if open.Get() {
-			col = col.Child(ui.Div().PaddingLeft(space6 + 2).
+			// The thought sits under the label, past the icon (13) and the gap (6).
+			col = col.Child(ui.Div().PaddingLeft(13 + 6).
 				Child(ui.Text(text).FontSize(12).TextColor(t.TextSubtle).Italic().Selectable()))
 		}
 		return col
@@ -884,7 +884,7 @@ func (a *App) toolView(ctx *ui.Context, d core.ToolData) ui.Element {
 		default:
 			state = ui.Div() // done is the quiet default
 		}
-		head := ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space2).Height(ui.Px(26)).Radius(radiusS).
+		head := lineRow().Align(ui.Center).Gap(space2).Height(ui.Px(26)).Radius(radiusS).
 			Cursor(ui.CursorPointer).Hover(ui.Style{Background: t.SurfaceHover}).
 			Role(access.RoleButton).Label(label + " " + detail).TabIndex(0).
 			OnClick(func() { open.Update(func(o bool) bool { return !o }) }).
@@ -898,7 +898,7 @@ func (a *App) toolView(ctx *ui.Context, d core.ToolData) ui.Element {
 		}
 		col := ui.Div().Column().Gap(space1).Child(head)
 		if open.Get() {
-			body := ui.Div().Column().Gap(space2).MarginLeft(space6).Padding(space3).Radius(radiusM).
+			body := ui.Div().Column().Gap(space2).MarginLeft(14+space2).Padding(space3).Radius(radiusM).
 				Background(t.Surface).Border(1, t.Border)
 			if len(d.Input) > 2 {
 				body = body.Child(ui.Text(prettyJSON(d.Input)).Mono().FontSize(12).TextColor(t.TextMuted).MaxLines(12).Selectable())
@@ -1030,7 +1030,7 @@ func taskView(ctx *ui.Context, d core.TaskData) ui.Element {
 	if strings.Contains(d.TaskType, "bash") || strings.Contains(d.TaskType, "shell") {
 		icon = icons.SquareTerminal
 	}
-	return ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space2).Height(ui.Px(26)).
+	return lineRow().Align(ui.Center).Gap(space2).Height(ui.Px(26)).
 		Child(ui.Icon(icon).Size(14).Color(t.TextMuted)).
 		Child(ui.Text(d.Description).FontSize(13).Medium().TextColor(t.TextMuted).NoWrap().Shrink(0)).
 		Child(ui.Text(detail).FontSize(12).TextColor(t.TextSubtle).Truncate().Grow(1).MinWidth(ui.Px(0))).
@@ -1040,7 +1040,7 @@ func taskView(ctx *ui.Context, d core.TaskData) ui.Element {
 func turnView(ctx *ui.Context, d core.TurnData) ui.Element {
 	t := ctx.Theme()
 	if d.Status == agent.TurnInterrupted || d.Status == agent.TurnCancelled {
-		return ui.Div().Row().Align(ui.Center).Gap(6).PaddingX(space2).
+		return lineRow().Align(ui.Center).Gap(6).
 			Child(ui.Icon(icons.CircleStop).Size(13).Color(t.TextSubtle)).
 			Child(subtle(ctx, "Stopped"))
 	}
@@ -1141,7 +1141,7 @@ func (a *App) questionCard(ctx *ui.Context, threadID string, d core.QuestionData
 			}
 			parts = append(parts, fmt.Sprintf("%s → %s", q.Question, ans))
 		}
-		return ui.Div().Row().Align(ui.Center).Gap(6).PaddingX(space2).
+		return lineRow().Align(ui.Center).Gap(6).
 			Child(ui.Icon(icons.MessageCircleQuestionMark).Size(13).Color(t.TextSubtle)).
 			Child(subtle(ctx, strings.Join(parts, " · ")))
 	}
