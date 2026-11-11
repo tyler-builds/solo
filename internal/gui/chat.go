@@ -1767,23 +1767,51 @@ func checksBadge(ctx *ui.Context, th core.ThreadView) ui.Element {
 	default:
 		return nil
 	}
-	icon, c := icons.CircleCheck, t.Success
-	switch cs.checks {
-	case forge.ChecksFailing:
-		icon, c = icons.CircleX, t.Danger
-	case forge.ChecksPending:
-		icon, c = icons.Timer, t.Warning
-	}
+	icon, c := checksLook(ctx, cs.checks)
 	return ui.Div().Row().Align(ui.Center).Gap(4).PaddingLeft(space1).Shrink(0).Tooltip(cs.tip).
 		Child(ui.Text("·").FontSize(12).TextColor(t.TextSubtle)).
 		Child(ui.Icon(icon).Size(13).Color(c)).
 		Child(ui.Text(cs.text).FontSize(12).TextColor(c).NoWrap())
 }
 
+// checksLook is the icon and color of where checks stand: a check, a timer while they run, a cross
+// once one fails.
+func checksLook(ctx *ui.Context, checks string) (*icons.Icon, ui.Color) {
+	t := ctx.Theme()
+	switch checks {
+	case forge.ChecksFailing:
+		return icons.CircleX, t.Danger
+	case forge.ChecksPending:
+		return icons.Timer, t.Warning
+	}
+	return icons.CircleCheck, t.Success
+}
+
 // checksState is where a merge's checks stand, as its card says it.
 type checksState struct {
 	checks    string // forge.ChecksPassing, ChecksPending or ChecksFailing
 	text, tip string
+	// n sums the checks of every pull request; counted is false when a forge gave none to sum.
+	n       forge.CheckCounts
+	counted bool
+}
+
+// tally is the checks counted by where they stand, zeros left out: "3 passed · 2 running", "4 passed ·
+// 1 failed · 1 running". "" without counts.
+func (s checksState) tally() string {
+	if !s.counted || s.n.Total == 0 {
+		return ""
+	}
+	var parts []string
+	for _, c := range []struct {
+		n    int
+		word string
+	}{{s.n.Passed, "passed"}, {s.n.Failed, "failed"}, {s.n.Pending, "running"}} {
+		if c.n > 0 {
+			parts = append(parts, fmt.Sprintf("%d %s", c.n, c.word))
+		}
+	}
+	return strings.Join(parts, " · ")
 }
 
 // checksOf sums up the checks of a thread's open pull requests: "Checks: 6/7 passed · 1 running"
@@ -1817,13 +1845,13 @@ func checksOf(prs []*forge.PR) checksState {
 	}
 	switch {
 	case len(failed) > 0:
-		s := checksState{checks: forge.ChecksFailing, text: "Checks failed", tip: "Failed: " + strings.Join(failed, ", ")}
+		s := checksState{checks: forge.ChecksFailing, text: "Checks failed", tip: "Failed: " + strings.Join(failed, ", "), n: n, counted: counted}
 		if counted {
 			s.text = fmt.Sprintf("Checks failed: %d of %d", n.Failed, n.Total) + running
 		}
 		return s
 	case pending:
-		s := checksState{checks: forge.ChecksPending, text: "Checks running", tip: "Waiting for the required checks"}
+		s := checksState{checks: forge.ChecksPending, text: "Checks running", tip: "Waiting for the required checks", n: n, counted: counted}
 		if counted {
 			s.text = fmt.Sprintf("Checks: %d/%d passed", n.Passed, n.Total) + running
 			if n.Passed == 0 {
@@ -1835,7 +1863,7 @@ func checksOf(prs []*forge.PR) checksState {
 	case n.Total == 0 && !slices.ContainsFunc(prs, func(pr *forge.PR) bool { return pr.Checks == forge.ChecksPassing }):
 		return checksState{checks: forge.ChecksPassing, text: "Checks passed", tip: "No checks are required"}
 	}
-	s := checksState{checks: forge.ChecksPassing, text: "Checks passed", tip: "Every required check passed"}
+	s := checksState{checks: forge.ChecksPassing, text: "Checks passed", tip: "Every required check passed", n: n, counted: counted}
 	if counted && n.Total > 0 {
 		s.tip = fmt.Sprintf("All %d checks passed", n.Total)
 	}

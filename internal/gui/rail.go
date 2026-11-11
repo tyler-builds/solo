@@ -24,6 +24,7 @@ var railGroups = []struct {
 	{"Needs answer", []string{core.StatusWaiting}},
 	{"Failed", []string{core.StatusFailed, statusChecksFailed}},
 	{"Ready", []string{core.StatusIdle}},
+	{"Waiting for checks", []string{statusChecksRunning}},
 	{"In review", []string{statusInReview}},
 	{"Finished", []string{statusFinished}},
 	{"No changes", []string{statusNoChanges}},
@@ -321,7 +322,7 @@ func branchLabel(th core.ThreadView) string {
 
 // activityLine says what a thread is doing or did, in a line.
 func (a *App) activityLine(th core.ThreadView) string {
-	if s := shownStatus(th); s == statusInReview || s == statusChecksFailed {
+	if s := shownStatus(th); s == statusChecksRunning || s == statusInReview || s == statusChecksFailed {
 		if open := openPRs(th); len(open) > 1 {
 			return prsLine(open)
 		} else if len(open) == 1 {

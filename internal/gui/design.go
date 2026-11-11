@@ -178,12 +178,14 @@ const statusFinished = "finished"
 
 // Statuses the UI shows for a worker with an open pull request.
 const (
-	statusInReview     = "in-review"
-	statusChecksFailed = "checks-failed"
+	statusChecksRunning = "checks-running"
+	statusInReview      = "in-review"
+	statusChecksFailed  = "checks-failed"
 )
 
 // shownStatus is the status the UI shows for a thread: its own, or one of the UI's (no changes, a
-// pull request in review or with failed checks).
+// pull request waiting for its checks, in review, or with failed checks). A failure in any of its
+// pull requests wins over checks still running in another.
 func shownStatus(v core.ThreadView) string {
 	if v.NoChanges {
 		return statusNoChanges
@@ -192,10 +194,11 @@ func shownStatus(v core.ThreadView) string {
 		return statusFinished
 	}
 	if open := openPRs(v); len(open) > 0 && !core.Active(v.Status) && v.Status != core.StatusFailed {
-		for _, pr := range open {
-			if pr.Checks == forge.ChecksFailing {
-				return statusChecksFailed
-			}
+		if slices.ContainsFunc(open, func(pr *forge.PR) bool { return pr.Checks == forge.ChecksFailing }) {
+			return statusChecksFailed
+		}
+		if slices.ContainsFunc(open, func(pr *forge.PR) bool { return pr.Checks == forge.ChecksPending }) {
+			return statusChecksRunning
 		}
 		return statusInReview
 	}
@@ -246,6 +249,8 @@ func statusColor(ctx *ui.Context, status string) ui.Color {
 		return t.TextMuted
 	case statusFinished:
 		return t.Success
+	case statusChecksRunning:
+		return t.Warning
 	case statusInReview:
 		return ui.Hex(pal(t).info)
 	case statusChecksFailed:
@@ -279,6 +284,8 @@ func statusLabel(v core.ThreadView) string {
 		return "Needs answer"
 	case core.StatusIdle, core.StatusInterrupted:
 		switch shownStatus(v) {
+		case statusChecksRunning:
+			return "Waiting for checks"
 		case statusInReview:
 			return "In review"
 		case statusChecksFailed:
@@ -417,6 +424,8 @@ func statusMark(ctx *ui.Context, status string) *ui.DivElement {
 		}, ui.Animation{Duration: 2400 * time.Millisecond, Repeat: true}))
 	case core.StatusIdle, statusNoChanges, statusFinished:
 		return box.Child(ui.Icon(icons.CircleCheck).Size(14).Color(c))
+	case statusChecksRunning:
+		return box.Child(ui.Icon(icons.Timer).Size(13).Color(c))
 	case statusInReview:
 		return box.Child(ui.Icon(icons.GitPullRequest).Size(13).Color(c))
 	case statusChecksFailed: // one mark for every failure; the row's line says which
@@ -456,6 +465,8 @@ func statusMeaning(status string) string {
 		return "Finished with no changes to merge"
 	case statusFinished:
 		return "Finished: its edits are already in place"
+	case statusChecksRunning:
+		return "Waiting for checks: its pull request is open and its checks are still running"
 	case statusInReview:
 		return "In review: its pull request is open"
 	case statusChecksFailed:
@@ -481,6 +492,8 @@ func statusIcon(status string) *icons.Icon {
 		return icons.CircleAlert
 	case core.StatusIdle, statusNoChanges, statusFinished:
 		return icons.CircleCheck
+	case statusChecksRunning:
+		return icons.Timer
 	case statusInReview:
 		return icons.GitPullRequest
 	case statusChecksFailed:
