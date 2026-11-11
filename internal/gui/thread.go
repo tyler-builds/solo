@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/tyler-builds/solo/internal/forge"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -402,6 +403,40 @@ func checkNamesOf(cs []forge.Check) []string {
 	return out
 }
 
+// headerChecksMinWidth is the narrowest thread panel whose header spells out its checks; a narrower one
+// shows only their mark, with the counts in its tooltip.
+const headerChecksMinWidth = 520
+
+// headerChecks says in a thread's header where its pull requests' checks stand, counted, in the merge
+// card's colors: "3 passed · 2 running", "4 passed · 1 failed". A forge without counts (GitLab's one
+// pipeline) gets the plain words. It follows the checks as Solo polls them. nil without an open pull
+// request, with no checks on it, and once the thread has landed.
+func (a *App) headerChecks(ctx *ui.Context, th core.ThreadView) ui.Element {
+	switch th.Status {
+	case core.StatusMerged, core.StatusDiscarded, core.StatusArchived:
+		return nil
+	}
+	prs := openPRs(th)
+	if len(prs) == 0 && th.PR != nil && th.PR.State == forge.StateOpen {
+		prs = []*forge.PR{th.PR}
+	}
+	if !slices.ContainsFunc(prs, func(pr *forge.PR) bool { return pr.Checks != forge.ChecksNone }) {
+		return nil
+	}
+	cs := checksOf(prs)
+	text := cs.tally()
+	if text == "" {
+		text = cs.text
+	}
+	icon, c := checksLook(ctx, cs.checks)
+	box := ui.Div().Row().Align(ui.Center).Gap(4).PaddingX(space1).Shrink(0).Key("thread-checks-" + th.ID).
+		Child(ui.Icon(icon).Size(13).Color(c))
+	if a.panelWidth(ctx) < headerChecksMinWidth {
+		return box.Tooltip(text + ". " + cs.tip)
+	}
+	return box.Tooltip(cs.tip).Child(ui.Text(text).FontSize(12).TextColor(c).NoWrap())
+}
+
 // prLink opens a thread's pull request in the browser.
 func (a *App) prLink(ctx *ui.Context, th core.ThreadView) ui.Element {
 	if th.PR == nil || th.MultiRepo() {
@@ -460,7 +495,7 @@ func (a *App) threadPanel(ctx *ui.Context) ui.Element {
 	stat := ui.Div().Row().Gap(6).
 		Child(ui.Text(fmt.Sprintf("+%d", added)).FontSize(12).Medium().TextColor(t.Success)).
 		Child(ui.Text(fmt.Sprintf("−%d", removed)).FontSize(12).Medium().TextColor(t.Danger))
-	actions := ui.Div().Row().Align(ui.Center).Gap(space1).Shrink(0)
+	actions := ui.Div().Row().Align(ui.Center).Gap(space1).Shrink(0).Child(a.headerChecks(ctx, th))
 	if th.Dir != "" {
 		dir := th.Dir
 		actions = actions.
