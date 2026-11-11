@@ -7,6 +7,7 @@ import (
 	"github.com/tyler-builds/jamb/ui"
 
 	"github.com/tyler-builds/solo/internal/core"
+	"github.com/tyler-builds/solo/internal/forge"
 	"github.com/tyler-builds/solo/internal/store"
 )
 
@@ -55,5 +56,44 @@ func TestParseUpdates(t *testing.T) {
 	}
 	if us := a.parseUpdates(th, "Some other text\n"+head+" was interrupted.\n"); len(us) != 1 {
 		t.Errorf("mixed text: parsed %d updates, want 1", len(us))
+	}
+}
+
+func TestChecksOf(t *testing.T) {
+	pr := func(checks string, c forge.CheckCounts, failed ...string) *forge.PR {
+		p := &forge.PR{Kind: forge.GitHub, Number: 7, State: forge.StateOpen, Checks: checks, Counts: c}
+		for _, n := range failed {
+			p.Failed = append(p.Failed, forge.Check{Name: n})
+		}
+		return p
+	}
+	cases := []struct {
+		name   string
+		prs    []*forge.PR
+		checks string
+		text   string
+	}{
+		{"running", []*forge.PR{pr(forge.ChecksPending, forge.CheckCounts{Total: 7, Passed: 6, Pending: 1})},
+			forge.ChecksPending, "Checks: 6/7 passed · 1 running"},
+		{"just started", []*forge.PR{pr(forge.ChecksPending, forge.CheckCounts{Total: 4, Pending: 4})},
+			forge.ChecksPending, "Checks: 4 running"},
+		{"failed while others run", []*forge.PR{pr(forge.ChecksFailing, forge.CheckCounts{Total: 7, Passed: 4, Failed: 1, Pending: 2}, "lint")},
+			forge.ChecksFailing, "Checks failed: 1 of 7 · 2 running"},
+		{"failed", []*forge.PR{pr(forge.ChecksFailing, forge.CheckCounts{Total: 7, Passed: 5, Failed: 2}, "lint", "test")},
+			forge.ChecksFailing, "Checks failed: 2 of 7"},
+		{"passed", []*forge.PR{pr(forge.ChecksPassing, forge.CheckCounts{Total: 7, Passed: 7})},
+			forge.ChecksPassing, "Checks passed"},
+		{"no counts (GitLab)", []*forge.PR{pr(forge.ChecksPending, forge.CheckCounts{})},
+			forge.ChecksPending, "Checks running"},
+		{"summed across repositories", []*forge.PR{
+			pr(forge.ChecksPassing, forge.CheckCounts{Total: 3, Passed: 3}),
+			pr(forge.ChecksPending, forge.CheckCounts{Total: 5, Passed: 3, Pending: 2})},
+			forge.ChecksPending, "Checks: 6/8 passed · 2 running"},
+	}
+	for _, c := range cases {
+		got := checksOf(c.prs)
+		if got.checks != c.checks || got.text != c.text {
+			t.Errorf("%s: got %s %q, want %s %q", c.name, got.checks, got.text, c.checks, c.text)
+		}
 	}
 }

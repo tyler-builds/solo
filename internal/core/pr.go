@@ -427,12 +427,15 @@ func (c *Core) applyPR(id, repo string, pr forge.PR, event string) {
 	if p.PR != nil {
 		old = *p.PR
 	}
-	if event == "" && prSame(old, pr) {
+	same := prSame(old, pr)
+	if event == "" && same && old.Counts == pr.Counts {
 		c.mu.Unlock()
 		return
 	}
 	p.PR = &pr
-	t.row.UpdatedAt = now()
+	if event != "" || !same { // checks ticking over one by one is progress, not news
+		t.row.UpdatedAt = now()
+	}
 	_ = c.saveLocked(t)
 	status := t.row.Status
 	multi := len(t.parts) > 1

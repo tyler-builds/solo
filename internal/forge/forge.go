@@ -84,6 +84,16 @@ const (
 	ChecksFailing = "failing"
 )
 
+// CheckCounts counts a pull request's checks by where they stand. Passed counts every check that
+// finished without failing, skipped and neutral ones included, so Passed+Failed+Pending is Total.
+// GitLab reports one pipeline rather than its jobs, so its counts stay zero.
+type CheckCounts struct {
+	Total   int `json:"total,omitempty"`
+	Passed  int `json:"passed,omitempty"`
+	Failed  int `json:"failed,omitempty"`
+	Pending int `json:"pending,omitempty"`
+}
+
 // PR states.
 const (
 	StateOpen   = "open"
@@ -93,14 +103,16 @@ const (
 
 // PR is a pull or merge request as Solo follows it.
 type PR struct {
-	Kind      Kind    `json:"kind"`
-	URL       string  `json:"url"`
-	Number    int     `json:"number"`
-	State     string  `json:"state"`  // StateOpen, StateMerged or StateClosed
-	Checks    string  `json:"checks"` // ChecksNone, ChecksPending, ChecksPassing or ChecksFailing
-	Failed    []Check `json:"failed,omitempty"`
-	AutoMerge bool    `json:"autoMerge,omitempty"`
-	Draft     bool    `json:"draft,omitempty"`
+	Kind   Kind    `json:"kind"`
+	URL    string  `json:"url"`
+	Number int     `json:"number"`
+	State  string  `json:"state"`  // StateOpen, StateMerged or StateClosed
+	Checks string  `json:"checks"` // ChecksNone, ChecksPending, ChecksPassing or ChecksFailing
+	Failed []Check `json:"failed,omitempty"`
+	// Counts says how many checks passed, failed and are still running.
+	Counts    CheckCounts `json:"counts,omitzero"`
+	AutoMerge bool        `json:"autoMerge,omitempty"`
+	Draft     bool        `json:"draft,omitempty"`
 	// Mergeable is true when it can merge now; Blocked says why not ("waiting for review", say).
 	Mergeable bool   `json:"mergeable,omitempty"`
 	Blocked   string `json:"blocked,omitempty"`
@@ -277,16 +289,7 @@ func (c *Client) View(ctx context.Context, dir string, pr PR) (PR, error) {
 		AutoMergeRequest json.RawMessage `json:"autoMergeRequest"`
 		MergeStateStatus string          `json:"mergeStateStatus"`
 		ReviewDecision   string          `json:"reviewDecision"`
-		Rollup           []struct {
-			Typename   string `json:"__typename"`
-			Name       string `json:"name"`
-			Context    string `json:"context"`
-			Status     string `json:"status"`
-			Conclusion string `json:"conclusion"`
-			State      string `json:"state"`
-			DetailsURL string `json:"detailsUrl"`
-			TargetURL  string `json:"targetUrl"`
-		} `json:"statusCheckRollup"`
+		Rollup           []rollupEntry   `json:"statusCheckRollup"`
 	}
 	if err := json.Unmarshal([]byte(out), &v); err != nil {
 		return pr, fmt.Errorf("reading gh's answer: %w", err)
@@ -295,28 +298,12 @@ func (c *Client) View(ctx context.Context, dir string, pr PR) (PR, error) {
 	pr.State = map[string]string{"OPEN": StateOpen, "MERGED": StateMerged, "CLOSED": StateClosed}[v.State]
 	pr.AutoMerge = len(v.AutoMergeRequest) > 0 && string(v.AutoMergeRequest) != "null"
 	pr.Draft = v.IsDraft
-	pending, failed := false, []Check(nil)
-	for _, r := range v.Rollup {
-		name, link, state := r.Name, r.DetailsURL, ""
-		if r.Typename == "StatusContext" {
-			name, link, state = r.Context, r.TargetURL, r.State
-		} else if r.Status != "COMPLETED" {
-			state = "PENDING"
-		} else {
-			state = r.Conclusion
-		}
-		switch state {
-		case "FAILURE", "ERROR", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE":
-			failed = append(failed, Check{Name: name, URL: link})
-		case "PENDING", "EXPECTED", "QUEUED", "IN_PROGRESS", "":
-			pending = true
-		}
-	}
-	pr.Failed = failed
+	failed, counts := tallyChecks(v.Rollup)
+	pr.Failed, pr.Counts = failed, counts
 	switch {
 	case len(failed) > 0:
 		pr.Checks = ChecksFailing
-	case pending:
+	case counts.Pending > 0:
 		pr.Checks = ChecksPending
 	case len(v.Rollup) > 0:
 		pr.Checks = ChecksPassing
@@ -350,6 +337,45 @@ func (c *Client) View(ctx context.Context, dir string, pr PR) (PR, error) {
 	return pr, nil
 }
 
+// rollupEntry is one check of gh's statusCheckRollup: a check run, or a commit status (StatusContext).
+type rollupEntry struct {
+	Typename   string `json:"__typename"`
+	Name       string `json:"name"`
+	Context    string `json:"context"`
+	Status     string `json:"status"`
+	Conclusion string `json:"conclusion"`
+	State      string `json:"state"`
+	DetailsURL string `json:"detailsUrl"`
+	TargetURL  string `json:"targetUrl"`
+}
+
+// tallyChecks counts a pull request's checks by where they stand and lists the failed ones.
+func tallyChecks(rollup []rollupEntry) ([]Check, CheckCounts) {
+	var failed []Check
+	var counts CheckCounts
+	for _, r := range rollup {
+		name, link, state := r.Name, r.DetailsURL, ""
+		if r.Typename == "StatusContext" {
+			name, link, state = r.Context, r.TargetURL, r.State
+		} else if r.Status != "COMPLETED" {
+			state = "PENDING"
+		} else {
+			state = r.Conclusion
+		}
+		counts.Total++
+		switch state {
+		case "FAILURE", "ERROR", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE":
+			failed = append(failed, Check{Name: name, URL: link})
+			counts.Failed++
+		case "PENDING", "EXPECTED", "QUEUED", "IN_PROGRESS", "":
+			counts.Pending++
+		default: // SUCCESS, NEUTRAL, SKIPPED
+			counts.Passed++
+		}
+	}
+	return failed, counts
+}
+
 func (c *Client) viewGitLab(ctx context.Context, dir string, pr PR) (PR, error) {
 	out, err := c.run(ctx, dir, "mr", "view", strconv.Itoa(pr.Number), "--output", "json")
 	if err != nil {
@@ -374,7 +400,7 @@ func (c *Client) viewGitLab(ctx context.Context, dir string, pr PR) (PR, error) 
 	pr.State = map[string]string{"opened": StateOpen, "merged": StateMerged, "closed": StateClosed, "locked": StateOpen}[v.State]
 	pr.AutoMerge = v.MergeWhenPipeline
 	pr.Draft = v.Draft
-	pr.Failed = nil
+	pr.Failed, pr.Counts = nil, CheckCounts{}
 	pr.Checks = ChecksNone
 	if p := v.HeadPipeline; p != nil {
 		switch p.Status {

@@ -308,6 +308,24 @@ func statusLabel(v core.ThreadView) string {
 	return v.Status
 }
 
+// lineInset is how far a conversation's one-line rows reach past its left and right edges.
+const lineInset = space2
+
+// lineRow is a one-line row of a conversation that leads with an icon or a short label: a tool call,
+// folded steps, a thread update, the working line. Its padding gives its hover background room, and a
+// negative margin of the same takes the room back, so what it leads with sits on the left edge of the
+// messages and cards around it and its last child on their right edge.
+func lineRow() *ui.DivElement {
+	return ui.Div().Row().PaddingX(lineInset).MarginX(-lineInset)
+}
+
+// unfoldedSteps holds the steps a folded line shows when opened, indented under the line's leading
+// icon (14 px wide) with a rule down its middle.
+func unfoldedSteps(ctx *ui.Context) *ui.DivElement {
+	return ui.Div().Column().Gap(2).MarginLeft(6).PaddingLeft(space3).
+		BorderEdges(ui.Edges{Left: 1}, ctx.Theme().Border)
+}
+
 // dot is a small round status mark.
 func dot(c ui.Color, size float32) *ui.DivElement {
 	return ui.Div().Size(ui.Px(size), ui.Px(size)).Radius(size / 2).Background(c).Shrink(0)

@@ -317,11 +317,12 @@ func demoBackend() *fakeBackend {
 	review := worker("b1b2b3b4-paginate", "Paginate the audit log", repos[1], core.StatusIdle, 40*time.Minute, 0.66)
 	review.Forge, review.CanMerge, review.CanMergeLocal = forge.GitHub, false, false
 	review.PR = &forge.PR{Kind: forge.GitHub, Number: 142, URL: "https://github.com/acme/api/pull/142", State: forge.StateOpen,
-		Checks: forge.ChecksPending, AutoMerge: true, Blocked: "waiting for checks"}
+		Checks: forge.ChecksPending, Counts: forge.CheckCounts{Total: 7, Passed: 6, Pending: 1}, AutoMerge: true, Blocked: "waiting for checks"}
 	ci := worker("c1c2c3c4-csv", "Add CSV export to reports", repos[0], core.StatusIdle, 55*time.Minute, 0.81)
 	ci.Forge, ci.CanMerge, ci.CanMergeLocal = forge.GitHub, false, false
 	ci.PR = &forge.PR{Kind: forge.GitHub, Number: 88, URL: "https://github.com/acme/web/pull/88", State: forge.StateOpen,
-		Checks: forge.ChecksFailing, Failed: []forge.Check{{Name: "test (web)"}}, Blocked: "checks failed"}
+		Checks: forge.ChecksFailing, Failed: []forge.Check{{Name: "test (web)"}}, Counts: forge.CheckCounts{Total: 6, Passed: 4, Failed: 1, Pending: 1},
+		Blocked: "checks failed"}
 	// A task across the client, its API and its database: before its PRs, and with them open.
 	part := func(name string, changed int, pr *forge.PR) core.PartView {
 		p := core.PartView{Part: core.Part{Repo: "/home/dev/code/" + name, Branch: "feat/OW-512-audit-export", BaseBranch: "main", PR: pr},
@@ -335,9 +336,9 @@ func demoBackend() *fakeBackend {
 	export.Forge, export.CanOpenPR, export.CanMerge, export.CanMergeLocal = "", true, false, true
 	landing := worker("e5e6e7e8-landing", "Add tenant usage report", "/home/dev/code/client", core.StatusIdle, 48*time.Minute, 2.1)
 	landing.Parts = []core.PartView{
-		part("client", 2, &forge.PR{Kind: forge.GitHub, Number: 88, URL: "https://github.com/acme/client/pull/88", State: forge.StateOpen, Checks: forge.ChecksFailing, Failed: []forge.Check{{Name: "test (web)"}}, Blocked: "checks failed"}),
-		part("api", 4, &forge.PR{Kind: forge.GitHub, Number: 142, URL: "https://github.com/acme/api/pull/142", State: forge.StateOpen, Checks: forge.ChecksPending, Blocked: "waiting for checks"}),
-		part("db", 1, &forge.PR{Kind: forge.GitHub, Number: 31, URL: "https://github.com/acme/db/pull/31", State: forge.StateOpen, Checks: forge.ChecksPassing, Mergeable: true}),
+		part("client", 2, &forge.PR{Kind: forge.GitHub, Number: 88, URL: "https://github.com/acme/client/pull/88", State: forge.StateOpen, Checks: forge.ChecksFailing, Failed: []forge.Check{{Name: "test (web)"}}, Counts: forge.CheckCounts{Total: 4, Passed: 3, Failed: 1}, Blocked: "checks failed"}),
+		part("api", 4, &forge.PR{Kind: forge.GitHub, Number: 142, URL: "https://github.com/acme/api/pull/142", State: forge.StateOpen, Checks: forge.ChecksPending, Counts: forge.CheckCounts{Total: 5, Passed: 3, Pending: 2}, Blocked: "waiting for checks"}),
+		part("db", 1, &forge.PR{Kind: forge.GitHub, Number: 31, URL: "https://github.com/acme/db/pull/31", State: forge.StateOpen, Checks: forge.ChecksPassing, Counts: forge.CheckCounts{Total: 3, Passed: 3}, Mergeable: true}),
 	}
 	landing.Forge, landing.PR, landing.CanOpenPR, landing.CanMerge, landing.CanMergeLocal = "", nil, false, true, false
 	audit := worker("a0b1c2d3-audit", "Find where uploads are logged", repos[1], core.StatusIdle, 25*time.Minute, 0.09)

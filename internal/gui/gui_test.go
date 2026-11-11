@@ -325,3 +325,29 @@ func TestWorkingComposerStopsThenSteers(t *testing.T) {
 	u.Press("enter")
 	waitSent(t, f, "Use the v2 endpoint instead")
 }
+
+// The round button above the composer shows only while the chat is scrolled up, and takes it back down.
+func TestToLatestButton(t *testing.T) {
+	f := demoBackend()
+	longChat(f)
+	_, u := newUI(t, f)
+	settle := func() {
+		for i := 0; i < 10; i++ {
+			u.Advance(100 * time.Millisecond)
+		}
+	}
+	settle()
+	if u.Has("to-latest") {
+		t.Fatal("the button shows while the chat is at its latest message")
+	}
+	u.Get("orch-transcript").Scroll(0, -3000)
+	settle()
+	if !u.Has("to-latest") {
+		t.Fatal("no button once the chat is scrolled up")
+	}
+	u.Click("to-latest")
+	settle()
+	if u.Has("to-latest") {
+		t.Fatal("the button stayed after it scrolled to the latest message")
+	}
+}

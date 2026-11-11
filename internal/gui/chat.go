@@ -182,6 +182,7 @@ func (a *App) transcript(ctx *ui.Context, v core.ThreadView, items []core.Item, 
 		rows = append(rows, row{key: "busy", busy: true})
 	}
 	h := ui.Local(ctx, scope+"-list", ui.NewListHandle()).Peek()
+	atEnd := ui.Local(ctx, scope+"-at-end", true)
 	// Open on the latest message; after that the list follows new ones while it is at the end.
 	if started := ui.Local(ctx, scope+"-started", false); !started.Peek() && len(rows) > 0 {
 		started.Set(true)
@@ -199,15 +200,43 @@ func (a *App) transcript(ctx *ui.Context, v core.ThreadView, items []core.Item, 
 					Child(a.rowView(rctx, v, r)))
 		})
 	}).Handle(h).SelectionContainer().Key(scope + "-transcript").Label("Conversation").
-		Style(ui.Style{Grow: 1, Padding: ui.Edges{Top: space4, Bottom: space2}})
-	if scope != "orch" {
-		return list // a thread reads from its top, like a document, rather than sinking to the composer
+		Style(ui.Style{Grow: 1, Padding: ui.Edges{Top: space4, Bottom: space2}}).
+		OnAtEnd(func(end bool) { atEnd.Set(end) })
+	if scope == "orch" {
+		list = list.Bottom() // a thread reads from its top, like a document, rather than sinking to the composer
 	}
-	list = list.Bottom()
+	// The list and, floating over its foot, the way back to the latest message.
+	view := ui.Div().Column().Grow(1).MinHeight(ui.Px(0)).
+		Child(list).
+		Child(ui.Component(func(ctx *ui.Context) ui.Element { return toLatestButton(ctx, atEnd, h) }))
+	if scope != "orch" {
+		return view
+	}
 	return ui.Div().Column().Grow(1).MinHeight(ui.Px(0)).
 		Child(ui.Component(func(ctx *ui.Context) ui.Element { return a.offscreenPill(ctx, rows, h, true) })).
-		Child(list).
+		Child(view).
 		Child(ui.Component(func(ctx *ui.Context) ui.Element { return a.offscreenPill(ctx, rows, h, false) }))
+}
+
+// toLatestButton floats a round down-arrow button over the foot of a conversation, centred above its
+// composer, while the conversation is scrolled up from its latest message; a click goes back down.
+// It reads atEnd alone, so scrolling re-renders only the button.
+func toLatestButton(ctx *ui.Context, atEnd *ui.Signal[bool], h *ui.ListHandle) ui.Element {
+	t := ctx.Theme()
+	// A strip of no height, so the conversation under it still takes clicks and the wheel.
+	strip := ui.Div().Absolute().Left(0).Right(0).Bottom(space3).Height(ui.Px(0)).ZIndex(1).
+		Row().Justify(ui.Center).Align(ui.End)
+	if atEnd.Get() {
+		return strip
+	}
+	const size = 32
+	return strip.Child(ui.Div().Size(ui.Px(size), ui.Px(size)).Radius(size/2).Center().Shrink(0).
+		Background(t.Surface).Border(1, t.BorderStrong).Shadow(ui.ShadowMd).
+		Cursor(ui.CursorPointer).Hover(ui.Style{Background: t.SurfaceHover}).
+		Role(access.RoleButton).Label("Scroll to the latest message").TabIndex(0).Tooltip("Scroll to the latest").
+		Key("to-latest").
+		OnClick(func() { h.ScrollToEnd() }).
+		Child(ui.Icon(icons.ArrowDown).Size(16).Color(t.TextMuted)))
 }
 
 // orchRows lays out Solo's chat one exchange at a time: each message to Solo, one quiet folded line
@@ -393,7 +422,7 @@ func (a *App) rowView(ctx *ui.Context, v core.ThreadView, r row) ui.Element {
 				label = s
 			}
 		}
-		return ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space2).MinWidth(ui.Px(0)).
+		return lineRow().Align(ui.Center).Gap(space2).MinWidth(ui.Px(0)).
 			Child(ui.ProgressRing().Size(ui.RingSmall).Label("Working")).
 			Child(caption(ctx, label).Truncate().Grow(1).MinWidth(ui.Px(0)))
 	case r.live != nil:
@@ -465,7 +494,7 @@ func (a *App) stepView(ctx *ui.Context, it *core.Item, v core.ThreadView) ui.Ele
 	case core.ItemAssistant:
 		var d core.TextData
 		it.Decode(&d)
-		return ui.Div().PaddingX(space2).Child(a.md(ctx, d.Text, viewBases(v)))
+		return a.md(ctx, d.Text, viewBases(v)) // on the edge of the steps around it
 	case core.ItemThinking:
 		var d core.TextData
 		it.Decode(&d)
@@ -546,7 +575,7 @@ func (a *App) stepsView(ctx *ui.Context, steps []*core.Item, threadID string) ui
 				state = nil
 			}
 		}
-		head := ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space2).Height(ui.Px(28)).Radius(radiusS).
+		head := lineRow().Align(ui.Center).Gap(space2).Height(ui.Px(28)).Radius(radiusS).
 			Cursor(ui.CursorPointer).Hover(ui.Style{Background: t.SurfaceHover}).
 			Role(access.RoleButton).Label(label).TabIndex(0).
 			OnClick(func() { open.Update(func(o bool) bool { return !o }) }).
@@ -558,8 +587,7 @@ func (a *App) stepsView(ctx *ui.Context, steps []*core.Item, threadID string) ui
 			Child(ui.Text(latest).FontSize(12).TextColor(t.TextSubtle).Truncate().Grow(1).MinWidth(ui.Px(0)))
 		col := ui.Div().Column().Gap(2).Child(head)
 		if open.Get() {
-			inner := ui.Div().Column().Gap(2).PaddingLeft(space3).MarginLeft(space3).
-				BorderEdges(ui.Edges{Left: 1}, t.Border)
+			inner := unfoldedSteps(ctx)
 			for _, it := range steps {
 				inner = inner.Child(a.stepView(ctx, it, core.ThreadView{}))
 			}
@@ -699,13 +727,13 @@ func (a *App) updateRow(ctx *ui.Context, u update, trailing ui.Element) *ui.DivE
 	var line *ui.DivElement
 	if a.chatWidth(ctx) < 640 {
 		// Narrow: the thread on one line and what happened under it, so neither is cut to a few words.
-		line = ui.Div().Row().Align(ui.Start).Gap(space2).PaddingX(space2).PaddingY(3).Radius(radiusS).
+		line = lineRow().Align(ui.Start).Gap(space2).PaddingY(3).Radius(radiusS).
 			Child(ui.Div().Height(ui.Px(18)).Row().Align(ui.Center).Child(ui.Icon(u.icon).Size(14).Color(iconColor))).
 			Child(ui.Div().Column().Gap(1).Grow(1).MinWidth(ui.Px(0)).
 				Child(name.Truncate()).
 				Child(ui.Text(u.repo + " · " + u.what).FontSize(12).TextColor(whatColor).Truncate()))
 	} else {
-		line = ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space2).Height(ui.Px(26)).Radius(radiusS).
+		line = lineRow().Align(ui.Center).Gap(space2).Height(ui.Px(26)).Radius(radiusS).
 			Child(ui.Icon(u.icon).Size(14).Color(iconColor)).
 			Child(ui.Text(u.repo).FontSize(12).TextColor(t.TextSubtle).Width(ui.Px(56)).Shrink(0).Truncate()).
 			Child(name.NoWrap().Shrink(0).MaxWidth(ui.Percent(45)).Truncate()).
@@ -748,7 +776,7 @@ func (a *App) updateWithSteps(ctx *ui.Context, u update, steps []*core.Item) ui.
 			Child(ui.Icon(map[bool]*icons.Icon{true: icons.ChevronDown, false: icons.ChevronRight}[open.Get()]).Size(12).Color(t.TextSubtle))
 		col := ui.Div().Column().Gap(2).Child(a.updateRow(ctx, u, toggle))
 		if open.Get() {
-			inner := ui.Div().Column().Gap(2).PaddingLeft(space3).MarginLeft(space3).BorderEdges(ui.Edges{Left: 1}, t.Border)
+			inner := unfoldedSteps(ctx)
 			for _, it := range steps {
 				inner = inner.Child(a.stepView(ctx, it, core.ThreadView{}))
 			}
@@ -803,7 +831,7 @@ func (a *App) quietSteps(ctx *ui.Context, steps []*core.Item) ui.Element {
 		if n == 1 {
 			label = "1 step"
 		}
-		head := ui.Div().Row().Align(ui.Center).Gap(space1).PaddingX(space2).Height(ui.Px(22)).Radius(radiusS).
+		head := lineRow().Align(ui.Center).Gap(space1).Height(ui.Px(22)).Radius(radiusS).
 			AlignSelf(ui.Start).Cursor(ui.CursorPointer).Hover(ui.Style{Background: t.SurfaceHover}).
 			Role(access.RoleButton).Label("Show what Solo did: " + label).TabIndex(0).
 			OnClick(func() { open.Update(func(o bool) bool { return !o }) }).
@@ -812,7 +840,7 @@ func (a *App) quietSteps(ctx *ui.Context, steps []*core.Item) ui.Element {
 			Child(ui.Icon(map[bool]*icons.Icon{true: icons.ChevronDown, false: icons.ChevronRight}[open.Get()]).Size(12).Color(t.TextSubtle))
 		col := ui.Div().Column().Gap(2).Child(head)
 		if open.Get() {
-			inner := ui.Div().Column().Gap(2).PaddingLeft(space3).MarginLeft(space3).BorderEdges(ui.Edges{Left: 1}, t.Border)
+			inner := unfoldedSteps(ctx)
 			for _, it := range steps {
 				inner = inner.Child(a.stepView(ctx, it, core.ThreadView{}))
 			}
@@ -853,7 +881,7 @@ func thinkingView(ctx *ui.Context, text string, live bool) ui.Element {
 		if live {
 			label = "Thinking"
 		}
-		head := ui.Div().Row().Align(ui.Center).Gap(6).PaddingX(space2).Height(ui.Px(26)).Cursor(ui.CursorPointer).
+		head := lineRow().Align(ui.Center).Gap(6).Height(ui.Px(26)).Cursor(ui.CursorPointer).
 			Role(access.RoleButton).Label(label).TabIndex(0).
 			OnClick(func() { open.Update(func(o bool) bool { return !o }) }).
 			Child(ui.Icon(icons.Brain).Size(13).Color(t.TextSubtle)).
@@ -861,7 +889,8 @@ func thinkingView(ctx *ui.Context, text string, live bool) ui.Element {
 			Child(ui.Icon(map[bool]*icons.Icon{true: icons.ChevronDown, false: icons.ChevronRight}[open.Get()]).Size(12).Color(t.TextSubtle))
 		col := ui.Div().Column().Gap(space1).Child(head)
 		if open.Get() {
-			col = col.Child(ui.Div().PaddingLeft(space6 + 2).
+			// The thought sits under the label, past the icon (13) and the gap (6).
+			col = col.Child(ui.Div().PaddingLeft(13 + 6).
 				Child(ui.Text(text).FontSize(12).TextColor(t.TextSubtle).Italic().Selectable()))
 		}
 		return col
@@ -884,7 +913,7 @@ func (a *App) toolView(ctx *ui.Context, d core.ToolData) ui.Element {
 		default:
 			state = ui.Div() // done is the quiet default
 		}
-		head := ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space2).Height(ui.Px(26)).Radius(radiusS).
+		head := lineRow().Align(ui.Center).Gap(space2).Height(ui.Px(26)).Radius(radiusS).
 			Cursor(ui.CursorPointer).Hover(ui.Style{Background: t.SurfaceHover}).
 			Role(access.RoleButton).Label(label + " " + detail).TabIndex(0).
 			OnClick(func() { open.Update(func(o bool) bool { return !o }) }).
@@ -898,7 +927,7 @@ func (a *App) toolView(ctx *ui.Context, d core.ToolData) ui.Element {
 		}
 		col := ui.Div().Column().Gap(space1).Child(head)
 		if open.Get() {
-			body := ui.Div().Column().Gap(space2).MarginLeft(space6).Padding(space3).Radius(radiusM).
+			body := ui.Div().Column().Gap(space2).MarginLeft(14+space2).Padding(space3).Radius(radiusM).
 				Background(t.Surface).Border(1, t.Border)
 			if len(d.Input) > 2 {
 				body = body.Child(ui.Text(prettyJSON(d.Input)).Mono().FontSize(12).TextColor(t.TextMuted).MaxLines(12).Selectable())
@@ -1030,7 +1059,7 @@ func taskView(ctx *ui.Context, d core.TaskData) ui.Element {
 	if strings.Contains(d.TaskType, "bash") || strings.Contains(d.TaskType, "shell") {
 		icon = icons.SquareTerminal
 	}
-	return ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space2).Height(ui.Px(26)).
+	return lineRow().Align(ui.Center).Gap(space2).Height(ui.Px(26)).
 		Child(ui.Icon(icon).Size(14).Color(t.TextMuted)).
 		Child(ui.Text(d.Description).FontSize(13).Medium().TextColor(t.TextMuted).NoWrap().Shrink(0)).
 		Child(ui.Text(detail).FontSize(12).TextColor(t.TextSubtle).Truncate().Grow(1).MinWidth(ui.Px(0))).
@@ -1040,7 +1069,7 @@ func taskView(ctx *ui.Context, d core.TaskData) ui.Element {
 func turnView(ctx *ui.Context, d core.TurnData) ui.Element {
 	t := ctx.Theme()
 	if d.Status == agent.TurnInterrupted || d.Status == agent.TurnCancelled {
-		return ui.Div().Row().Align(ui.Center).Gap(6).PaddingX(space2).
+		return lineRow().Align(ui.Center).Gap(6).
 			Child(ui.Icon(icons.CircleStop).Size(13).Color(t.TextSubtle)).
 			Child(subtle(ctx, "Stopped"))
 	}
@@ -1141,7 +1170,7 @@ func (a *App) questionCard(ctx *ui.Context, threadID string, d core.QuestionData
 			}
 			parts = append(parts, fmt.Sprintf("%s → %s", q.Question, ans))
 		}
-		return ui.Div().Row().Align(ui.Center).Gap(6).PaddingX(space2).
+		return lineRow().Align(ui.Center).Gap(6).
 			Child(ui.Icon(icons.MessageCircleQuestionMark).Size(13).Color(t.TextSubtle)).
 			Child(subtle(ctx, strings.Join(parts, " · ")))
 	}
@@ -1595,52 +1624,101 @@ func (a *App) cardWhere(ctx *ui.Context, where *ui.DivElement, th core.ThreadVie
 			Child(ui.Text(th.Title).FontSize(12).Medium().Truncate()))
 }
 
-// checksBadge says where a merge's checks stand: passed (or none required), running, or failed. A
-// local merge has none to wait for, so it shows as passed. nil before a pull request is opened, and
-// once the thread has landed.
+// checksBadge says where a merge's checks stand: passed (or none required), running with how many
+// are done, or failed. A local merge has none to wait for, so it shows as passed. nil before a pull
+// request is opened, and once the thread has landed.
 func checksBadge(ctx *ui.Context, th core.ThreadView) ui.Element {
 	t := ctx.Theme()
 	switch th.Status {
 	case core.StatusMerged, core.StatusDiscarded, core.StatusArchived:
 		return nil
 	}
-	icon, c, text, tip := icons.CircleCheck, t.Success, "Checks passed", "Every required check passed"
 	prs := openPRs(th)
 	if len(prs) == 0 && th.PR != nil && th.PR.State == forge.StateOpen {
 		prs = []*forge.PR{th.PR}
 	}
+	var cs checksState
 	switch {
 	case len(prs) > 0:
-		var failed []string
-		pending := false
-		for _, pr := range prs {
-			switch pr.Checks {
-			case forge.ChecksFailing:
-				failed = append(failed, checkNamesOf(pr.Failed)...)
-				if len(pr.Failed) == 0 {
-					failed = append(failed, fmt.Sprintf("%s #%d", pr.Kind.Noun(), pr.Number))
-				}
-			case forge.ChecksPending:
-				pending = true
-			case forge.ChecksNone:
-				tip = "No checks are required"
-			}
-		}
-		switch {
-		case len(failed) > 0:
-			icon, c, text, tip = icons.CircleX, t.Danger, "Checks failed", "Failed: "+strings.Join(failed, ", ")
-		case pending:
-			icon, c, text, tip = icons.Timer, t.Warning, "Checks running", "Waiting for the required checks"
-		}
+		cs = checksOf(prs)
 	case th.CanMerge && th.Forge == forge.None:
-		tip = "A local merge has no checks to wait for"
+		cs = checksState{checks: forge.ChecksPassing, text: "Checks passed", tip: "A local merge has no checks to wait for"}
 	default:
 		return nil
 	}
-	return ui.Div().Row().Align(ui.Center).Gap(4).PaddingLeft(space1).Shrink(0).Tooltip(tip).
+	icon, c := icons.CircleCheck, t.Success
+	switch cs.checks {
+	case forge.ChecksFailing:
+		icon, c = icons.CircleX, t.Danger
+	case forge.ChecksPending:
+		icon, c = icons.Timer, t.Warning
+	}
+	return ui.Div().Row().Align(ui.Center).Gap(4).PaddingLeft(space1).Shrink(0).Tooltip(cs.tip).
 		Child(ui.Text("·").FontSize(12).TextColor(t.TextSubtle)).
 		Child(ui.Icon(icon).Size(13).Color(c)).
-		Child(ui.Text(text).FontSize(12).TextColor(c).NoWrap())
+		Child(ui.Text(cs.text).FontSize(12).TextColor(c).NoWrap())
+}
+
+// checksState is where a merge's checks stand, as its card says it.
+type checksState struct {
+	checks    string // forge.ChecksPassing, ChecksPending or ChecksFailing
+	text, tip string
+}
+
+// checksOf sums up the checks of a thread's open pull requests: "Checks: 6/7 passed · 1 running"
+// while they run, "Checks failed: 1 of 7" once one fails (failure wins over running), "Checks passed"
+// when done. A forge that reports no counts (GitLab's one pipeline) gets the plain words.
+func checksOf(prs []*forge.PR) checksState {
+	var n forge.CheckCounts
+	var failed []string
+	pending, counted := false, true
+	for _, pr := range prs {
+		n.Total += pr.Counts.Total
+		n.Passed += pr.Counts.Passed
+		n.Failed += pr.Counts.Failed
+		n.Pending += pr.Counts.Pending
+		switch pr.Checks {
+		case forge.ChecksFailing:
+			failed = append(failed, checkNamesOf(pr.Failed)...)
+			if len(pr.Failed) == 0 {
+				failed = append(failed, fmt.Sprintf("%s #%d", pr.Kind.Noun(), pr.Number))
+			}
+		case forge.ChecksPending:
+			pending = true
+		}
+		if pr.Checks != forge.ChecksNone && pr.Counts.Total == 0 {
+			counted = false // checks, but no counts to sum
+		}
+	}
+	running := ""
+	if n.Pending > 0 {
+		running = fmt.Sprintf(" · %d running", n.Pending)
+	}
+	switch {
+	case len(failed) > 0:
+		s := checksState{checks: forge.ChecksFailing, text: "Checks failed", tip: "Failed: " + strings.Join(failed, ", ")}
+		if counted {
+			s.text = fmt.Sprintf("Checks failed: %d of %d", n.Failed, n.Total) + running
+		}
+		return s
+	case pending:
+		s := checksState{checks: forge.ChecksPending, text: "Checks running", tip: "Waiting for the required checks"}
+		if counted {
+			s.text = fmt.Sprintf("Checks: %d/%d passed", n.Passed, n.Total) + running
+			if n.Passed == 0 {
+				s.text = fmt.Sprintf("Checks: %d running", n.Pending)
+			}
+			s.tip = fmt.Sprintf("Waiting for the required checks: %d of %d still running", n.Pending, n.Total)
+		}
+		return s
+	case n.Total == 0 && !slices.ContainsFunc(prs, func(pr *forge.PR) bool { return pr.Checks == forge.ChecksPassing }):
+		return checksState{checks: forge.ChecksPassing, text: "Checks passed", tip: "No checks are required"}
+	}
+	s := checksState{checks: forge.ChecksPassing, text: "Checks passed", tip: "Every required check passed"}
+	if counted && n.Total > 0 {
+		s.tip = fmt.Sprintf("All %d checks passed", n.Total)
+	}
+	return s
 }
 
 // markBuilt records that a transcript row is built (near the viewport) or not. UI thread only.

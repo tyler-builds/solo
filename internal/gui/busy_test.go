@@ -50,8 +50,12 @@ func busyBackend() *fakeBackend {
 		switch checks {
 		case forge.ChecksFailing:
 			p.Blocked = "checks failed"
+			p.Counts = forge.CheckCounts{Total: 5 + len(failed), Passed: 5, Failed: len(failed)}
 		case forge.ChecksPending:
 			p.Blocked = "waiting for checks"
+			p.Counts = forge.CheckCounts{Total: 7, Passed: 6, Pending: 1}
+		case forge.ChecksPassing:
+			p.Counts = forge.CheckCounts{Total: 7, Passed: 7}
 		}
 		v.PR = p
 		return v
