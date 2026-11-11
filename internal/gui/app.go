@@ -363,12 +363,15 @@ func (a *App) openEditor(dir string) {
 	}
 }
 
-// openTerminal opens a terminal in a folder.
+// openTerminal opens a terminal in a folder, off the UI thread: on Windows the first one can wait on
+// a check that PowerShell may run.
 func (a *App) openTerminal(dir string) {
 	cmd := a.cfg.Peek().TerminalCommand
-	if err := launch.Terminal(cmd, dir); err != nil {
-		a.notify(ui.ToastError, "Couldn't open a terminal", err.Error())
-	}
+	go func() {
+		if err := launch.Terminal(cmd, dir); err != nil {
+			a.notify(ui.ToastError, "Couldn't open a terminal", err.Error())
+		}
+	}()
 }
 
 // copyText copies text to the clipboard and says so.

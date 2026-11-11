@@ -15,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/tyler-builds/solo/internal/proc"
 )
 
 // Sidecar is one running solo-agent process.
@@ -43,9 +45,8 @@ type Command struct {
 
 // StartSidecar starts the sidecar and checks its protocol version.
 func StartSidecar(ctx context.Context, c Command, cb Callbacks, log *slog.Logger) (*Sidecar, error) {
-	cmd := exec.Command(c.Path, c.Args...)
+	cmd := proc.Command(c.Path, c.Args...)
 	cmd.Env = append(os.Environ(), c.Env...)
-	setSysProcAttr(cmd)
 	in, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err

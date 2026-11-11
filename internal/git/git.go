@@ -17,11 +17,13 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/tyler-builds/solo/internal/proc"
 )
 
 // Run runs git in dir and returns its trimmed stdout. A failure's error includes git's stderr.
 func Run(ctx context.Context, dir string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd := proc.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
 	// Never prompt: a credential or editor prompt would hang a background call.
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_EDITOR=true", "GIT_OPTIONAL_LOCKS=0")
@@ -420,7 +422,7 @@ func DiffPrefixed(ctx context.Context, worktree, base, prefix string) (string, e
 			continue
 		}
 		// --no-index exits 1 when files differ, which they always do here.
-		cmd := exec.CommandContext(ctx, "git", append(append([]string{"diff", "--no-color", "--no-index"}, px...), "--", os.DevNull, p)...)
+		cmd := proc.CommandContext(ctx, "git", append(append([]string{"diff", "--no-color", "--no-index"}, px...), "--", os.DevNull, p)...)
 		cmd.Dir = worktree
 		out, _ := cmd.Output()
 		if b.Len() > 0 && !strings.HasSuffix(b.String(), "\n") {
@@ -539,7 +541,7 @@ func mergeTree(ctx context.Context, dir, base, a, b string) (string, []string, e
 	if base != "" {
 		args = append(args, "--merge-base="+base)
 	}
-	cmd := exec.CommandContext(ctx, "git", append(args, a, b)...)
+	cmd := proc.CommandContext(ctx, "git", append(args, a, b)...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0")
 	var out, errb bytes.Buffer

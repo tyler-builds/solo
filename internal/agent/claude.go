@@ -11,6 +11,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/tyler-builds/solo/internal/proc"
 )
 
 // Claude is where the claude executable was found.
@@ -107,8 +109,7 @@ func ClaudeVersion(ctx context.Context, path string) (string, error) {
 	if strings.HasSuffix(path, ".js") {
 		name, args = "node", []string{path, "--version"}
 	}
-	cmd := exec.CommandContext(ctx, name, args...)
-	setSysProcAttr(cmd)
+	cmd := proc.CommandContext(ctx, name, args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		if errors.Is(err, exec.ErrNotFound) || errors.Is(err, os.ErrNotExist) {
