@@ -29,7 +29,8 @@ var railGroups = []struct {
 	{"No changes", []string{statusNoChanges}},
 	{"Merged", []string{core.StatusMerged}},
 	{"Stopped", []string{core.StatusInterrupted}},
-	// Last, one line each: work in progress needs nothing from the user.
+	// Pinned to the foot of the rail, one line each: work in progress needs nothing from the user, but
+	// stays in sight.
 	{"Working", []string{core.StatusRunning, core.StatusStarting, core.StatusQueued}},
 }
 
@@ -101,6 +102,7 @@ func (a *App) rail(ctx *ui.Context) ui.Element {
 			Child(ui.Icon(icons.Layers).Size(22).Color(t.TextSubtle)).
 			Child(caption(ctx, emptyRailText(query)).Align(ui.Center)))
 	}
+	var working ui.Element
 	for gi, g := range railGroups {
 		var group []core.ThreadView
 		for _, th := range open {
@@ -112,13 +114,11 @@ func (a *App) rail(ctx *ui.Context) ui.Element {
 			continue
 		}
 		slices.SortStableFunc(group, func(x, y core.ThreadView) int { return y.UpdatedAt.Compare(x.UpdatedAt) })
-		list = list.Child(groupHeader(ctx, g.title, len(group), g.statuses[0]))
-		if gi == len(railGroups)-1 { // work in progress needs nothing from the user: one line each
-			for _, th := range group {
-				list = list.Child(a.workingRow(ctx, th))
-			}
+		if gi == len(railGroups)-1 {
+			working = a.workingGroup(ctx, g.title, g.statuses[0], group)
 			continue
 		}
+		list = list.Child(groupHeader(ctx, g.title, len(group), g.statuses[0]))
 		for _, th := range group {
 			list = list.Child(a.threadRow(ctx, th))
 		}
@@ -128,7 +128,19 @@ func (a *App) rail(ctx *ui.Context) ui.Element {
 		Child(head).
 		Child(a.railFilterInput(ctx)).
 		Child(ui.Div().Column().Grow(1).MinHeight(ui.Px(0)).ScrollY().Child(list)).
+		Child(ui.If(working != nil, working)).
 		Child(a.usagePanel(ctx))
+}
+
+// workingGroup is the threads at work, pinned below the scrolling list so they stay in sight. Many at
+// once scroll within it, so the list above keeps its room.
+func (a *App) workingGroup(ctx *ui.Context, title, status string, group []core.ThreadView) ui.Element {
+	col := ui.Div().Column().Gap(space1).PaddingX(space2).PaddingBottom(space1).
+		Child(groupHeader(ctx, title, len(group), status))
+	for _, th := range group {
+		col = col.Child(a.workingRow(ctx, th))
+	}
+	return ui.Div().Column().Shrink(0).MaxHeight(ui.Percent(35)).ScrollY().Key("rail-working").Child(col)
 }
 
 // repoMenu narrows the rail to one repository. It shows only when the threads span several, or a

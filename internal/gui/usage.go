@@ -95,8 +95,7 @@ func (a *App) usagePanel(ctx *ui.Context) ui.Element {
 	t := ctx.Theme()
 	limits := a.rate.Get()
 	now := time.Now()
-	box := ui.Div().Column().Gap(6).PaddingX(space4).PaddingY(space3).Shrink(0).
-		BorderEdges(ui.Edges{Top: 1}, t.Border)
+	box := ui.Div().Column().Gap(6).PaddingX(space4).PaddingY(space3).Shrink(0)
 	rows := 0
 	for _, e := range limits {
 		used, ok := core.UsedFraction(e)
