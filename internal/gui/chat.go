@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/tyler-builds/jamb/access"
@@ -527,7 +528,16 @@ func (a *App) stepsView(ctx *ui.Context, steps []*core.Item, threadID string) ui
 	})
 }
 
-var updateLine = regexp.MustCompile(`^Thread ([0-9a-zA-Z-]{4,}) "(.*)" \(([^)]*)\) (.*)$`)
+// updateLine matches a thread update: `Thread <id> "<title>" (<repos>) <what>`, or with a colon after
+// the repos for pull-request events (`... (<repos>): checks passed on PR #3 (<url>).`).
+var updateLine = regexp.MustCompile(`^Thread ([0-9a-zA-Z-]{4,}) ("(?:[^"\\]|\\.)*") \(([^)]*)\):? (.*)$`)
+
+// changeRequest matches a pull or merge request as an update names it: `PR #3 (<url>)`, or
+// `the <repo> PR #3 (<url>)` in a multi-repo thread.
+var changeRequest = regexp.MustCompile(`^(?:the (\S+) )?((?:PR|MR) #\d+)(?: \([^)]*\))?`)
+
+// checkURL matches the link failedChecks puts after a check's name.
+var checkURL = regexp.MustCompile(` \(https?://[^)]*\)`)
 
 // update is one line of a thread update the app sent Solo.
 type update struct {
@@ -544,30 +554,92 @@ func (a *App) parseUpdates(t *ui.Theme, text string) []update {
 		if m == nil {
 			continue
 		}
-		u := update{threadID: a.findThreadID(m[1]), name: m[2], repo: m[3], what: m[4], icon: icons.Activity, color: t.TextMuted}
-		rest := m[4]
-		switch {
-		case strings.HasPrefix(rest, "finished its turn."):
-			u.icon, u.color, u.what = icons.CircleCheck, t.Success, "finished"
-			if s := strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(rest, "finished its turn."), " Summary:")); s != "" {
-				u.what += " · " + firstSentence(stripMarkdown(s))
-			}
-		case strings.HasPrefix(rest, "failed:"):
-			u.icon, u.color = icons.CircleAlert, t.Danger
-			u.what = "failed · " + strings.TrimSpace(strings.TrimPrefix(rest, "failed:"))
-		case strings.HasPrefix(rest, "is asking a question"):
-			u.icon, u.color, u.what = icons.MessageCircleQuestionMark, t.Warning, "has a question"
-		case strings.HasPrefix(rest, "was interrupted"):
-			u.icon, u.color, u.what = icons.CircleStop, t.TextSubtle, "was stopped"
-		case strings.HasPrefix(rest, "was merged into "):
-			u.icon, u.color = icons.GitMerge, ui.Hex(pal(t).info)
-			u.what = "merged into " + strings.TrimSuffix(strings.TrimPrefix(rest, "was merged into "), " by the user.")
-		case strings.HasPrefix(rest, "was discarded"):
-			u.icon, u.color, u.what = icons.Trash, t.TextSubtle, "was discarded"
+		name, err := strconv.Unquote(m[2])
+		if err != nil {
+			name = strings.Trim(m[2], `"`)
 		}
+		u := update{threadID: a.findThreadID(m[1]), name: name, repo: m[3], what: m[4], icon: icons.Activity, color: t.TextMuted}
+		describeUpdate(t, &u, m[4])
 		out = append(out, u)
 	}
 	return out
+}
+
+// describeUpdate sets an update's icon, color and short text from what the line says happened.
+func describeUpdate(t *ui.Theme, u *update, rest string) {
+	info := ui.Hex(pal(t).info)
+	switch {
+	case strings.HasPrefix(rest, "finished its turn."):
+		u.icon, u.color, u.what = icons.CircleCheck, t.Success, "finished"
+		if s := strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(rest, "finished its turn."), " Summary:")); s != "" {
+			u.what += " · " + firstSentence(stripMarkdown(s))
+		}
+	case strings.HasPrefix(rest, "resolved the conflicts"):
+		u.icon, u.color, u.what = icons.GitMerge, info, "resolved its merge conflicts"
+	case strings.HasPrefix(rest, "failed:"):
+		u.icon, u.color = icons.CircleAlert, t.Danger
+		u.what = "failed · " + strings.TrimSpace(strings.TrimPrefix(rest, "failed:"))
+	case strings.HasPrefix(rest, "is asking a question"):
+		u.icon, u.color, u.what = icons.MessageCircleQuestionMark, t.Warning, "has a question"
+	case strings.HasPrefix(rest, "was interrupted"):
+		u.icon, u.color, u.what = icons.CircleStop, t.TextSubtle, "was stopped"
+	case strings.HasPrefix(rest, "is merged into "):
+		u.icon, u.color = icons.GitMerge, info
+		u.what = "merged into " + strings.TrimSuffix(strings.TrimPrefix(rest, "is merged into "), ".")
+	case strings.HasPrefix(rest, "was merged into "): // older history
+		u.icon, u.color = icons.GitMerge, info
+		u.what = "merged into " + strings.TrimSuffix(strings.TrimSuffix(strings.TrimPrefix(rest, "was merged into "), " by the user."), ".")
+	case strings.HasPrefix(rest, "every repository's change has landed"):
+		u.icon, u.color, u.what = icons.GitMerge, info, "merged in every repository"
+	case strings.HasPrefix(rest, "was discarded"):
+		u.icon, u.color, u.what = icons.Trash, t.TextSubtle, "was discarded"
+	case strings.HasPrefix(rest, "the user opened "):
+		if cr, tail, ok := cutChangeRequest(strings.TrimPrefix(rest, "the user opened ")); ok {
+			u.icon, u.color, u.what = icons.GitPullRequest, info, "opened "+cr
+			if strings.Contains(tail, "Auto-merge is on") {
+				u.what += " · auto-merge on"
+			}
+		}
+	case strings.HasPrefix(rest, "checks passed on "):
+		if cr, _, ok := cutChangeRequest(strings.TrimPrefix(rest, "checks passed on ")); ok {
+			u.icon, u.color, u.what = icons.CircleCheck, t.Success, "checks passed on "+cr
+		}
+	case strings.HasPrefix(rest, "checks failed on "):
+		if cr, tail, ok := cutChangeRequest(strings.TrimPrefix(rest, "checks failed on ")); ok {
+			u.icon, u.color, u.what = icons.CircleAlert, t.Danger, "checks failed on "+cr
+			// The names come before the instructions for Solo, which start a new sentence.
+			names, _, _ := strings.Cut(strings.TrimPrefix(tail, ": "), ". ")
+			if names = strings.TrimSuffix(checkURL.ReplaceAllString(names, ""), "."); names != "" {
+				u.what += " · " + names
+			}
+		}
+	default:
+		cr, tail, ok := cutChangeRequest(rest)
+		if !ok {
+			return
+		}
+		switch {
+		case strings.HasPrefix(tail, " merged into "):
+			u.icon, u.color = icons.GitMerge, info
+			u.what = cr + " merged into " + strings.TrimSuffix(strings.TrimPrefix(tail, " merged into "), ".")
+		case strings.HasPrefix(tail, " was closed without merging"):
+			u.icon, u.color, u.what = icons.GitPullRequestClosed, t.TextSubtle, cr+" closed without merging"
+		}
+	}
+}
+
+// cutChangeRequest reads the pull or merge request an update starts with, shortened to "PR #3" (or
+// "web PR #3" in a multi-repo thread), and returns what follows it.
+func cutChangeRequest(s string) (cr, tail string, ok bool) {
+	m := changeRequest.FindStringSubmatch(s)
+	if m == nil {
+		return "", s, false
+	}
+	cr = m[2]
+	if m[1] != "" {
+		cr = m[1] + " " + cr
+	}
+	return cr, s[len(m[0]):], true
 }
 
 // updateLine renders one thread update; trailing goes before the chevron (an actions toggle).
