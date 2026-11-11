@@ -37,6 +37,7 @@ type fakeBackend struct {
 	plain    []string
 	inited   []string
 	sent     []string
+	sentImgs [][]string // the images sent with each message in sent
 	merged   []string
 	opened   []string
 	nextID   int64
@@ -105,12 +106,14 @@ func (f *fakeBackend) UpdateTodo(id string, ch core.TodoChange) (core.Todo, erro
 func (f *fakeBackend) SendToOrchestrator(_ context.Context, text string, images ...string) error {
 	f.mu.Lock()
 	f.sent = append(f.sent, text)
+	f.sentImgs = append(f.sentImgs, images)
 	f.mu.Unlock()
 	return nil
 }
 func (f *fakeBackend) Send(_ context.Context, _, text string, images ...string) error {
 	f.mu.Lock()
 	f.sent = append(f.sent, text)
+	f.sentImgs = append(f.sentImgs, images)
 	f.mu.Unlock()
 	return nil
 }

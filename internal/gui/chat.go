@@ -1436,7 +1436,7 @@ func (a *App) composer(ctx *ui.Context, v core.ThreadView, key, placeholder stri
 		t := ctx.Theme()
 		draft := ui.Local(ctx, key, "")
 		images := ui.Local(ctx, key+"-images", []string(nil))
-		var focus *ui.FocusHandle
+		focus := ui.Local(ctx, key+"-focus", ui.NewFocusHandle()).Peek()
 		if key == "orch-draft" {
 			draft = a.orchDraft // the pinned question folds while the user writes to Solo
 			focus = a.orchFocus
@@ -1451,19 +1451,26 @@ func (a *App) composer(ctx *ui.Context, v core.ThreadView, key, placeholder stri
 			images.Set(nil)
 			a.run("Sending", func(context.Context) error { return send(text, imgs) })
 		}
-		attach := func(load func() ([]string, error)) {
+		// attach adds images as they load; refocus puts the caret back in the text, for images that came
+		// from outside it (the file picker or a drop), so Enter sends them.
+		attach := func(refocus bool, load func() ([]string, error)) {
 			go func() {
 				paths, err := load()
 				if err != nil {
 					a.notify(ui.ToastError, "Couldn't attach the image", err.Error())
 				}
 				if len(paths) > 0 {
-					a.onUI(func() { images.Set(append(slices.Clone(images.Peek()), paths...)) })
+					a.onUI(func() {
+						images.Set(append(slices.Clone(images.Peek()), paths...))
+						if refocus {
+							focus.Focus()
+						}
+					})
 				}
 			}()
 		}
 		importFiles := func(files []string) {
-			attach(func() ([]string, error) {
+			attach(true, func() ([]string, error) {
 				var out []string
 				for _, f := range files {
 					p, err := a.b.ImportImage(f)
@@ -1524,7 +1531,7 @@ func (a *App) composer(ctx *ui.Context, v core.ThreadView, key, placeholder stri
 		area := ui.TextArea(draft).Placeholder(placeholder).Label(placeholder).MinRows(1).Borderless().
 			MaxHeight(ui.Px(220)).Width(ui.Full).Key(key + "-area").FocusHandle(focus).Marks(marks).
 			OnPasteImage(func(img image.Image) {
-				attach(func() ([]string, error) {
+				attach(false, func() ([]string, error) {
 					p, err := a.b.SaveImage(img)
 					if err != nil {
 						return nil, err
@@ -1542,17 +1549,20 @@ func (a *App) composer(ctx *ui.Context, v core.ThreadView, key, placeholder stri
 			MinHeight(ui.Px(52)).Radius(radiusXL).Border(1, t.BorderStrong).Background(t.Surface).
 			FocusWithin(ui.Style{BorderColor: t.TextSubtle}).
 			OnDrop(ui.Drop(func(f ui.Files, _ *ui.DropEvent) { importFiles(f) }))
+		// The thumbnails go above the text, so both rows are keyed: unkeyed, the text's row would take a
+		// new identity when the thumbnails appear, and the text area would be rebuilt without focus.
 		if imgs := images.Get(); len(imgs) > 0 {
-			strip := ui.Div().Row().Wrap().Gap(space2).PaddingTop(space1).PaddingBottom(space2)
+			strip := ui.Div().Key(key + "-images").Row().Wrap().Gap(space2).PaddingTop(space1).PaddingBottom(space2)
 			for i, p := range imgs {
 				idx := i
 				strip = strip.Child(a.thumb(ctx, p, 56, func() {
 					images.Set(slices.Delete(slices.Clone(images.Peek()), idx, idx+1))
+					focus.Focus() // the remove button goes with the image
 				}))
 			}
 			box = box.Child(strip)
 		}
-		return box.Child(ui.Div().Row().Align(ui.End).Gap(space2).
+		return box.Child(ui.Div().Key(key + "-row").Row().Align(ui.End).Gap(space2).
 			Child(ui.Div().Column().Grow(1).MinWidth(ui.Px(0)).PaddingY(space1).Child(area)).
 			Child(actions))
 	})
