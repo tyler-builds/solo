@@ -1595,52 +1595,101 @@ func (a *App) cardWhere(ctx *ui.Context, where *ui.DivElement, th core.ThreadVie
 			Child(ui.Text(th.Title).FontSize(12).Medium().Truncate()))
 }
 
-// checksBadge says where a merge's checks stand: passed (or none required), running, or failed. A
-// local merge has none to wait for, so it shows as passed. nil before a pull request is opened, and
-// once the thread has landed.
+// checksBadge says where a merge's checks stand: passed (or none required), running with how many
+// are done, or failed. A local merge has none to wait for, so it shows as passed. nil before a pull
+// request is opened, and once the thread has landed.
 func checksBadge(ctx *ui.Context, th core.ThreadView) ui.Element {
 	t := ctx.Theme()
 	switch th.Status {
 	case core.StatusMerged, core.StatusDiscarded, core.StatusArchived:
 		return nil
 	}
-	icon, c, text, tip := icons.CircleCheck, t.Success, "Checks passed", "Every required check passed"
 	prs := openPRs(th)
 	if len(prs) == 0 && th.PR != nil && th.PR.State == forge.StateOpen {
 		prs = []*forge.PR{th.PR}
 	}
+	var cs checksState
 	switch {
 	case len(prs) > 0:
-		var failed []string
-		pending := false
-		for _, pr := range prs {
-			switch pr.Checks {
-			case forge.ChecksFailing:
-				failed = append(failed, checkNamesOf(pr.Failed)...)
-				if len(pr.Failed) == 0 {
-					failed = append(failed, fmt.Sprintf("%s #%d", pr.Kind.Noun(), pr.Number))
-				}
-			case forge.ChecksPending:
-				pending = true
-			case forge.ChecksNone:
-				tip = "No checks are required"
-			}
-		}
-		switch {
-		case len(failed) > 0:
-			icon, c, text, tip = icons.CircleX, t.Danger, "Checks failed", "Failed: "+strings.Join(failed, ", ")
-		case pending:
-			icon, c, text, tip = icons.Timer, t.Warning, "Checks running", "Waiting for the required checks"
-		}
+		cs = checksOf(prs)
 	case th.CanMerge && th.Forge == forge.None:
-		tip = "A local merge has no checks to wait for"
+		cs = checksState{checks: forge.ChecksPassing, text: "Checks passed", tip: "A local merge has no checks to wait for"}
 	default:
 		return nil
 	}
-	return ui.Div().Row().Align(ui.Center).Gap(4).PaddingLeft(space1).Shrink(0).Tooltip(tip).
+	icon, c := icons.CircleCheck, t.Success
+	switch cs.checks {
+	case forge.ChecksFailing:
+		icon, c = icons.CircleX, t.Danger
+	case forge.ChecksPending:
+		icon, c = icons.Timer, t.Warning
+	}
+	return ui.Div().Row().Align(ui.Center).Gap(4).PaddingLeft(space1).Shrink(0).Tooltip(cs.tip).
 		Child(ui.Text("·").FontSize(12).TextColor(t.TextSubtle)).
 		Child(ui.Icon(icon).Size(13).Color(c)).
-		Child(ui.Text(text).FontSize(12).TextColor(c).NoWrap())
+		Child(ui.Text(cs.text).FontSize(12).TextColor(c).NoWrap())
+}
+
+// checksState is where a merge's checks stand, as its card says it.
+type checksState struct {
+	checks    string // forge.ChecksPassing, ChecksPending or ChecksFailing
+	text, tip string
+}
+
+// checksOf sums up the checks of a thread's open pull requests: "Checks: 6/7 passed · 1 running"
+// while they run, "Checks failed: 1 of 7" once one fails (failure wins over running), "Checks passed"
+// when done. A forge that reports no counts (GitLab's one pipeline) gets the plain words.
+func checksOf(prs []*forge.PR) checksState {
+	var n forge.CheckCounts
+	var failed []string
+	pending, counted := false, true
+	for _, pr := range prs {
+		n.Total += pr.Counts.Total
+		n.Passed += pr.Counts.Passed
+		n.Failed += pr.Counts.Failed
+		n.Pending += pr.Counts.Pending
+		switch pr.Checks {
+		case forge.ChecksFailing:
+			failed = append(failed, checkNamesOf(pr.Failed)...)
+			if len(pr.Failed) == 0 {
+				failed = append(failed, fmt.Sprintf("%s #%d", pr.Kind.Noun(), pr.Number))
+			}
+		case forge.ChecksPending:
+			pending = true
+		}
+		if pr.Checks != forge.ChecksNone && pr.Counts.Total == 0 {
+			counted = false // checks, but no counts to sum
+		}
+	}
+	running := ""
+	if n.Pending > 0 {
+		running = fmt.Sprintf(" · %d running", n.Pending)
+	}
+	switch {
+	case len(failed) > 0:
+		s := checksState{checks: forge.ChecksFailing, text: "Checks failed", tip: "Failed: " + strings.Join(failed, ", ")}
+		if counted {
+			s.text = fmt.Sprintf("Checks failed: %d of %d", n.Failed, n.Total) + running
+		}
+		return s
+	case pending:
+		s := checksState{checks: forge.ChecksPending, text: "Checks running", tip: "Waiting for the required checks"}
+		if counted {
+			s.text = fmt.Sprintf("Checks: %d/%d passed", n.Passed, n.Total) + running
+			if n.Passed == 0 {
+				s.text = fmt.Sprintf("Checks: %d running", n.Pending)
+			}
+			s.tip = fmt.Sprintf("Waiting for the required checks: %d of %d still running", n.Pending, n.Total)
+		}
+		return s
+	case n.Total == 0 && !slices.ContainsFunc(prs, func(pr *forge.PR) bool { return pr.Checks == forge.ChecksPassing }):
+		return checksState{checks: forge.ChecksPassing, text: "Checks passed", tip: "No checks are required"}
+	}
+	s := checksState{checks: forge.ChecksPassing, text: "Checks passed", tip: "Every required check passed"}
+	if counted && n.Total > 0 {
+		s.tip = fmt.Sprintf("All %d checks passed", n.Total)
+	}
+	return s
 }
 
 // markBuilt records that a transcript row is built (near the viewport) or not. UI thread only.
