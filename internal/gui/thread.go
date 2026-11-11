@@ -207,33 +207,18 @@ func (a *App) mergeRepo(id, repo string) {
 }
 
 // landControlMulti is landControl for a thread in several repositories: a split button that acts on
-// all of them, with each repository on its own in its menu.
+// all of them, with each repository on its own in its menu. Repositories with nothing to land don't
+// count: with one pull request (or one branch to merge locally), its button names that one.
 func (a *App) landControlMulti(ctx *ui.Context, th core.ThreadView) ui.Element {
-	t := ctx.Theme()
 	id := th.ID
-	var canOpen, canMerge, open, drafts, auto []core.PartView
+	var canOpen, drafts []core.PartView
 	for _, p := range th.Parts {
 		if p.CanOpenPR {
 			canOpen = append(canOpen, p)
 		}
-		if p.CanMerge {
-			canMerge = append(canMerge, p)
+		if p.PR != nil && p.PR.State == forge.StateOpen && p.PR.Draft {
+			drafts = append(drafts, p)
 		}
-		if p.PR != nil && p.PR.State == forge.StateOpen {
-			open = append(open, p)
-			if p.PR.Draft {
-				drafts = append(drafts, p)
-			}
-			if p.PR.AutoMerge {
-				auto = append(auto, p)
-			}
-		}
-	}
-	plural := func(n int, noun string) string {
-		if n == 1 {
-			return "1 " + noun
-		}
-		return fmt.Sprintf("%d %ss", n, noun)
 	}
 	switch {
 	case len(canOpen) > 0:
@@ -254,38 +239,112 @@ func (a *App) landControlMulti(ctx *ui.Context, th core.ThreadView) ui.Element {
 			OnClick(func() {
 				a.runBusy(id, "Marking them ready", func(ctx context.Context) error { return a.b.MarkReady(ctx, id) })
 			})
-	case len(open) > 0:
-		menu := func() []ui.MenuItem {
-			items := []ui.MenuItem{{Label: "Merge all", Icon: icons.GitMerge, Disabled: len(canMerge) < len(open),
-				OnClick: func() { a.mergeRepo(id, "") }}, ui.MenuSeparator()}
-			for _, p := range open {
-				repo, why := p.Repo, ""
-				if !p.CanMerge {
-					why = " · " + p.PR.Blocked
-				}
-				items = append(items, ui.MenuItem{Label: fmt.Sprintf("Merge %s #%d%s", p.Name, p.PR.Number, why), Icon: icons.GitMerge,
-					Disabled: !p.CanMerge, OnClick: func() { a.mergeRepo(id, repo) }})
-			}
-			return items
-		}
-		switch {
-		case len(canMerge) == len(open):
-			return ui.SplitButton("Merge all", func() { a.mergeRepo(id, "") }, menu).Icon(icons.GitMerge).Primary().Small().Key("merge-" + id)
-		case len(canMerge) > 0:
-			return ui.SplitButton(fmt.Sprintf("Merge %d ready", len(canMerge)), func() { a.mergeRepo(id, "") }, menu).
-				Icon(icons.GitMerge).Primary().Small().Key("merge-" + id)
-		case len(auto) == len(open):
-			return ui.Div().Row().Align(ui.Center).Gap(6).PaddingX(space2).Height(ui.Px(28)).Shrink(0).
-				Tooltip("Each merges once its required checks pass").
-				Child(ui.Icon(icons.Timer).Size(13).Color(t.TextMuted)).
-				Child(ui.Text("Auto-merge on").FontSize(12).Medium().TextColor(t.TextMuted).NoWrap())
-		}
-		return ui.SplitButton("Merge", func() {}, menu).Icon(icons.GitMerge).Secondary().Small().Key("merge-" + id)
-	case th.CanMerge:
-		return ui.Button("Merge all").Icon(icons.GitMerge).Primary().Small().
-			Tooltip("Merge each repository's branch into its base branch").OnClick(func() { a.mergeRepo(id, "") })
 	}
-	return nil
+	return a.mergeControlMulti(ctx, th)
+}
+
+// mergeTargets are what a multi-repository thread has to merge: each open pull request, and each
+// repository without a remote that has commits to merge locally. ready are those that can merge now.
+func mergeTargets(th core.ThreadView) (targets, ready []core.PartView) {
+	for _, p := range th.Parts {
+		if (p.PR != nil && p.PR.State == forge.StateOpen) || p.CanMerge {
+			targets = append(targets, p)
+			if p.CanMerge {
+				ready = append(ready, p)
+			}
+		}
+	}
+	return targets, ready
+}
+
+// partMergeLabel names merging one repository of a thread: "Merge api #142", or "Merge db locally"
+// for one without a remote.
+func partMergeLabel(p core.PartView) string {
+	if p.PR != nil && p.PR.State == forge.StateOpen {
+		return fmt.Sprintf("Merge %s #%d", p.Name, p.PR.Number)
+	}
+	return "Merge " + p.Name + " locally"
+}
+
+// partMergeTip says what merging one repository of a thread does.
+func partMergeTip(p core.PartView) string {
+	if p.PR != nil && p.PR.State == forge.StateOpen {
+		return fmt.Sprintf("Merge %s #%d into %s", p.PR.Kind.Noun(), p.PR.Number, p.BaseBranch)
+	}
+	return "No remote, so no pull request: merges " + p.Branch + " into your local " + p.BaseBranch
+}
+
+// mergeControlMulti is the merge button of a thread in several repositories: named for the one
+// repository it merges, or "Merge all" when two or more have something to merge. nil with nothing.
+func (a *App) mergeControlMulti(ctx *ui.Context, th core.ThreadView) ui.Element {
+	t := ctx.Theme()
+	id := th.ID
+	targets, ready := mergeTargets(th)
+	autoAll := len(targets) > 0
+	for _, p := range targets {
+		autoAll = autoAll && p.PR != nil && p.PR.AutoMerge && !p.CanMerge
+	}
+	autoMerge := func(tip string) ui.Element {
+		return ui.Div().Row().Align(ui.Center).Gap(6).PaddingX(space2).Height(ui.Px(28)).Shrink(0).Tooltip(tip).
+			Child(ui.Icon(icons.Timer).Size(13).Color(t.TextMuted)).
+			Child(ui.Text("Auto-merge on").FontSize(12).Medium().TextColor(t.TextMuted).NoWrap())
+	}
+	switch len(targets) {
+	case 0:
+		return nil
+	case 1:
+		p := targets[0]
+		repo := p.Repo
+		switch {
+		case p.CanMerge:
+			return ui.Button(partMergeLabel(p)).Icon(icons.GitMerge).Primary().Small().Tooltip(partMergeTip(p)).
+				OnClick(func() { a.mergeRepo(id, repo) }).Key("merge-" + id)
+		case autoAll:
+			return autoMerge("It merges once its required checks pass")
+		}
+		tip := "Can't merge yet"
+		if p.PR.Blocked != "" {
+			tip += ": " + p.PR.Blocked
+		}
+		return ui.Button(partMergeLabel(p)).Icon(icons.GitMerge).Secondary().Small().Disabled(true).Tooltip(tip).
+			Key("merge-" + id)
+	}
+	menu := func() []ui.MenuItem {
+		items := []ui.MenuItem{{Label: "Merge all", Icon: icons.GitMerge, Disabled: len(ready) < len(targets),
+			OnClick: func() { a.mergeRepo(id, "") }}, ui.MenuSeparator()}
+		for _, p := range targets {
+			repo, label := p.Repo, partMergeLabel(p)
+			if !p.CanMerge && p.PR.Blocked != "" {
+				label += " · " + p.PR.Blocked
+			}
+			items = append(items, ui.MenuItem{Label: label, Icon: icons.GitMerge,
+				Disabled: !p.CanMerge, OnClick: func() { a.mergeRepo(id, repo) }})
+		}
+		return items
+	}
+	switch {
+	case len(ready) == len(targets):
+		return ui.SplitButton("Merge all", func() { a.mergeRepo(id, "") }, menu).Icon(icons.GitMerge).Primary().Small().
+			Tooltip("Merge each repository into its base branch").Key("merge-" + id)
+	case len(ready) == 1:
+		repo := ready[0].Repo
+		return ui.SplitButton(partMergeLabel(ready[0]), func() { a.mergeRepo(id, repo) }, menu).
+			Icon(icons.GitMerge).Primary().Small().Tooltip(partMergeTip(ready[0])).Key("merge-" + id)
+	case len(ready) > 1:
+		return ui.SplitButton(fmt.Sprintf("Merge %d ready", len(ready)), func() { a.mergeRepo(id, "") }, menu).
+			Icon(icons.GitMerge).Primary().Small().Key("merge-" + id)
+	case autoAll:
+		return autoMerge("Each merges once its required checks pass")
+	}
+	return ui.SplitButton("Merge", func() {}, menu).Icon(icons.GitMerge).Secondary().Small().Key("merge-" + id)
+}
+
+// plural is n of a noun: "1 draft", "3 drafts".
+func plural(n int, noun string) string {
+	if n == 1 {
+		return "1 " + noun
+	}
+	return fmt.Sprintf("%d %ss", n, noun)
 }
 
 // repoChips name a multi-repository thread's repositories, each with its pull request's state; a chip
