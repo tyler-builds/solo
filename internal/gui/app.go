@@ -36,8 +36,8 @@ type App struct {
 	threads *ui.Signal[[]core.ThreadView]
 	todos   *ui.Signal[[]core.Todo] // the open todos
 	repos   *ui.Signal[[]string]
-	plain   *ui.Signal[[]string] // searched folders that aren't in git
-	rate    *ui.Signal[agent.Event]
+	plain   *ui.Signal[[]string]                          // searched folders that aren't in git
+	rate    *ui.Signal[[]agent.Event]                     // the latest of each usage limit (usage.go)
 	pending *ui.Signal[map[string][]core.PendingQuestion] // worker questions, by thread
 	navSel  *ui.Signal[string]                            // sidebar: "orchestrator" or "repo:<path>"
 	openID  *ui.Signal[string]                            // the thread in the side panel
@@ -101,7 +101,7 @@ func New(b Backend) *App {
 		todos:      ui.NewSignal(b.Todos(false)),
 		repos:      ui.NewSignal(b.RepoPaths()),
 		plain:      ui.NewSignal(b.PlainFolders()),
-		rate:       ui.NewSignal(b.RateLimit()),
+		rate:       ui.NewSignal(b.RateLimits()),
 		pending:    ui.NewSignal(loadPending(b, b.Threads())),
 		navSel:     ui.NewSignal("orchestrator"),
 		openID:     ui.NewSignal(""),
@@ -184,7 +184,7 @@ func (a *App) refresh() {
 	var threads []core.ThreadView
 	var todos []core.Todo
 	var repos, plain []string
-	var rate agent.Event
+	var rate []agent.Event
 	var pending map[string][]core.PendingQuestion
 	var cfg core.Settings
 	if all || len(dirty) > 0 {
@@ -193,7 +193,7 @@ func (a *App) refresh() {
 		todos = a.b.Todos(false)
 		repos = a.b.RepoPaths()
 		plain = a.b.PlainFolders()
-		rate = a.b.RateLimit()
+		rate = a.b.RateLimits()
 		pending = loadPending(a.b, threads)
 	}
 	loaded := map[string][]core.Item{}
@@ -427,17 +427,6 @@ func (a *App) titleBar(ctx *ui.Context) ui.Element {
 		Child(ui.Text("Search").FontSize(12).TextColor(t.TextSubtle).Grow(1)).
 		Child(ui.Kbd("Ctrl+K"))
 	var trailing []ui.Element
-	// Claude's usage shows only when it matters.
-	if rate := a.rate.Get(); rate.Kind == agent.EventRateLimit && rate.Status != "allowed" {
-		status, c := "Near the usage limit", t.Warning
-		if rate.Status == "rejected" {
-			status, c = "Usage limit reached", t.Danger
-		}
-		trailing = append(trailing, ui.Div().Row().Align(ui.Center).Gap(6).PaddingX(space2).Height(ui.Px(24)).Radius(12).
-			Background(c.Alpha(0.12)).
-			Child(dot(c, 6)).
-			Child(ui.Text(status).FontSize(12).Medium().TextColor(c)))
-	}
 	if a.cfg.Get().ShowCosts {
 		var cost float64
 		for _, th := range a.threads.Get() {

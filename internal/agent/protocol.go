@@ -227,9 +227,11 @@ type Event struct {
 	DelayMs    int `json:"delayMs,omitempty"`
 
 	// rate_limit
-	ResetsAt      float64 `json:"resetsAt,omitempty"`
-	RateLimitType string  `json:"rateLimitType,omitempty"`
-	Utilization   float64 `json:"utilization,omitempty"`
+	ResetsAt      float64 `json:"resetsAt,omitempty"`      // Unix seconds
+	RateLimitType string  `json:"rateLimitType,omitempty"` // five_hour, seven_day, seven_day_opus, …
+	// Utilization is how much of the limit is used, as Claude Code reports it: a fraction, 0 to 1. Nil
+	// when the event doesn't say.
+	Utilization *float64 `json:"utilization,omitempty"`
 
 	// turn_end
 	Reason        string  `json:"reason,omitempty"`

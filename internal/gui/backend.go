@@ -49,7 +49,7 @@ type Backend interface {
 	RepoPaths() []string
 	PlainFolders() []string
 	InitRepo(ctx context.Context, folder string) (string, error)
-	RateLimit() agent.Event
+	RateLimits() []agent.Event
 	CheckClaude(ctx context.Context, override string) core.ClaudeStatus
 }
 

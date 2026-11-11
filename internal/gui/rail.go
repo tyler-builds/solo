@@ -127,7 +127,8 @@ func (a *App) rail(ctx *ui.Context) ui.Element {
 		Child(ui.Component(a.todoList)).
 		Child(head).
 		Child(a.railFilterInput(ctx)).
-		Child(ui.Div().Column().Grow(1).MinHeight(ui.Px(0)).ScrollY().Child(list))
+		Child(ui.Div().Column().Grow(1).MinHeight(ui.Px(0)).ScrollY().Child(list)).
+		Child(a.usagePanel(ctx))
 }
 
 // repoMenu narrows the rail to one repository. It shows only when the threads span several, or a
