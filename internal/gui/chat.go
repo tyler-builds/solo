@@ -489,7 +489,7 @@ func (a *App) stepsView(ctx *ui.Context, steps []*core.Item, threadID string) ui
 			}
 			latest = strings.TrimSpace(verb + " " + detail)
 		}
-		var state ui.Element = ui.Icon(icons.Check).Size(13).Color(t.TextSubtle)
+		var state ui.Element = ui.Div().Tooltip("Done").Child(ui.Icon(icons.CircleCheck).Size(14).Color(t.Success.Alpha(0.75)))
 		if running {
 			state = ui.ProgressRing().Size(ui.RingSmall).Label("Running")
 		}
@@ -646,11 +646,21 @@ func cutChangeRequest(s string) (cr, tail string, ok bool) {
 // updateLine renders one thread update; trailing goes before the chevron (an actions toggle).
 func (a *App) updateRow(ctx *ui.Context, u update, trailing ui.Element) *ui.DivElement {
 	t := ctx.Theme()
-	line := ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space2).Height(ui.Px(26)).Radius(radiusS).
-		Child(ui.Icon(u.icon).Size(14).Color(u.color)).
-		Child(ui.Text(u.repo).FontSize(12).TextColor(t.TextSubtle).NoWrap().Shrink(0)).
-		Child(ui.Text(u.name).FontSize(13).Medium().NoWrap().Shrink(0).MaxWidth(ui.Percent(45)).Truncate()).
-		Child(ui.Text(u.what).FontSize(12).TextColor(t.TextMuted).Truncate().Grow(1).MinWidth(ui.Px(0)))
+	var line *ui.DivElement
+	if a.chatWidth(ctx) < 640 {
+		// Narrow: the thread on one line and what happened under it, so neither is cut to a few words.
+		line = ui.Div().Row().Align(ui.Start).Gap(space2).PaddingX(space2).PaddingY(3).Radius(radiusS).
+			Child(ui.Div().Height(ui.Px(18)).Row().Align(ui.Center).Child(ui.Icon(u.icon).Size(14).Color(u.color))).
+			Child(ui.Div().Column().Gap(1).Grow(1).MinWidth(ui.Px(0)).
+				Child(ui.Text(u.name).FontSize(13).Medium().Truncate()).
+				Child(ui.Text(u.repo + " · " + u.what).FontSize(12).TextColor(t.TextMuted).Truncate()))
+	} else {
+		line = ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space2).Height(ui.Px(26)).Radius(radiusS).
+			Child(ui.Icon(u.icon).Size(14).Color(u.color)).
+			Child(ui.Text(u.repo).FontSize(12).TextColor(t.TextSubtle).NoWrap().Shrink(0)).
+			Child(ui.Text(u.name).FontSize(13).Medium().NoWrap().Shrink(0).MaxWidth(ui.Percent(45)).Truncate()).
+			Child(ui.Text(u.what).FontSize(12).TextColor(t.TextMuted).Truncate().Grow(1).MinWidth(ui.Px(0)))
+	}
 	if trailing != nil {
 		line = line.Child(trailing)
 	}
@@ -999,7 +1009,6 @@ func (a *App) proposalCard(ctx *ui.Context, d core.ProposalData, steps []*core.I
 	return ui.Component(func(ctx *ui.Context) ui.Element {
 		t := ctx.Theme()
 		th, _ := a.thread(d.ThreadID)
-		brand := ui.Hex(pal(t).brand)
 		open := ui.Local(ctx, "steps-open", false)
 		var actions *ui.DivElement
 		switch th.Status {
@@ -1052,8 +1061,8 @@ func (a *App) proposalCard(ctx *ui.Context, d core.ProposalData, steps []*core.I
 					Child(ui.Icon(map[bool]*icons.Icon{true: icons.ChevronDown, false: icons.ChevronRight}[open.Get()]).Size(12).Color(t.TextSubtle)))
 		}
 		card := ui.Div().Column().Gap(space3).Padding(space4).Radius(radiusL).Background(t.Surface).
-			Border(1, brand.Alpha(0.35)).
-			Child(a.cardHeader(ctx, icons.GitMerge, brand, "Merge proposed", d.ThreadID, checksBadge(ctx, th))).
+			Border(1, t.Success.Alpha(0.35)).
+			Child(a.cardHeader(ctx, icons.GitMerge, t.Success, "Merge proposed", d.ThreadID, checksBadge(ctx, th))).
 			Child(a.md(ctx, d.Summary, a.threadBases(d.ThreadID))).
 			Child(actions)
 		if open.Get() {
@@ -1199,9 +1208,10 @@ func (a *App) askForm(ctx *ui.Context, threadID, toolUseID string, qs []agent.Qu
 	})
 }
 
-// questionStrip shows the workers' open questions above the orchestrator's composer. One is open at a
-// time, so a busy afternoon's questions never push Solo's chat away: the rest wait folded to a line
-// each, and a click opens one. The thread open beside the chat asks in its own panel instead.
+// questionStrip shows the workers' open questions above the orchestrator's composer. A lone question
+// shows in full; several fold to a line each, so a busy afternoon's questions never push Solo's chat
+// away, and a click opens one. The thread open beside the chat asks in its own panel instead, and
+// while it is open the others stay folded too.
 func (a *App) questionStrip(ctx *ui.Context) ui.Element {
 	pending := a.pending.Get()
 	folded := a.foldedAsks.Get()
@@ -1222,9 +1232,12 @@ func (a *App) questionStrip(ctx *ui.Context) ui.Element {
 	if !writing {
 		want := a.askOpen.Get()
 		for _, k := range asks {
-			if key := k.pq.ToolUseID; !folded[key] && (open == "" || key == want) {
+			if key := k.pq.ToolUseID; key == want && !folded[key] {
 				open = key
 			}
+		}
+		if open == "" && len(asks) == 1 && a.openID.Get() == "" && !folded[asks[0].pq.ToolUseID] {
+			open = asks[0].pq.ToolUseID
 		}
 	}
 	col := ui.Div().Column().Gap(space1 + 2)
@@ -1249,7 +1262,7 @@ func (a *App) foldedAsk(ctx *ui.Context, th core.ThreadView, pq core.PendingQues
 		q = pq.Questions[0].Question
 	}
 	key := pq.ToolUseID
-	return ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space3).Height(ui.Px(40)).Radius(radiusL).
+	return ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space3).Height(ui.Px(38)).Radius(radiusL).
 		Background(t.Surface).Border(1, t.Warning.Alpha(0.4)).Cursor(ui.CursorPointer).
 		Hover(ui.Style{BorderColor: t.Warning.Alpha(0.7)}).
 		Role(access.RoleButton).Label("Show the question from " + th.Title).TabIndex(0).
@@ -1263,11 +1276,13 @@ func (a *App) foldedAsk(ctx *ui.Context, th core.ThreadView, pq core.PendingQues
 			a.askOpen.Set(key)
 			a.orchDraft.Set(strings.TrimRight(a.orchDraft.Peek(), " "))
 		}).
+		Tooltip(q + "\n" + repoLabel(th) + " · " + th.Title).
 		Child(ui.Icon(icons.MessageCircleQuestionMark).Size(15).Color(t.Warning)).
-		Child(ui.Text("Question").FontSize(12).Semibold().TextColor(t.Warning).NoWrap()).
-		Child(ui.Text(repoLabel(th) + " › " + th.Title).FontSize(12).TextColor(t.TextMuted).NoWrap().Shrink(0).MaxWidth(ui.Px(260)).Truncate()).
-		Child(ui.Text(q).FontSize(13).Truncate().Grow(1).MinWidth(ui.Px(0))).
-		Child(ui.Text("Answer").FontSize(12).Medium().TextColor(t.Link).NoWrap())
+		Child(ui.Text(q).FontSize(13).Medium().Truncate().Grow(1).MinWidth(ui.Px(0))).
+		Child(ui.If(a.chatWidth(ctx) >= 640, // narrow, the tooltip and a click name the thread
+			ui.Text(repoLabel(th)+" · "+th.Title).FontSize(12).TextColor(t.TextSubtle).NoWrap().Shrink(1).MaxWidth(ui.Px(220)).MinWidth(ui.Px(60)).Truncate())).
+		Child(ui.Text("Answer").FontSize(12).Medium().TextColor(t.TextMuted).NoWrap()).
+		Child(ui.Icon(icons.ChevronUp).Size(13).Color(t.TextSubtle))
 }
 
 // attentionBar lists, above the composer, the threads that wait on the user for something other than

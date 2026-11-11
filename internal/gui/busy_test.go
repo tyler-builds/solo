@@ -145,6 +145,23 @@ func busyBackend() *fakeBackend {
 	upd(`Thread e2e2e2e2 "Tighten the docs Content-Security-Policy" (docs): PR #40 merged into main.`,
 		`Thread e3e3e3e3 "Backfill ledger entries for March" (billing) is merged into main.`)
 	f.add(o, core.ItemAssistant, core.TextData{Text: "The CSP change and the March ledger backfill both landed. I ticked **Tighten the docs CSP** off the list."})
+	// The OAuth thread a little further along: a failed run, a fix, and a note from the user.
+	oa := "a1f3c9d2-oauth"
+	last := f.items[oa][len(f.items[oa])-1]
+	f.items[oa] = f.items[oa][:len(f.items[oa])-1]
+	failed := tool("o6", "Bash", map[string]any{"command": "pnpm test src/auth"}, "FAIL src/auth/refresh.test.ts > retries once after a refresh\nexpected 1 call to refresh, got 3")
+	failed.IsError = true
+	f.add(oa, core.ItemTool, failed)
+	f.add(oa, core.ItemThinking, core.TextData{Text: "The mock answers 401 every time, so the retry loops. The retried request must not retry again."})
+	f.add(oa, core.ItemTool, tool("o7", "Edit", map[string]any{"file_path": "/wt/src/auth/refresh.ts"}, "Updated"))
+	f.add(oa, core.ItemAssistant, core.TextData{Text: "One test failed: the retried request could retry again, so a token that stays invalid looped. The retry is now marked on the request and happens at most once."})
+	f.add(oa, core.ItemUser, core.UserData{Text: "Also make sure a 403 doesn't trigger a refresh."})
+	f.add(oa, core.ItemAssistant, core.TextData{Text: "Right: a 403 means the token is valid but lacks the scope, so refreshing can't help. I'll limit the retry to 401 and add a test for 403."})
+	f.add(oa, core.ItemTool, tool("o8", "Edit", map[string]any{"file_path": "/wt/src/auth/refresh.test.ts"}, "Updated"))
+	f.nextID++
+	last.ID = f.nextID
+	f.items[oa] = append(f.items[oa], last)
+
 	// The rate limiter's own conversation, up to its open question.
 	l := "b7e21a90-limit"
 	f.add(l, core.ItemNotice, core.NoticeData{Level: "info", Text: "Working on branch solo/b7e21a90 from main."})

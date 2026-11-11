@@ -114,7 +114,6 @@ func (a *App) rail(ctx *ui.Context) ui.Element {
 			Child(ui.Icon(icons.Layers).Size(22).Color(t.TextSubtle)).
 			Child(caption(ctx, emptyRailText(query)).Align(ui.Center)))
 	}
-	var working ui.Element
 	for gi, g := range railGroups {
 		var group []core.ThreadView
 		for _, th := range open {
@@ -126,30 +125,22 @@ func (a *App) rail(ctx *ui.Context) ui.Element {
 			continue
 		}
 		slices.SortStableFunc(group, func(x, y core.ThreadView) int { return y.UpdatedAt.Compare(x.UpdatedAt) })
-		if gi == len(railGroups)-1 {
-			col := ui.Div().Column().Gap(2).PaddingX(space2).PaddingBottom(space2).
-				Child(groupHeader(ctx, g.title, len(group), g.statuses[0]))
+		list = list.Child(groupHeader(ctx, g.title, len(group), g.statuses[0]))
+		if gi == len(railGroups)-1 { // work in progress needs nothing from the user: one line each
 			for _, th := range group {
-				col = col.Child(a.workingRow(ctx, th))
+				list = list.Child(a.workingRow(ctx, th))
 			}
-			working = ui.Div().Column().Shrink(0).MaxHeight(ui.Percent(34)).ScrollY().
-				BorderEdges(ui.Edges{Top: 1}, t.Border).Child(col)
 			continue
 		}
-		list = list.Child(groupHeader(ctx, g.title, len(group), g.statuses[0]))
 		for _, th := range group {
 			list = list.Child(a.threadRow(ctx, th))
 		}
 	}
-	rail := ui.Div().Column().Size(ui.Full, ui.Full).Background(t.Panel).
+	return ui.Div().Column().Size(ui.Full, ui.Full).Background(t.Panel).
 		Child(ui.Component(a.todoList)).
 		Child(head).
 		Child(a.railFilterInput(ctx)).
 		Child(ui.Div().Column().Grow(1).MinHeight(ui.Px(0)).ScrollY().Child(list))
-	if working != nil {
-		rail = rail.Child(working)
-	}
-	return rail
 }
 
 // repoMenu narrows the rail to one repository. It shows only when the threads span several, or a
@@ -274,7 +265,7 @@ func (a *App) workingRow(ctx *ui.Context, th core.ThreadView) ui.Element {
 	if a.repoFilter() == "" {
 		row = row.Child(ui.Text(repoLabel(th)).FontSize(11).TextColor(t.TextSubtle).NoWrap().Shrink(0))
 	}
-	row = row.Child(ui.Text(when).FontSize(11).TextColor(whenColor).NoWrap().Shrink(0).MinWidth(ui.Px(30)).Align(ui.End))
+	row = row.Child(ui.Text(when).FontSize(11).TextColor(whenColor).NoWrap().Shrink(0).Width(ui.Px(44)).Align(ui.End))
 	if a.openID.Get() == th.ID {
 		row = row.Background(t.SurfaceActive)
 	}
