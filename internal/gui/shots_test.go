@@ -86,6 +86,17 @@ func TestShots(t *testing.T) {
 			f.add(o, core.ItemAssistant, core.TextData{Text: "The repo is already on `main`, so I started **Install Solo from main** to rebuild the AppImage and install it."})
 			a.items = map[string]*ui.Signal[[]core.Item]{}
 		}},
+		{"thinking", func(a *App, f *fakeBackend) {
+			// Solo mid-thought: its working line shows the newest paragraph's first line.
+			for i := range f.threads {
+				if th := &f.threads[i]; th.ID == core.OrchestratorID {
+					th.Status, th.InTurn = core.StatusRunning, true
+					th.Live = []core.LiveBlock{{Thinking: true, Text: "The user wants the forms thread merged.\n\n" +
+						"**Checking the merge state** of the forms thread before I land it, since its checks were still pending an hour ago and the base may have moved.\nThen I'll merge."}}
+				}
+			}
+			a.threads.Set(f.Threads())
+		}},
 		{"land-cards", func(a *App, f *fakeBackend) {
 			// Merge cards in each checks state, a local merge, and one whose Merge is under way.
 			o := core.OrchestratorID
