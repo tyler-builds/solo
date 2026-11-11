@@ -13,6 +13,7 @@ import (
 	"github.com/tyler-builds/jamb/ui"
 	"github.com/tyler-builds/jamb/ui/uitest"
 
+	"github.com/tyler-builds/solo/internal/agent"
 	"github.com/tyler-builds/solo/internal/core"
 	"github.com/tyler-builds/solo/internal/forge"
 )
@@ -54,6 +55,14 @@ func TestShots(t *testing.T) {
 		{"narrow-thread", func(a *App, f *fakeBackend) { a.openThread("c3d4e5f6-forms", "conversation") }},
 		{"settings", func(a *App, f *fakeBackend) { diffSplit.Set(false); a.settings.Set(true) }},
 		{"palette", func(a *App, f *fakeBackend) { a.palette.Set(true) }},
+		// Claude's usage limits at the foot of the rail, and the notice when only a status is known.
+		{"usage", func(a *App, f *fakeBackend) { f.rate = demoLimits(); a.rate.Set(f.rate) }},
+		{"usage-narrow", func(a *App, f *fakeBackend) { f.rate = demoLimits(); a.rate.Set(f.rate) }},
+		{"usage-notice", func(a *App, f *fakeBackend) {
+			f.rate = []agent.Event{{Kind: agent.EventRateLimit, RateLimitType: "five_hour", Status: "rejected",
+				ResetsAt: float64(time.Now().Add(time.Hour).Unix())}}
+			a.rate.Set(f.rate)
+		}},
 		{"pill", func(a *App, f *fakeBackend) {
 			// A long exchange after the merge card pushes it out of view.
 			for i := 0; i < 8; i++ {
@@ -185,7 +194,7 @@ func TestShots(t *testing.T) {
 				continue
 			}
 			if theme.name == "light" && sh.name != "main" && sh.name != "changes" && sh.name != "land-cards" &&
-				sh.name != "scrolled-up" && !busy {
+				sh.name != "scrolled-up" && sh.name != "usage" && !busy {
 				continue
 			}
 			f := demoBackend()
@@ -200,7 +209,7 @@ func TestShots(t *testing.T) {
 				sh.setup(a, f)
 			}
 			w := float32(1440)
-			if sh.name == "narrow-thread" {
+			if sh.name == "narrow-thread" || sh.name == "usage-narrow" {
 				w = 1000
 			}
 			h := float32(900)

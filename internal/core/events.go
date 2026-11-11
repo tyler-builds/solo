@@ -14,9 +14,7 @@ import (
 // on the agent's read goroutine, in order.
 func (c *Core) onEvent(e agent.Event) {
 	if e.Kind == agent.EventRateLimit {
-		c.mu.Lock()
-		c.rateLimit = e
-		c.mu.Unlock()
+		c.setRateLimit(e)
 		return
 	}
 	c.mu.Lock()

@@ -169,22 +169,22 @@ type Core struct {
 	db    *store.Store
 	agent *agent.Manager
 
-	mu        sync.Mutex
-	settings  Settings
-	threads   map[string]*thread
-	bySession map[string]*thread
-	repos     []string
-	plain     []string // folders searched that aren't repositories (git.ScanAll)
-	subs      map[int]func(Change)
-	nextSub   int
-	tools     ToolHandler
-	orchSpec  func() agent.OpenParams
-	recap     func(ThreadView) string
-	rateLimit agent.Event
-	closed    bool
-	forges    map[string]forge.Kind // by repository
-	stop      chan struct{}         // closed by Close
-	pollNow   chan struct{}         // asks the pull request watcher to look now
+	mu         sync.Mutex
+	settings   Settings
+	threads    map[string]*thread
+	bySession  map[string]*thread
+	repos      []string
+	plain      []string // folders searched that aren't repositories (git.ScanAll)
+	subs       map[int]func(Change)
+	nextSub    int
+	tools      ToolHandler
+	orchSpec   func() agent.OpenParams
+	recap      func(ThreadView) string
+	rateLimits map[string]agent.Event // the latest event of each kind of limit (usage.go)
+	closed     bool
+	forges     map[string]forge.Kind // by repository
+	stop       chan struct{}         // closed by Close
+	pollNow    chan struct{}         // asks the pull request watcher to look now
 	// resume are the threads that were working when Solo last closed, for ResumeInterrupted.
 	resume []resumeInfo
 	todos  []Todo // the user's to-do list, oldest first (todos.go)
@@ -480,13 +480,6 @@ func (c *Core) ResolveRepo(nameOrPath string) (string, error) {
 	default:
 		return "", fmt.Errorf("%q matches several repositories (%v); use the full path", nameOrPath, matches)
 	}
-}
-
-// RateLimit returns the latest rate limit event, if any.
-func (c *Core) RateLimit() agent.Event {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.rateLimit
 }
 
 func (c *Core) worktreesDir() string { return filepath.Join(c.cfg.DataDir, "worktrees") }
