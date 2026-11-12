@@ -1,6 +1,7 @@
 package gui
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"sync"
@@ -80,14 +81,31 @@ func (f *fakeRemote) Revoke(id string) error {
 	f.mu.Unlock()
 	return nil
 }
-func (f *fakeRemote) RevokeAll() error               { return nil }
-func (f *fakeRemote) SetReadOnly(string, bool) error { return nil }
+func (f *fakeRemote) SetCloudToken(context.Context, string) error {
+	f.change(func(st *api.RemoteState) { st.Cloud.HasToken, st.Cloud.Account = true, "Personal" })
+	return nil
+}
+func (f *fakeRemote) ForgetCloudToken() error {
+	f.change(func(st *api.RemoteState) { st.Cloud.HasToken = false })
+	return nil
+}
+func (f *fakeRemote) DeployRelay(context.Context) error {
+	f.change(func(st *api.RemoteState) {
+		st.Cloud.Deployed, st.Relay, st.Enabled, st.Connection = true, "https://solo-relay-1a2b3c.example.workers.dev", true, api.RemoteOnline
+	})
+	return nil
+}
+func (f *fakeRemote) RemoveRelay(context.Context) error { return nil }
+func (f *fakeRemote) AcceptRelay(context.Context) error { return nil }
+func (f *fakeRemote) RevokeAll() error                  { return nil }
+func (f *fakeRemote) SetReadOnly(string, bool) error    { return nil }
 
 // pairedRemote is a machine connected to its relay with two devices.
 func pairedRemote() *fakeRemote {
 	now := time.Now()
 	return &fakeRemote{st: api.RemoteState{Relay: "https://solo-relay.example.workers.dev", Enabled: true,
 		Connection: api.RemoteOnline, Name: "workstation", MachineID: "0f3a",
+		Cloud: api.RemoteCloud{HasToken: true, Account: "Personal", Deployed: true, CanDeploy: true},
 		Devices: []api.RemoteDevice{
 			{ID: "d1", Name: "Pixel 9", Added: now.Add(-9 * 24 * time.Hour), LastSeen: now, Online: true},
 			{ID: "d2", Name: "Work laptop", ReadOnly: true, Added: now.Add(-40 * 24 * time.Hour), LastSeen: now.Add(-3 * time.Hour)},
@@ -144,5 +162,34 @@ func TestNoRemotePageWithoutRemote(t *testing.T) {
 	})
 	if found {
 		t.Error("a Remote page without remote access")
+	}
+}
+
+// Setting remote access up from nothing: the token is pasted and kept, and one button deploys the relay.
+func TestRemotePageSetsUp(t *testing.T) {
+	rm := &fakeRemote{st: api.RemoteState{Connection: api.RemoteOff, Cloud: api.RemoteCloud{CanDeploy: true}}}
+	a, u := newUIWith(t, demoBackend(), func(a *App) { a.Remote = rm })
+	a.settingsTab = "remote"
+	a.settings.Set(true)
+	u.Frame()
+	if !u.Get("remote-deploy").Disabled() {
+		t.Error("Set up is offered before there is a token")
+	}
+	u.Get("remote-token").Click()
+	u.Type("cf-token-abc")
+	u.Click("remote-token-save")
+	u.WaitFor("the token to be kept", func() bool { return rm.State().Cloud.HasToken && u.Has("remote-token-remove") })
+	if u.Has("remote-token") {
+		t.Error("the token's box is still shown after it was kept")
+	}
+	u.Click("remote-deploy")
+	u.WaitFor("the relay", func() bool { return rm.State().Cloud.Deployed && u.Has("remote-update") })
+	found := false
+	u.Tree().Walk(func(n *access.Node) bool {
+		found = found || strings.Contains(n.Name, "solo-relay-1a2b3c.example.workers.dev")
+		return true
+	})
+	if !found {
+		t.Error("the relay's address isn't shown")
 	}
 }

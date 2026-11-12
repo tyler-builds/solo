@@ -168,6 +168,37 @@ script, `solo.js`.
 access without Cloudflare; with `-demo` it also runs a machine over sample data. `scripts/e2e.sh` drives
 that in a real browser at a phone's size: pairing, use, a lost machine, a reload, and removal.
 
+## Setting it up in Cloudflare (`internal/cloudflare`, `internal/remote/bundle`)
+
+Solo deploys the relay itself, through Cloudflare's REST API, with a token the user makes: no wrangler and
+no Node on the user's machine. Settings › Remote asks for the token once and keeps it in the OS keyring;
+`CLOUDFLARE_API_TOKEN` is used when none is kept. The token needs to read account settings and edit
+Workers scripts, in one account.
+
+- **What is deployed** is built into the app: `scripts/bundle.sh` builds the web client and the relay and
+  puts them in `internal/remote/bundle/files`, with the time of the build as their version. A Solo built
+  without them can use a relay and can't deploy one.
+- **Deploying** finds the account's workers.dev address, uploads the web client as static assets with its
+  headers, uploads the relay with its Durable Object (declared once) and its bindings, serves it at
+  `https://solo-relay-<random>.<account>.workers.dev` with preview addresses off and no logs, and waits
+  for it to answer.
+- **A second machine** finds the relay by its marker binding and adds its key to `HOST_KEYS`, reading the
+  list back in case another machine wrote at the same moment. It replaces the code and the web client
+  only when its own bundle is newer; a relay is never replaced by an older one.
+- **The check for changes.** Whoever controls the Cloudflare account can replace the web client, and a
+  replaced web client could use a paired device's keys. Solo records the uploads of the relay it made
+  or its user accepted, lists them again at start and a few times a day, and when one appears that it
+  doesn't know, closes the relay connection and says so in Settings until the user either accepts the
+  change (another of their machines made it) or removes the relay. This needs the token; without it
+  nothing is checked.
+- **Removing** deletes the Worker, which cuts off every device and machine. Deleting it in the Cloudflare
+  dashboard does the same from anywhere.
+
+`TestDeployAndJoin` runs all of this against a stand-in for the API. `SOLO_CF_TOKEN_FILE=… go test
+./internal/remote/host -run TestRealCloudflare` runs it in a real account: it deployed and answered in
+16 seconds, served the web client under its headers, carried a pairing and a session through the edge,
+let a second machine join without dropping the first one's session, and removed what it made.
+
 ## The relay
 
 A Cloudflare Worker and one Durable Object, with the web client as static assets. It holds no secret. Its

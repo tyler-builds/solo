@@ -108,7 +108,25 @@ func (w *world) wait(what string, ok func() bool) {
 
 func (w *world) online() {
 	w.t.Helper()
-	w.wait("the machine to reach its relay", func() bool { return w.remote.State().Connection == Online })
+	w.wait("the machine to reach its relay", func() bool {
+		return w.remote.State().Connection == Online && (w.relay == nil || w.relay.Machines() > 0)
+	})
+}
+
+// offer makes a pairing code, and waits until the relay knows its ticket: a person takes seconds to
+// scan a code, a test no time at all.
+func (w *world) offer() Pairing {
+	w.t.Helper()
+	p, err := w.remote.StartPairing()
+	if err != nil {
+		w.t.Fatal(err)
+	}
+	if w.relay != nil {
+		w.wait("the relay to hold the ticket", func() bool { return w.relay.Tickets() > 0 })
+	} else {
+		time.Sleep(150 * time.Millisecond)
+	}
+	return p
 }
 
 func newKey(t *testing.T) noise.DHKey {
@@ -137,10 +155,7 @@ func (w *world) code(link string) secure.PairingCode {
 // pair pairs a new device and returns its key and what it keeps of the machine.
 func (w *world) pair(name string, readOnly bool) (noise.DHKey, device.Machine) {
 	w.t.Helper()
-	p, err := w.remote.StartPairing()
-	if err != nil {
-		w.t.Fatal(err)
-	}
+	p := w.offer()
 	key := newKey(w.t)
 	req, err := device.Pair(context.Background(), w.dial, w.origin, w.code(p.Link), key, name, rand.Reader)
 	if err != nil {
@@ -174,10 +189,7 @@ func (w *world) session(key noise.DHKey, m device.Machine, c *rpc.Client) chan e
 // threads and acts on them; the audit log says who did what.
 func TestPairAndUse(t *testing.T) {
 	w := newWorld(t)
-	p, err := w.remote.StartPairing()
-	if err != nil {
-		t.Fatal(err)
-	}
+	p := w.offer()
 	if time.Until(p.Expires) > 5*time.Minute+time.Second || time.Until(p.Expires) < 4*time.Minute {
 		t.Errorf("the code lasts %v", time.Until(p.Expires))
 	}
@@ -261,7 +273,7 @@ func TestPairAndUse(t *testing.T) {
 // device in the person's hand, and the other is turned down.
 func TestStolenPairingLink(t *testing.T) {
 	w := newWorld(t)
-	p, _ := w.remote.StartPairing()
+	p := w.offer()
 	code := w.code(p.Link)
 	ctx := context.Background()
 	mine, err := device.Pair(ctx, w.dial, w.origin, code, newKey(t), "My phone", rand.Reader)
@@ -295,7 +307,7 @@ func TestStolenPairingLink(t *testing.T) {
 // A code can't be guessed at: a handful of wrong digits ends it.
 func TestWrongDigitsEndThePairing(t *testing.T) {
 	w := newWorld(t)
-	p, _ := w.remote.StartPairing()
+	p := w.offer()
 	req, err := device.Pair(context.Background(), w.dial, w.origin, w.code(p.Link), newKey(t), "Phone", rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -325,7 +337,7 @@ func TestWrongDigitsEndThePairing(t *testing.T) {
 // the machine, and nothing is shown to the person.
 func TestPairingNeedsTheCode(t *testing.T) {
 	w := newWorld(t)
-	p, _ := w.remote.StartPairing()
+	p := w.offer()
 	code := w.code(p.Link)
 	ctx := context.Background()
 

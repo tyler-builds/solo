@@ -106,6 +106,21 @@ func (r *Relay) Keys() [][]byte {
 	return append([][]byte(nil), r.keys...)
 }
 
+// Tickets returns how many pairing tickets the relay holds, and Machines how many machines are
+// connected: a test waits on them rather than race the relay, which hears of both a moment after the
+// machine has said them.
+func (r *Relay) Tickets() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.tickets)
+}
+
+func (r *Relay) Machines() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.machines)
+}
+
 // SetClockOffset moves the relay's clock.
 func (r *Relay) SetClockOffset(d time.Duration) {
 	r.mu.Lock()

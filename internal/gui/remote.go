@@ -3,6 +3,7 @@
 package gui
 
 import (
+	"context"
 	"image"
 	"image/color"
 	"strings"
@@ -58,42 +59,146 @@ func (a *App) remotePage(ctx *ui.Context) ui.Element {
 
 	// The relay: where it is, and whether this machine reaches it.
 	address := ui.Local(ctx, "remote-relay", st.Relay)
-	status, tone := "Off", t.TextSubtle
+	token := ui.Local(ctx, "remote-token", "")
+	manual := ui.Local(ctx, "remote-manual", false)
+	status := "Off"
 	switch st.Connection {
 	case api.RemoteOnline:
-		status, tone = "Connected", t.Success
+		status = "Connected"
 	case api.RemoteConnecting:
-		status, tone = "Connecting…", t.TextMuted
+		status = "Connecting…"
 		if st.Problem != "" {
 			status = st.Problem + " Trying again."
 		}
 	case api.RemoteRefused:
-		status, tone = st.Problem, t.Danger
+		status = st.Problem
 	}
-	if st.Relay == "" {
-		status = "Not set up"
+	if st.Cloud.Paused {
+		status = "Paused"
 	}
-	save := func() {
+	long := func(what string, f func(context.Context) error) {
+		go func() {
+			c, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			defer cancel()
+			fail(what, f(c))
+		}()
+	}
+	saveAddress := func() {
 		v := strings.TrimSpace(address.Peek())
 		go func() { fail("Couldn't set the relay", rm.SetRelay(v)) }()
 	}
-	relayRows := []ui.Element{
-		settingRow(ctx, "Remote access", status,
-			ui.Switch("Remote access", ui.NewSignal(st.Enabled)).Disabled(st.Relay == "").Key("remote-on").
-				OnChange(func(on bool) { go func() { fail("Couldn't change remote access", rm.SetEnabled(on)) }() })),
-		settingBlock(ctx, "Relay address", "Where the relay and the web app are served from. Open it on a phone or another computer to use Solo there.",
-			ui.Div().Row().Gap(space2).Align(ui.Center).
-				Child(ui.TextInput(address).Placeholder("https://solo-relay.your-account.workers.dev").Label("Relay address").
-					Small().Grow(1).Key("remote-relay").OnSubmit(func(string) { save() })).
-				Child(ui.Button("Save").Secondary().Small().Disabled(strings.TrimSpace(address.Get()) == st.Relay).OnClick(save))),
+	saveToken := func() {
+		v := token.Peek()
+		long("Couldn't use that token", func(c context.Context) error {
+			err := rm.SetCloudToken(c, v)
+			if err == nil {
+				a.onUI(func() { token.Set("") })
+			}
+			return err
+		})
 	}
+	deploy := func() { long("Couldn't set up the relay", rm.DeployRelay) }
+	working := st.Cloud.Busy != ""
+	note := func(icon *icons.Icon, color ui.Color, text string) ui.Element {
+		return ui.Div().Row().Gap(space2).Align(ui.Start).PaddingX(space4).PaddingY(space3).
+			Child(ui.Div().PaddingTop(1).Child(ui.Icon(icon).Size(14).Color(color))).
+			Child(caption(ctx, text).Grow(1))
+	}
+	var keyring ui.Element
 	if st.SecretsInFiles {
-		relayRows = append(relayRows, ui.Div().Row().Gap(space2).Align(ui.Center).PaddingX(space4).PaddingY(space3).
-			Child(ui.Icon(icons.TriangleAlert).Size(14).Color(t.Warning)).
-			Child(caption(ctx, "This system has no keyring, so this machine's remote access key is kept in a file only you can read.")))
+		keyring = note(icons.TriangleAlert, t.Warning, "This system has no keyring, so this machine's remote access key and the Cloudflare token are kept in files only you can read.")
 	}
-	_ = tone
-	relay := settingsSection(ctx, "Relay", "Devices reach this machine through a relay in your own Cloudflare account. It carries only encrypted traffic: it can't read or change what passes.", nil, relayRows...)
+	addressRow := settingBlock(ctx, "Relay address", "Where a relay and its web app are already served from.",
+		ui.Div().Row().Gap(space2).Align(ui.Center).
+			Child(ui.TextInput(address).Placeholder("https://solo-relay-….your-account.workers.dev").Label("Relay address").
+				Small().Grow(1).Key("remote-relay").OnSubmit(func(string) { saveAddress() })).
+			Child(ui.Button("Save").Secondary().Small().Disabled(strings.TrimSpace(address.Get()) == st.Relay).OnClick(saveAddress)))
+	// The Cloudflare token: asked for once, kept in the keyring, never shown again.
+	var tokenRow ui.Element
+	if st.Cloud.HasToken {
+		where := "Kept in this machine's keyring."
+		if st.Cloud.Account != "" {
+			where = "For the account “" + st.Cloud.Account + "”. Kept in this machine's keyring."
+		}
+		tokenRow = settingRow(ctx, "Cloudflare API token", where,
+			ui.Button("Remove").Secondary().Small().Key("remote-token-remove").Disabled(working).
+				Tooltip("The relay keeps working; changing or removing it needs a token again").
+				OnClick(func() { go func() { fail("Couldn't remove the token", rm.ForgetCloudToken()) }() }))
+	} else {
+		tokenRow = settingBlock(ctx, "Cloudflare API token",
+			"Solo puts a small relay and its web app in your own Cloudflare account; the free plan is enough. Make a token there that can edit Workers scripts and read account settings, and paste it here. It is kept in this machine's keyring and not shown again.",
+			ui.Div().Column().Gap(space2).
+				Child(ui.Div().Row().Gap(space2).Align(ui.Center).
+					Child(ui.TextInput(token).Placeholder("Paste the token").Label("Cloudflare API token").Masked().
+						Small().Grow(1).Key("remote-token").OnSubmit(func(string) { saveToken() })).
+					Child(ui.Button("Save").Secondary().Small().Key("remote-token-save").
+						Disabled(strings.TrimSpace(token.Get()) == "").OnClick(saveToken))).
+				Child(ui.Div().Row().Child(ui.Button("Create a token at Cloudflare").Icon(icons.ExternalLink).Ghost().Small().
+					OnClick(func() { _ = ctx.OpenURL("https://dash.cloudflare.com/profile/api-tokens") }))))
+	}
+
+	var relay ui.Element
+	if st.Relay == "" {
+		// Not set up yet: the token, then one button.
+		var action ui.Element
+		switch {
+		case working:
+			action = ui.Div().Row().Gap(space2).Align(ui.Center).PaddingX(space4).PaddingY(space3).
+				Child(ui.ProgressRing().Size(16).Label("Working")).
+				Child(ui.Text(st.Cloud.Busy).FontSize(13).TextColor(t.Text))
+		case !st.Cloud.CanDeploy:
+			action = note(icons.TriangleAlert, t.Warning, "This build of Solo doesn't include the relay and the web app, so it can't set one up. It can use a relay that already runs: enter its address below.")
+		default:
+			action = settingRow(ctx, "Set up remote access", "Puts the relay and the web app in your Cloudflare account and connects this machine to it. About a minute.",
+				ui.Button("Set up").Primary().Small().Key("remote-deploy").Disabled(!st.Cloud.HasToken).OnClick(deploy))
+		}
+		other := ui.Collapsible("Use a relay that already runs", manual, addressRow)
+		relay = settingsSection(ctx, "Set up", "Devices reach this machine through a relay in your own Cloudflare account. It carries only encrypted traffic: it can't read or change what passes.", nil,
+			tokenRow, action, keyring, ui.Div().PaddingX(space2).PaddingY(space1).Child(other))
+	} else {
+		var alert ui.Element
+		if st.Cloud.Paused {
+			alert = ui.Div().Column().Gap(space3).PaddingX(space4).PaddingY(space3).
+				Child(ui.Div().Row().Gap(space2).Align(ui.Start).
+					Child(ui.Div().PaddingTop(1).Child(ui.Icon(icons.TriangleAlert).Size(15).Color(t.Danger))).
+					Child(ui.Text(st.Cloud.Alert).FontSize(13).TextColor(t.Text).Grow(1))).
+				Child(ui.Div().Row().Gap(space2).
+					Child(ui.Button("The change was mine: resume").Secondary().Small().Key("remote-accept").
+						OnClick(func() { long("Couldn't check the relay", rm.AcceptRelay) })).
+					Child(ui.Button("Remove the relay").Danger().Small().OnClick(func() {
+						a.confirm.Set(&confirmation{title: "Remove the relay?",
+							body:   "It is deleted from your Cloudflare account. Every device, and every other machine that uses it, is cut off until remote access is set up again.",
+							action: "Remove", run: func() { long("Couldn't remove the relay", rm.RemoveRelay) }})
+					})))
+		}
+		var manage ui.Element
+		if working {
+			manage = ui.Div().Row().Gap(space2).Align(ui.Center).PaddingX(space4).PaddingY(space3).
+				Child(ui.ProgressRing().Size(16).Label("Working")).
+				Child(ui.Text(st.Cloud.Busy).FontSize(13).TextColor(t.Text))
+		} else if st.Cloud.Deployed && !st.Cloud.Paused {
+			manage = settingRow(ctx, "The relay in Cloudflare", "Update it after Solo is updated, or remove it to cut every device off.",
+				ui.Div().Row().Gap(space2).
+					Child(ui.Button("Update").Secondary().Small().Key("remote-update").Disabled(!st.Cloud.HasToken || !st.Cloud.CanDeploy).
+						Tooltip("Uploads this version's relay and web app if they are newer").OnClick(deploy)).
+					Child(ui.Button("Remove").Secondary().Small().Key("remote-remove").Disabled(!st.Cloud.HasToken).OnClick(func() {
+						a.confirm.Set(&confirmation{title: "Remove the relay?",
+							body:   "It is deleted from your Cloudflare account. Every device, and every other machine that uses it, is cut off until remote access is set up again.",
+							action: "Remove", run: func() { long("Couldn't remove the relay", rm.RemoveRelay) }})
+					})))
+		}
+		where := settingRow(ctx, "Address", st.Relay,
+			ui.Div().Row().Gap(space2).
+				Child(ui.Button("Copy").Icon(icons.Copy).Secondary().Small().OnClick(func() { a.copyText("Relay address", st.Relay) })).
+				Child(ui.Button("Forget").Ghost().Small().Tooltip("Stop using this relay on this machine; the relay itself stays").
+					OnClick(func() { go func() { fail("Couldn't forget the relay", rm.SetRelay("")) }() })))
+		relay = settingsSection(ctx, "Relay", "Devices reach this machine through a relay in your own Cloudflare account. It carries only encrypted traffic: it can't read or change what passes.", nil,
+			alert,
+			settingRow(ctx, "Remote access", status,
+				ui.Switch("Remote access", ui.NewSignal(st.Enabled)).Key("remote-on").
+					OnChange(func(on bool) { go func() { fail("Couldn't change remote access", rm.SetEnabled(on)) }() })),
+			where, tokenRow, manage, keyring)
+	}
 
 	// Devices.
 	var rows []ui.Element

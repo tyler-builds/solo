@@ -27,6 +27,10 @@ fi
 echo "building sidecar"
 (cd sidecar && "$bun" install --frozen-lockfile >/dev/null && "$bun" run build >/dev/null)
 
+if [ ! -f internal/remote/bundle/files/worker.js ]; then
+	echo "note: building without the relay and the web client (scripts/bundle.sh makes them):" >&2
+	echo "      this Solo can use a relay that is already set up, and can't set one up" >&2
+fi
 echo "building solo"
 rm -rf "$appdir"
 mkdir -p "$appdir/usr/bin" "$appdir/usr/share/applications" "$appdir/usr/share/icons/hicolor/256x256/apps"

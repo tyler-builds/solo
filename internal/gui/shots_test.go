@@ -76,7 +76,7 @@ func TestShots(t *testing.T) {
 			a.settings.Set(true)
 		}},
 		{"settings-remote-new", func(a *App, f *fakeBackend) {
-			a.Remote = &fakeRemote{st: api.RemoteState{Connection: api.RemoteOff}}
+			a.Remote = &fakeRemote{st: api.RemoteState{Connection: api.RemoteOff, Cloud: api.RemoteCloud{CanDeploy: true}}}
 			a.settingsTab = "remote"
 			a.settings.Set(true)
 		}},
