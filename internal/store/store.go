@@ -1,3 +1,5 @@
+//go:build !js
+
 // Package store keeps Solo's durable state in SQLite: settings, threads, and the transcript items
 // shown for each thread. Claude's own transcripts (for resume) live in Claude's directory, not here.
 package store
@@ -115,42 +117,6 @@ func (s *Store) SetSetting(key string, v any) error {
 	}
 	_, err = s.db.Exec(`INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, key, string(b))
 	return err
-}
-
-// Thread kinds.
-const (
-	KindOrchestrator = "orchestrator"
-	KindWorker       = "worker"
-)
-
-// Thread is one row of threads.
-type Thread struct {
-	ID            string
-	Kind          string
-	SessionID     string
-	HasTranscript bool
-	Title         string
-	RepoPath      string
-	WorktreePath  string
-	Branch        string
-	BaseBranch    string
-	BaseCommit    string
-	Model         string
-	Status        string
-	Summary       string
-	Error         string
-	Prompt        string
-	PromptImages  []string  // image files sent with the prompt
-	DoneAt        time.Time // when the user marked it done (it leaves the rail for History); zero while open
-	PR            string    // its pull request, as JSON (see forge.PR); "" when none
-	Parts         string    // every repository it works in, as JSON (see core.Part); "" for old rows
-	Effort        string    // its effort level; "" for the default (Settings)
-	CostUSD       float64
-	// CostBase is what earlier Claude sessions cost; CostUSD adds the current session's running total.
-	CostBase      float64
-	ContextTokens int
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
 }
 
 const threadCols = `id, kind, session_id, has_transcript, title, repo_path, worktree_path, branch, base_branch,

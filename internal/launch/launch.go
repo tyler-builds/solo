@@ -1,3 +1,5 @@
+//go:build !js
+
 // Package launch opens a folder in the user's code editor or a terminal, and files in their apps.
 package launch
 
@@ -14,6 +16,10 @@ import (
 
 	"github.com/godbus/dbus/v5"
 )
+
+// Available reports whether this build can open the user's apps. A web page cannot: they are on the
+// machine that Solo runs on.
+const Available = true
 
 // editors are tried in order when Settings names none: the command, and how it opens a folder.
 var editors = []string{"code", "cursor", "zed", "codium", "subl", "idea", "gnome-text-editor", "kate"}

@@ -18,6 +18,7 @@ import (
 
 	"github.com/tyler-builds/solo/internal/core"
 	"github.com/tyler-builds/solo/internal/git"
+	"github.com/tyler-builds/solo/internal/launch"
 )
 
 func (a *App) merge(id string) {
@@ -495,8 +496,10 @@ func (a *App) threadPanel(ctx *ui.Context) ui.Element {
 	stat := ui.Div().Row().Gap(6).
 		Child(ui.Text(fmt.Sprintf("+%d", added)).FontSize(12).Medium().TextColor(t.Success)).
 		Child(ui.Text(fmt.Sprintf("−%d", removed)).FontSize(12).Medium().TextColor(t.Danger))
+	// A compact window has no room for the folder's buttons beside the title: they are in More there.
+	compact := isCompact(ctx)
 	actions := ui.Div().Row().Align(ui.Center).Gap(space1).Shrink(0).Child(a.headerChecks(ctx, th))
-	if th.Dir != "" {
+	if th.Dir != "" && launch.Available && !compact {
 		dir := th.Dir
 		actions = actions.
 			Child(ui.IconButton(icons.SquareCode).Ghost().Small().Label("Open in editor").Tooltip("Open in editor").
@@ -537,6 +540,11 @@ func (a *App) threadPanel(ctx *ui.Context) ui.Element {
 				}
 				if th.Dir != "" {
 					dir := th.Dir
+					if launch.Available && compact {
+						items = append(items,
+							ui.MenuItem{Label: "Open in editor", Icon: icons.SquareCode, OnClick: func() { a.openEditor(dir) }},
+							ui.MenuItem{Label: "Open terminal", Icon: icons.SquareTerminal, OnClick: func() { a.openTerminal(dir) }})
+					}
 					items = append(items, ui.MenuItem{Label: "Copy folder path", Icon: icons.Copy, OnClick: func() { a.copyText("the folder path", dir) }})
 				}
 				if th.CanDiscard {
@@ -545,8 +553,10 @@ func (a *App) threadPanel(ctx *ui.Context) ui.Element {
 				return items
 			}))
 	}
-	actions = actions.Child(ui.IconButton(icons.X).Ghost().Small().Label("Close thread").Tooltip("Close").
-		OnClick(a.closeThread))
+	if !compact {
+		actions = actions.Child(ui.IconButton(icons.X).Ghost().Small().Label("Close thread").Tooltip("Close").
+			OnClick(a.closeThread))
+	}
 
 	// The mark carries the status, so the line under the title is just where it is and how big.
 	repo := ui.Div().Child(ui.Text(filepath.Base(th.RepoPath)).FontSize(12).Medium().TextColor(t.TextMuted).NoWrap())
@@ -575,6 +585,13 @@ func (a *App) threadPanel(ctx *ui.Context) ui.Element {
 					Child(ui.Text(th.Title).FontSize(14).Semibold().Truncate()))).
 			Child(ui.Div().PaddingLeft(space5 + 2).Child(meta))).
 		Child(actions)
+	if compact {
+		// The window's bar has the title (compactBar); here is where the thread is, and what can be done
+		// with it.
+		header = ui.Div().Row().Wrap().Align(ui.Center).Gap(space2).PaddingX(space4).PaddingY(space2).Shrink(0).
+			Child(ui.Div().Grow(1).MinWidth(ui.Px(0)).Child(meta)).
+			Child(actions)
+	}
 	changesLabel := "Changes"
 	if n := len(res.Data.files); n > 0 {
 		changesLabel = fmt.Sprintf("Changes · %d", n)
@@ -656,6 +673,9 @@ func (a *App) workingLine(ctx *ui.Context, th core.ThreadView) ui.Element {
 // panelWidth estimates the thread panel's width from the window and the split's size.
 func (a *App) panelWidth(ctx *ui.Context) float32 {
 	w, _ := ctx.WindowSize()
+	if isCompact(ctx) {
+		return w // the thread fills a compact window
+	}
 	if l := a.panelSize.Get(); l.Unit == ui.Px(0).Unit {
 		return l.Value
 	}
@@ -671,6 +691,9 @@ const splitMinWidth = 640
 func (a *App) widenFor(ctx *ui.Context, px float32) bool {
 	if a.panelWidth(ctx) >= px {
 		return true
+	}
+	if isCompact(ctx) {
+		return false
 	}
 	w, _ := ctx.WindowSize()
 	length := w - railW(ctx) - space2
@@ -1174,7 +1197,7 @@ func diffView(ctx *ui.Context, stats []git.FileChange, files []*diffFile, groupe
 		Child(ui.Text(fmt.Sprintf("+%d", added)).FontSize(12).TextColor(t.Success)).
 		Child(ui.Text(fmt.Sprintf("−%d", removed)).FontSize(12).TextColor(t.Danger)).
 		Child(ui.Div().Grow(1)).
-		Child(segmented(ctx, split, roomy, canWiden, widen))
+		Child(ui.If(!isCompact(ctx), segmented(ctx, split, roomy, canWiden, widen))) // a compact window has room for one column only
 	return ui.Div().Column().Grow(1).MinHeight(ui.Px(0)).
 		Child(summary).
 		Child(list).

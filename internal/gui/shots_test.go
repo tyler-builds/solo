@@ -203,6 +203,17 @@ func TestShots(t *testing.T) {
 		{"busy-main", func(a *App, f *fakeBackend) {}},
 		{"busy-thread", func(a *App, f *fakeBackend) { a.openThread("a1f3c9d2-oauth", "conversation") }},
 		{"busy-question", func(a *App, f *fakeBackend) { a.openThread("b7e21a90-limit", "conversation") }},
+		// A phone: one pane at a time, switched in the title bar.
+		{"phone-main", func(a *App, f *fakeBackend) {}},
+		{"phone-threads", func(a *App, f *fakeBackend) { a.drawer.Set(true) }},
+		{"phone-thread", func(a *App, f *fakeBackend) { a.openThread("c3d4e5f6-forms", "conversation") }},
+		{"phone-changes", func(a *App, f *fakeBackend) { diffSplit.Set(false); a.openThread("c3d4e5f6-forms", "changes") }},
+		{"phone-working", func(a *App, f *fakeBackend) { a.openThread("a1f3c9d2-oauth", "conversation") }},
+		{"phone-multi", func(a *App, f *fakeBackend) { a.openThread("e5e6e7e8-landing", "conversation") }},
+		{"phone-question", func(a *App, f *fakeBackend) { a.openThread("b7e21a90-limit", "conversation") }},
+		{"phone-settings", func(a *App, f *fakeBackend) { a.settings.Set(true) }},
+		{"phone-palette", func(a *App, f *fakeBackend) { a.palette.Set(true) }},
+		{"phone-empty", nil},
 	}
 	for _, theme := range []struct {
 		name string
@@ -210,11 +221,12 @@ func TestShots(t *testing.T) {
 	}{{"dark", dark}, {"light", light}} {
 		for _, sh := range shots {
 			busy := strings.HasPrefix(sh.name, "busy-")
+			phone := strings.HasPrefix(sh.name, "phone-")
 			if only := os.Getenv("SOLO_SHOTS_ONLY"); only != "" && !strings.HasPrefix(sh.name, only) {
 				continue
 			}
 			if theme.name == "light" && sh.name != "main" && sh.name != "changes" && sh.name != "land-cards" &&
-				sh.name != "scrolled-up" && sh.name != "usage" && !busy {
+				sh.name != "scrolled-up" && sh.name != "usage" && sh.name != "phone-main" && !busy {
 				continue
 			}
 			f := demoBackend()
@@ -225,6 +237,7 @@ func TestShots(t *testing.T) {
 				f = &fakeBackend{items: map[string][]core.Item{}, repos: f.repos, settings: f.settings}
 			}
 			a := New(f)
+			a.Touch = phone
 			if sh.setup != nil {
 				sh.setup(a, f)
 			}
@@ -236,7 +249,16 @@ func TestShots(t *testing.T) {
 			if strings.HasPrefix(sh.name, "tall-") {
 				h = 1400
 			}
-			u := uitest.New(t, a.Root, uitest.Size(w, h), uitest.Theme(theme.t), uitest.Bindings(Bindings()...))
+			if phone {
+				w, h = 390, 844
+			}
+			opts := []uitest.Option{uitest.Size(w, h), uitest.Theme(theme.t), uitest.Bindings(Bindings()...)}
+			if phone {
+				// A web page has no caption buttons (":" is none at either end).
+				opts = append(opts, uitest.Settings(ui.SystemSettings{Dark: theme.name == "dark", CaptionButtons: ":",
+					CaretBlink: 530 * time.Millisecond, CaretWidth: 1}))
+			}
+			u := uitest.New(t, a.Root, opts...)
 			for i := 0; i < 10; i++ {
 				u.Advance(100 * time.Millisecond)
 				time.Sleep(20 * time.Millisecond)

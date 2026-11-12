@@ -1,3 +1,5 @@
+//go:build !js
+
 package core
 
 import (
@@ -61,13 +63,4 @@ func (c *Core) RateLimits() []agent.Event {
 		return strings.Compare(a.RateLimitType, b.RateLimitType)
 	})
 	return out
-}
-
-// UsedFraction is how much of a limit an event says is used, from 0 to 1, and whether it says. Claude
-// Code reports a fraction, which can pass 1 when usage runs past the cap; that shows as all used.
-func UsedFraction(e agent.Event) (float64, bool) {
-	if e.Utilization == nil {
-		return 0, false
-	}
-	return min(max(*e.Utilization, 0), 1), true
 }

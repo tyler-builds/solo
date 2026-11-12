@@ -1,21 +1,13 @@
+//go:build !js
+
 package core
 
 import (
 	"context"
 	"encoding/json"
 	"strings"
-	"time"
 	"unicode/utf8"
 )
-
-// SearchHit is a message that matched a search.
-type SearchHit struct {
-	ThreadID string
-	ItemID   int64
-	Kind     string // ItemUser or ItemAssistant
-	Snippet  string // the text around the match, on one line
-	At       time.Time
-}
 
 // SearchMessages finds messages, the user's, Solo's and the threads', whose text contains every word
 // of query, ignoring case; newest first, at most limit.

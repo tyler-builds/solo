@@ -115,12 +115,18 @@ func (a *App) rail(ctx *ui.Context) ui.Element {
 			continue
 		}
 		slices.SortStableFunc(group, func(x, y core.ThreadView) int { return y.UpdatedAt.Compare(x.UpdatedAt) })
-		if gi == len(railGroups)-1 {
+		// A compact window's drawer is short of height, so the threads at work scroll with the rest
+		// there, rather than keeping a part of it to themselves.
+		if gi == len(railGroups)-1 && !isCompact(ctx) {
 			working = a.workingGroup(ctx, g.title, g.statuses[0], group)
 			continue
 		}
 		list = list.Child(groupHeader(ctx, g.title, len(group), g.statuses[0]))
 		for _, th := range group {
+			if gi == len(railGroups)-1 {
+				list = list.Child(a.workingRow(ctx, th)) // one line each, as when they are pinned
+				continue
+			}
 			list = list.Child(a.threadRow(ctx, th))
 		}
 	}

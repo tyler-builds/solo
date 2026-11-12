@@ -1,4 +1,5 @@
-// Package git finds repositories and manages the worktrees worker threads run in, through the git CLI.
+//go:build !js
+
 package git
 
 import (
@@ -331,14 +332,6 @@ func RemoveWorktree(ctx context.Context, repo, path, branch string, deleteBranch
 		}
 	}
 	return errors.Join(errs...)
-}
-
-// FileChange is one changed file.
-type FileChange struct {
-	Path    string `json:"path"`
-	Status  string `json:"status"` // A, M, D, R, ?
-	Added   int    `json:"added"`
-	Removed int    `json:"removed"`
 }
 
 // Changes lists what the worktree changed since base: commits on its branch and uncommitted edits,

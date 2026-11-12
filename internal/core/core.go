@@ -1,3 +1,5 @@
+//go:build !js
+
 // Package core is Solo's engine, independent of the UI: settings, repositories, and threads (the
 // orchestrator and its workers) with their Claude sessions, transcripts, questions, worktrees and merges.
 //
@@ -18,7 +20,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
-	"strings"
 	"sync"
 	"time"
 
@@ -26,95 +27,6 @@ import (
 	"github.com/tyler-builds/solo/internal/git"
 	"github.com/tyler-builds/solo/internal/store"
 )
-
-// Settings are the user's preferences.
-type Settings struct {
-	// Folders are searched for git repositories, which the orchestrator then knows about.
-	Folders           []string `json:"folders"`
-	ScanDepth         int      `json:"scanDepth"`
-	OrchestratorModel string   `json:"orchestratorModel"`
-	WorkerModel       string   `json:"workerModel"`
-	ClaudePath        string   `json:"claudePath,omitempty"`
-	// ShowCosts shows what threads have cost in the UI.
-	ShowCosts bool `json:"showCosts,omitempty"`
-	// EditorCommand and TerminalCommand open a thread's folder ({path} marks where it goes); empty
-	// finds one.
-	EditorCommand   string `json:"editorCommand,omitempty"`
-	TerminalCommand string `json:"terminalCommand,omitempty"`
-	// NoNotifications turns off desktop notifications.
-	NoNotifications bool `json:"noNotifications,omitempty"`
-	// NoResumeAfterRestart leaves threads that were working when Solo closed stopped, instead of
-	// carrying them on when it starts again (ResumeInterrupted).
-	NoResumeAfterRestart bool `json:"noResumeAfterRestart,omitempty"`
-
-	// SoloSessionTokens is the context size at which Solo moves to a fresh Claude session, with a recap
-	// and its memory: 0 for the default, -1 for never (Claude compacts the session itself instead).
-	SoloSessionTokens int `json:"soloSessionTokens,omitempty"`
-
-	// Effort for each model; "" leaves it to Claude.
-	OrchestratorEffort string `json:"orchestratorEffort,omitempty"`
-	WorkerEffort       string `json:"workerEffort,omitempty"`
-	// NamingModel and NamingEffort name branches (see BranchRules).
-	NamingModel  string `json:"namingModel,omitempty"`
-	NamingEffort string `json:"namingEffort,omitempty"`
-
-	// BranchRules tell the naming model how to name a thread's branch; RepoBranchRules override them for
-	// a repository (by path). With no rules, branches are named solo/<title>-<id>.
-	BranchRules     string            `json:"branchRules,omitempty"`
-	RepoBranchRules map[string]string `json:"repoBranchRules,omitempty"`
-
-	// PRModel and PREffort write pull request titles and descriptions, following PRRules. With
-	// SkipPRDescription, pull requests get a title only.
-	PRModel           string `json:"prModel,omitempty"`
-	PREffort          string `json:"prEffort,omitempty"`
-	PRRules           string `json:"prRules,omitempty"`
-	SkipPRDescription bool   `json:"skipPRDescription,omitempty"`
-
-	// AutoMerge turns on the forge's auto-merge when Solo opens a pull request, so it merges once its
-	// required checks pass.
-	AutoMerge bool `json:"autoMerge,omitempty"`
-	// MergeMethod is how pull requests merge: squash, merge or rebase.
-	MergeMethod string `json:"mergeMethod,omitempty"`
-	// OnChecksFail is what happens when a pull request's checks fail: ChecksFix or ChecksNotify.
-	OnChecksFail string `json:"onChecksFail,omitempty"`
-}
-
-// What happens when a pull request's checks fail.
-const (
-	ChecksFix    = "fix"    // Solo hears about it and usually has the thread fix it
-	ChecksNotify = "notify" // the thread shows the failure and waits for the user
-)
-
-// DefaultSettings are used until the user changes them.
-func DefaultSettings() Settings {
-	s := Settings{ScanDepth: 3, OrchestratorModel: "opus", WorkerModel: "sonnet"}
-	s.normalize()
-	return s
-}
-
-// normalize fills settings added after the user's were saved.
-func (s *Settings) normalize() {
-	if s.NamingModel == "" {
-		s.NamingModel = "haiku"
-	}
-	if s.PRModel == "" {
-		s.PRModel = "haiku"
-	}
-	if s.MergeMethod == "" {
-		s.MergeMethod = "squash"
-	}
-	if s.OnChecksFail == "" {
-		s.OnChecksFail = ChecksFix
-	}
-}
-
-// BranchRulesFor returns the branch naming rules for a repository.
-func (s Settings) BranchRulesFor(repo string) string {
-	if r := strings.TrimSpace(s.RepoBranchRules[repo]); r != "" {
-		return r
-	}
-	return strings.TrimSpace(s.BranchRules)
-}
 
 // Config configures a Core.
 type Config struct {
@@ -124,51 +36,6 @@ type Config struct {
 	// PRPoll is how often open pull requests are checked; 0 means every 30 seconds.
 	PRPoll time.Duration
 }
-
-// ChangeKind says what changed.
-type ChangeKind int
-
-const (
-	ChangeThread   ChangeKind = iota // a thread was added, or its status or details changed
-	ChangeItems                      // a thread's transcript gained or updated an item
-	ChangeStream                     // a thread's streaming text changed (frequent)
-	ChangeSettings                   // settings changed
-	ChangeRepos                      // the repository list changed
-	ChangeTodos                      // the to-do list changed
-	ChangeAnswer                     // a thread's question was answered or skipped (Change.Answer)
-)
-
-// Change is one notification to subscribers.
-type Change struct {
-	Kind     ChangeKind
-	ThreadID string
-	// For ChangeThread: the status before and after, equal when something else changed.
-	PrevStatus, Status string
-	// PREvent is set when something happened to one of the thread's pull requests: PROpened, PRFound,
-	// PRChecksFailed, PRChecksPassed, PRMerged or PRClosed. Repo is its repository.
-	PREvent string
-	Repo    string
-	// For ChangeAnswer: the question and what became of it.
-	Answer *Answered
-}
-
-// Answered is a question a thread asked and what became of it.
-type Answered struct {
-	Questions []agent.Question
-	Answers   map[string]string // keyed by question text
-	Skipped   bool              // dismissed rather than answered
-	From      string            // who answered: FromUser or FromOrchestrator
-}
-
-// Pull request events (Change.PREvent).
-const (
-	PROpened       = "opened"
-	PRFound        = "found" // opened outside Solo (by the thread itself, say), and now followed
-	PRChecksFailed = "checks_failed"
-	PRChecksPassed = "checks_passed"
-	PRMerged       = "merged"
-	PRClosed       = "closed"
-)
 
 // ToolHandler serves the app tools a session calls (the orchestrator's). It returns the text the model
 // reads, and whether it is an error.

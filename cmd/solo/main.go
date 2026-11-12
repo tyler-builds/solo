@@ -82,8 +82,8 @@ func run() error {
 		Title:      "Solo",
 		Width:      1440,
 		Height:     900,
-		MinWidth:   1000,
-		MinHeight:  600,
+		MinWidth:   360, // narrower than gui's compactWindow, it shows one pane at a time, as on a phone
+		MinHeight:  480,
 		LightTheme: light,
 		DarkTheme:  dark,
 		Root:       g.Root,
