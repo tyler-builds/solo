@@ -204,10 +204,15 @@ Raw `SDKMessage`s are also appended to a per-session JSONL file for debugging an
   against the base branch. The PR text model (Settings › Models; Haiku by default) writes the title and
   description from the commits, changed files and summary, following Settings › Pull requests' title
   and description rules (one call); the description can be turned off. Settings › Pull requests also
-  picks Claude Code skills to follow (`prSkills`): the model runs without tools, so Solo reads each
-  skill's SKILL.md (frontmatter removed, 8 KB at most) from the branch's worktree or the user's
-  `~/.claude` and puts it in the prompt; a skill that is gone is skipped with a notice. If it fails, the title is the worker's one commit (else the thread
-  title) and the body its summary. Open PR is a split button whose menu opens a draft; a draft gets
+  picks Claude Code skills (`prSkills`). With one chosen, the text comes instead from a one-off Claude
+  Code session (`Core.runJob`: the sidecar's `session.open` with `ephemeral`, no transcript) in the
+  branch's worktree, with the PR text model, the chosen skills only (`skills`), and the tools Skill,
+  Bash, Read, Glob and Grep, so skills load natively and run their bundled scripts. It answers in the
+  same TITLE:/DESCRIPTION: format within 5 minutes. Empty title/description rules add no defaults, so
+  the skill alone sets the format. It is told not to change the worktree; if HEAD, the branch or
+  `git status` differ after, Solo resets and cleans it back and posts a notice. A skill that is gone
+  is skipped with a notice. If the model or agent fails, the title is the worker's one commit (else
+  the thread title) and the body its summary. Open PR is a split button whose menu opens a draft; a draft gets
   Ready for review, and auto-merge turns on only once it's ready.
   With Settings › Git › Auto-merge, Solo also runs `gh pr merge --auto` (`glab mr merge --auto-merge`).
   A watcher polls open PRs every 30 s: failed checks (sent to Solo to have the thread fix them, or just

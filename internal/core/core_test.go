@@ -818,6 +818,9 @@ func TestParsePRText(t *testing.T) {
 		{"TITLE: feat: add login\nDESCRIPTION:\nAdds it.\n\n- one", "feat: add login", "Adds it.\n\n- one"},
 		{"```\nTITLE: \"Fix it\"\n```", "Fix it", ""},
 		{"Sure! Here's a title", "", ""},
+		// An agent's answer after what it did, fenced, with a code block of its own.
+		{"I ran the skill.\n\n```markdown\nTITLE: feat: x\nDESCRIPTION:\nRun:\n```sh\nmake\n```\n```", "feat: x", "Run:\n```sh\nmake\n```"},
+		{"Done.\nTITLE: fix: y\nDESCRIPTION:\nEnds in code:\n```\nz\n```", "fix: y", "Ends in code:\n```\nz\n```"},
 	} {
 		if title, desc := parsePRText(c.in); title != c.title || desc != c.desc {
 			t.Errorf("parsePRText(%q) = %q, %q", c.in, title, desc)

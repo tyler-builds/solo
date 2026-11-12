@@ -33,6 +33,10 @@ export interface OpenParams {
   /** Restrict the built-in tool set (names from the claude_code preset). Omit for all. */
   tools?: string[];
   disallowedTools?: string[];
+  /** Skills the session may use (names, or "plugin:skill"); omit for Claude Code's defaults. */
+  skills?: string[];
+  /** true: keep no transcript (a one-off job, never resumed). */
+  ephemeral?: boolean;
   /** Tools served by Go under the MCP server name `mcpServerName` (default "solo"). */
   mcpTools?: ToolSpec[];
   mcpServerName?: string;

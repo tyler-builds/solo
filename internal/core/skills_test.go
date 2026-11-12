@@ -3,10 +3,12 @@ package core
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tyler-builds/solo/internal/git"
 )
@@ -127,10 +129,11 @@ func TestMatchScore(t *testing.T) {
 	}
 }
 
-// The skills chosen for pull request text reach the PR text model's prompt, without their frontmatter,
-// and one that is gone is skipped with a notice rather than failing.
+// The skills chosen for pull request text go to the PR text agent by name, with where their SKILL.md
+// is, and Settings' own rules; empty rules add no default description rules over the skills'. One
+// that is gone is skipped with a notice rather than failing.
 func TestPRPromptIncludesSkills(t *testing.T) {
-	fakeClaudeDir(t)
+	dir := fakeClaudeDir(t)
 	e := newEnv(t)
 	ctx := context.Background()
 	writeFile(t, filepath.Join(e.repo, ".claude", "skills", "house-pr", "SKILL.md"),
@@ -157,14 +160,20 @@ func TestPRPromptIncludesSkills(t *testing.T) {
 		t.Fatalf("saved skills %q", s.PRSkills)
 	}
 	r := prPrompt(ctx, v, v.Parts[0], s)
-	for _, want := range []string{"Rules for the title:\nTicket first.", "<skill name=\"pr-style\">\n# PR style\n\nTitles start with the ticket, like OW-123.\n</skill>",
-		"<skill name=\"house-pr\">\nEnd every description with a Testing section.\n</skill>"} {
+	for _, want := range []string{"Write it with the skills /pr-style and /house-pr: load each with the Skill tool",
+		"\n- /pr-style: " + filepath.Join(dir, "skills", "pr-style", "SKILL.md"),
+		"\n- /house-pr: " + filepath.Join(v.Parts[0].Worktree, ".claude", "skills", "house-pr", "SKILL.md"),
+		"Also follow these rules for the title:\nTicket first."} {
 		if !strings.Contains(r.prompt, want) {
 			t.Errorf("the prompt lacks %q:\n%s", want, r.prompt)
 		}
 	}
-	if strings.Contains(r.prompt, "description: >") || strings.Contains(r.prompt, "gone-skill") {
-		t.Errorf("the prompt has frontmatter or the missing skill:\n%s", r.prompt)
+	if strings.Contains(r.prompt, "gone-skill") || strings.Contains(r.prompt, defaultPRDescriptionRules) ||
+		strings.Contains(r.prompt, "can't run tools") || strings.Contains(r.prompt, "<skill") {
+		t.Errorf("the prompt has the missing skill, default description rules or pasted skills:\n%s", r.prompt)
+	}
+	if !strings.Contains(r.system, "don't commit, push") || !strings.Contains(r.system, "DESCRIPTION:") {
+		t.Errorf("system %q", r.system)
 	}
 	if !slices.Equal(r.missing, []string{"gone-skill"}) {
 		t.Errorf("missing %q", r.missing)
@@ -174,32 +183,117 @@ func TestPRPromptIncludesSkills(t *testing.T) {
 	if title != "Skills" {
 		t.Errorf("title %q", title)
 	}
-	items, _ := e.c.Items(ctx, v.ID, 0)
-	noticed := false
-	for _, it := range items {
-		var n NoticeData
-		if it.Kind == ItemNotice && it.Decode(&n) == nil && strings.Contains(n.Text, "skips the skill /gone-skill") {
-			noticed = true
-		}
-	}
-	if !noticed {
+	if !hasNotice(t, e.c, v.ID, "skips the skill /gone-skill") {
 		t.Error("no notice about the missing skill")
 	}
+	if !hasNotice(t, e.c, v.ID, "Writing the PR text with the skills /pr-style and /house-pr") {
+		t.Error("no notice that the PR text is being written")
+	}
 
-	// Without skills, the prompt has no skill section.
+	// Without skills, the PR text model gets the rules, the defaults where there are none.
 	s.PRSkills = nil
-	if r := prPrompt(ctx, v, v.Parts[0], s); strings.Contains(r.prompt, "<skill") || len(r.missing) > 0 {
+	if r := prPrompt(ctx, v, v.Parts[0], s); strings.Contains(r.prompt, "Skill tool") || len(r.missing) > 0 ||
+		len(r.skills) > 0 || !strings.Contains(r.prompt, defaultPRDescriptionRules) || r.system != prSystem {
 		t.Errorf("without skills:\n%s", r.prompt)
 	}
 }
 
-// A skill's instructions are cut at maxSkillRules.
-func TestSkillRulesCap(t *testing.T) {
+func hasNotice(t *testing.T, c *Core, id, text string) bool {
+	t.Helper()
+	items, _ := c.Items(context.Background(), id, 0)
+	for _, it := range items {
+		var n NoticeData
+		if it.Kind == ItemNotice && it.Decode(&n) == nil && strings.Contains(n.Text, text) {
+			return true
+		}
+	}
+	return false
+}
+
+// A skill chosen for pull request text runs its bundled script: the pull request opened has the
+// script's output in its description, with no description rules in Settings.
+func TestPRSkillRunsScript(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("no sh")
+	}
+	gh := fakeGH(t)
 	dir := fakeClaudeDir(t)
-	writeFile(t, filepath.Join(dir, "skills", "huge", "SKILL.md"), "---\nname: huge\n---\n"+strings.Repeat("x", 3*maxSkillRules))
-	rules, missing := skillRules("", []string{"huge"})
-	if len(missing) != 0 || len(rules) != 1 || len(rules[0].text) > maxSkillRules+100 || !strings.HasSuffix(rules[0].text, "cut.)") {
-		t.Fatalf("missing %v, %d rules, %d bytes", missing, len(rules), len(rules[0].text))
+	writeFile(t, filepath.Join(dir, "skills", "describe", "SKILL.md"),
+		"---\nname: describe\ndescription: Describes a pull request.\n---\nRun `sh \"${CLAUDE_SKILL_DIR}/scripts/describe.sh\"` and use its output as the description.\n")
+	writeFile(t, filepath.Join(dir, "skills", "describe", "scripts", "describe.sh"),
+		"#!/bin/sh\necho \"SCRIPT-MARKER-4821 on $(git rev-parse --abbrev-ref HEAD)\"\n")
+	e := newEnv(t)
+	ctx := context.Background()
+	origin := filepath.Join(e.root, "origin.git")
+	for _, args := range [][]string{{"clone", "-q", "--bare", e.repo, origin}} {
+		if _, err := git.Run(ctx, e.root, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, args := range [][]string{{"remote", "add", "origin", origin}, {"config", "solo.forge", "github"}} {
+		if _, err := git.Run(ctx, e.repo, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e.c.UpdateSettings(func(s *Settings) { s.PRSkills = []string{"describe"} })
+	v, err := e.c.CreateWorker(ctx, WorkerSpec{Repo: "proj", Title: "Add hello", Prompt: "write hello.txt hi"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	v = waitStatus(t, e.c, v.ID, StatusIdle)
+	for deadline := time.Now().Add(5 * time.Second); !v.CanOpenPR && time.Now().Before(deadline); v, _ = e.c.Thread(v.ID) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if _, err := e.c.OpenPR(ctx, v.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	create, _ := os.ReadFile(filepath.Join(gh, "create"))
+	want := "--title Add hello --body SCRIPT-MARKER-4821 on " + v.Branch
+	if !strings.Contains(string(create), want) {
+		t.Fatalf("gh pr create %q, want %q", create, want)
+	}
+	if hasNotice(t, e.c, v.ID, "Couldn't write the PR text") || hasNotice(t, e.c, v.ID, "changed the worktree") {
+		t.Error("the PR text fell back, or the worktree changed")
+	}
+}
+
+// The PR text agent must leave the worktree alone; when a skill changes it anyway, Solo puts it back
+// and says so.
+func TestPRSkillWorktreeRestored(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("no sh")
+	}
+	dir := fakeClaudeDir(t)
+	writeFile(t, filepath.Join(dir, "skills", "messy", "SKILL.md"),
+		"---\nname: messy\n---\nRun `echo junk >> hello.txt && touch stray.txt && git commit -qam oops && echo MESSY`\n")
+	e := newEnv(t)
+	ctx := context.Background()
+	v, err := e.c.CreateWorker(ctx, WorkerSpec{Repo: "proj", Title: "Add hello", Prompt: "write hello.txt hi"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	v = waitStatus(t, e.c, v.ID, StatusIdle)
+	wt := v.Parts[0].Worktree
+	if _, err := git.CommitAll(ctx, wt, "add hello"); err != nil {
+		t.Fatal(err)
+	}
+	head, _ := git.Run(ctx, wt, "rev-parse", "HEAD")
+	e.c.UpdateSettings(func(s *Settings) { s.PRSkills = []string{"messy"} })
+	title, desc := e.c.prText(ctx, v, v.Parts[0])
+	if title != "Add hello" || desc != "MESSY" {
+		t.Errorf("title %q, description %q", title, desc)
+	}
+	if got, _ := git.Run(ctx, wt, "rev-parse", "HEAD"); got != head {
+		t.Errorf("HEAD %s, was %s", got, head)
+	}
+	if st, _ := git.Run(ctx, wt, "status", "--porcelain", "-uall"); st != "" {
+		t.Errorf("worktree not restored:\n%s", st)
+	}
+	if b, _ := os.ReadFile(filepath.Join(wt, "hello.txt")); string(b) != "hi\n" {
+		t.Errorf("hello.txt %q", b)
+	}
+	if !hasNotice(t, e.c, v.ID, "so Solo put it back as it was") {
+		t.Error("no notice that the worktree was put back")
 	}
 }
 

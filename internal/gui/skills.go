@@ -32,8 +32,7 @@ func skillIcon(s core.Skill) *icons.Icon {
 	return icons.Sparkles
 }
 
-// prSkillsPicker chooses the skills whose instructions the PR text model follows, with the typed
-// rules. A chosen skill that is no longer there says so; the PR text skips it.
+// prSkillsPicker chooses the skills that write pull request text, with the typed rules. A chosen skill that is no longer there says so; the PR text skips it.
 func (a *App) prSkillsPicker(ctx *ui.Context, chosen *ui.Signal[[]string]) ui.Element {
 	t := ctx.Theme()
 	q := a.skillsQuery(ctx, "", true)

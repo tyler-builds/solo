@@ -30,23 +30,28 @@ type ToolSpec struct {
 
 // OpenParams start a session's claude process.
 type OpenParams struct {
-	SessionID             string            `json:"sessionId"`
-	Resume                bool              `json:"resume"`
-	Cwd                   string            `json:"cwd"`
-	Model                 string            `json:"model,omitempty"`
-	Effort                string            `json:"effort,omitempty"`
-	Title                 string            `json:"title,omitempty"`
-	SystemAppend          string            `json:"systemAppend,omitempty"`
-	AdditionalDirectories []string          `json:"additionalDirectories,omitempty"`
-	PermissionMode        string            `json:"permissionMode"`
-	Tools                 []string          `json:"tools,omitempty"`
-	DisallowedTools       []string          `json:"disallowedTools,omitempty"`
-	MCPTools              []ToolSpec        `json:"mcpTools,omitempty"`
-	MCPServerName         string            `json:"mcpServerName,omitempty"`
-	ToolPolicy            string            `json:"toolPolicy"`
-	BashAllow             []string          `json:"bashAllow,omitempty"`
-	ClaudePath            string            `json:"claudePath,omitempty"`
-	Env                   map[string]string `json:"env,omitempty"`
+	SessionID             string   `json:"sessionId"`
+	Resume                bool     `json:"resume"`
+	Cwd                   string   `json:"cwd"`
+	Model                 string   `json:"model,omitempty"`
+	Effort                string   `json:"effort,omitempty"`
+	Title                 string   `json:"title,omitempty"`
+	SystemAppend          string   `json:"systemAppend,omitempty"`
+	AdditionalDirectories []string `json:"additionalDirectories,omitempty"`
+	PermissionMode        string   `json:"permissionMode"`
+	Tools                 []string `json:"tools,omitempty"`
+	DisallowedTools       []string `json:"disallowedTools,omitempty"`
+	// Skills limits the skills the session may use (names, or "plugin:skill"); nil leaves Claude Code's
+	// defaults.
+	Skills []string `json:"skills,omitempty"`
+	// Ephemeral keeps no transcript: for a one-off job that is never resumed.
+	Ephemeral     bool              `json:"ephemeral,omitempty"`
+	MCPTools      []ToolSpec        `json:"mcpTools,omitempty"`
+	MCPServerName string            `json:"mcpServerName,omitempty"`
+	ToolPolicy    string            `json:"toolPolicy"`
+	BashAllow     []string          `json:"bashAllow,omitempty"`
+	ClaudePath    string            `json:"claudePath,omitempty"`
+	Env           map[string]string `json:"env,omitempty"`
 }
 
 // SendParams is one user message.

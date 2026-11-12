@@ -251,3 +251,45 @@ func TestLiveBackgroundWork(t *testing.T) {
 		t.Fatalf("after Stop: %s, background %+v, in turn %v", s.Status, s.Background, s.InTurn)
 	}
 }
+
+// A real PR text agent loads a project skill and runs its bundled script: the description has the
+// script's output, and the worktree is left as it was.
+func TestLivePRSkillRunsScript(t *testing.T) {
+	cmd, err := agent.FindCommand()
+	if err != nil {
+		t.Skip(err)
+	}
+	ctx := context.Background()
+	repo := t.TempDir()
+	skill := filepath.Join(repo, ".claude", "skills", "describe-pr")
+	os.MkdirAll(filepath.Join(skill, "scripts"), 0o755)
+	os.WriteFile(filepath.Join(skill, "SKILL.md"), []byte("---\nname: describe-pr\ndescription: Writes pull request descriptions.\n---\n"+
+		"# Describe a pull request\n\n1. Run `sh scripts/describe.sh` from this skill's folder (scripts/ is next to this file).\n"+
+		"2. The description is exactly the line it prints, then a blank line, then one sentence on the change.\n"), 0o644)
+	os.WriteFile(filepath.Join(skill, "scripts", "describe.sh"), []byte("#!/bin/sh\necho \"PR-MARKER-7731: $(git rev-parse --abbrev-ref HEAD)\"\n"), 0o755)
+	os.WriteFile(filepath.Join(repo, "hello.txt"), []byte("hi\n"), 0o644)
+	for _, args := range [][]string{{"init", "-q", "-b", "main"}, {"add", ".claude"}, {"commit", "-q", "-m", "init"},
+		{"checkout", "-q", "-b", "solo/hello"}, {"add", "."}, {"commit", "-q", "-m", "feat: add hello.txt"}} {
+		if _, err := git.Run(ctx, repo, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	base, _ := git.Run(ctx, repo, "rev-parse", "main")
+	c, err := New(Config{DataDir: t.TempDir(), Agent: cmd, Log: slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	c.UpdateSettings(func(s *Settings) { s.PRModel = "haiku"; s.PRSkills = []string{"describe-pr"} })
+	v := ThreadView{ID: "live", Title: "Add hello", Summary: "Added hello.txt."}
+	p := PartView{Repo: repo, Worktree: repo, Name: "proj", Branch: "solo/hello", BaseBranch: "main", BaseCommit: strings.TrimSpace(base)}
+	start := time.Now()
+	title, desc := c.prText(ctx, v, p)
+	t.Logf("%s\ntitle: %s\ndescription:\n%s", time.Since(start), title, desc)
+	if !strings.Contains(desc, "PR-MARKER-7731: solo/hello") {
+		t.Fatalf("the description lacks the script's output")
+	}
+	if st, _ := git.Run(ctx, repo, "status", "--porcelain", "-uall"); st != "" {
+		t.Fatalf("the worktree changed:\n%s", st)
+	}
+}

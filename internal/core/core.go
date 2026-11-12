@@ -52,6 +52,7 @@ type Core struct {
 	settings   Settings
 	threads    map[string]*thread
 	bySession  map[string]*thread
+	jobs       map[string]chan agent.Event // one-off sessions (the PR text agent): their turn ends, by session
 	repos      []string
 	plain      []string // folders searched that aren't repositories (git.ScanAll)
 	subs       map[int]func(Change)
@@ -121,6 +122,7 @@ func New(cfg Config) (*Core, error) {
 		settings:  DefaultSettings(),
 		threads:   map[string]*thread{},
 		bySession: map[string]*thread{},
+		jobs:      map[string]chan agent.Event{},
 		subs:      map[int]func(Change){},
 		forges:    map[string]forge.Kind{},
 		landing:   map[string]bool{},

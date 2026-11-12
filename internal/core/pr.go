@@ -5,6 +5,7 @@ package core
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"github.com/tyler-builds/solo/internal/agent"
 	"path/filepath"
@@ -230,9 +231,35 @@ const prSystemTitle = `You write pull request titles for a code change. Follow t
 Reply in this format and nothing else:
 TITLE: <one-line title>`
 
-// prText writes a pull request's title and description with the PR text model, following Settings'
-// rules and skills; without a description when Settings says so. If the model fails, the title is the
-// worker's one commit's subject (or the thread's title) and the description its summary.
+// prAgentSystem is what the PR text agent is told, after Claude Code's own instructions; %s is the
+// answer's format.
+const prAgentSystem = `You are writing the text of a pull request for Solo, for a change already committed on this
+worktree's branch. Solo pushes the branch and opens the pull request with your text; you only write it.
+- Use the skills the user names, fully: load each with the Skill tool and follow its instructions, running
+  the scripts and commands it gives. You may read files and run read-only commands (git log, git diff, …).
+- Leave the worktree as you found it: don't commit, push, switch or reset branches, or create, change or
+  delete files in it. Put any scratch files in the system's temporary folder.
+- Don't open, edit or comment on pull requests (no gh pr create, glab mr create, …).
+- When you are done, end your reply with the answer in this format, with nothing after it:
+%s`
+
+const (
+	prAnswerFormat      = "TITLE: <one-line title>\nDESCRIPTION:\n<the description, in Markdown>"
+	prAnswerFormatTitle = "TITLE: <one-line title>"
+)
+
+// prAgentTools are the built-in tools the PR text agent has: what a skill needs to load its files and
+// run its scripts. Claude Code runs Bash with a POSIX shell, Git Bash on Windows, never PowerShell.
+var prAgentTools = []string{"Skill", "Bash", "Read", "Glob", "Grep"}
+
+// prAgentTimeout is how long the PR text agent may take: skills can run scripts and read the change.
+const prAgentTimeout = 5 * time.Minute
+
+// prText writes a pull request's title and description following Settings' rules and skills; without
+// a description when Settings says so. With skills it runs a Claude Code agent in the branch's worktree,
+// which loads them as Claude Code does and can run their scripts; without, it asks the PR text model
+// once, with no tools. If either fails, the title is the worker's one commit's subject (or the thread's
+// title) and the description its summary.
 func (c *Core) prText(ctx context.Context, v ThreadView, p PartView) (string, string) {
 	s := c.Settings()
 	pp := prPrompt(ctx, v, p, s)
@@ -251,10 +278,16 @@ func (c *Core) prText(ctx context.Context, v ThreadView, p PartView) (string, st
 	if s.SkipPRDescription {
 		body = ""
 	}
-	pctx, cancel := context.WithTimeout(ctx, 75*time.Second)
-	defer cancel()
-	text, err := c.agent.Complete(pctx, agent.CompleteParams{Model: s.PRModel, Effort: s.PREffort, System: pp.system,
-		Prompt: pp.prompt, ClaudePath: agent.FindClaude(s.ClaudePath).Path, TimeoutMs: 70_000})
+	var text string
+	var err error
+	if len(pp.skills) > 0 {
+		text, err = c.prAgentText(ctx, v, p, s, pp)
+	} else {
+		pctx, cancel := context.WithTimeout(ctx, 75*time.Second)
+		text, err = c.agent.Complete(pctx, agent.CompleteParams{Model: s.PRModel, Effort: s.PREffort, System: pp.system,
+			Prompt: pp.prompt, ClaudePath: agent.FindClaude(s.ClaudePath).Path, TimeoutMs: 70_000})
+		cancel()
+	}
 	if err != nil {
 		c.addNotice(v.ID, "warning", "Couldn't write the PR text ("+err.Error()+"), so it uses the thread's summary.")
 		return title, body
@@ -272,15 +305,144 @@ func (c *Core) prText(ctx context.Context, v ThreadView, p PartView) (string, st
 	return t, d
 }
 
-// prRequest is what the PR text model is asked for one repository's part of a thread.
-type prRequest struct {
-	system, prompt string
-	subjects       []string // the worker's own commits' subjects
-	missing        []string // skills Settings names that weren't found
+// prAgentText runs the PR text agent: a one-off Claude Code session in the branch's worktree, with the
+// chosen skills and the tools they need. It must leave the worktree as it was; if it doesn't, the
+// worktree is put back.
+func (c *Core) prAgentText(ctx context.Context, v ThreadView, p PartView, s Settings, pp prRequest) (string, error) {
+	names := make([]string, len(pp.skills))
+	for i, sk := range pp.skills {
+		names[i] = sk.name
+	}
+	c.addNotice(v.ID, "info", fmt.Sprintf("Writing the PR text%s with %s. This can take a few minutes.", inRepo(v, p), skillList(names)))
+	before := readTree(ctx, p.Worktree)
+	text, err := c.runJob(ctx, agent.OpenParams{
+		Cwd:            p.Worktree,
+		Model:          s.PRModel,
+		Effort:         s.PREffort,
+		SystemAppend:   pp.system,
+		PermissionMode: agent.PermissionBypass,
+		Tools:          prAgentTools,
+		Skills:         names,
+		ToolPolicy:     agent.ToolPolicyAllow,
+		ClaudePath:     agent.FindClaude(s.ClaudePath).Path,
+		Ephemeral:      true,
+	}, pp.prompt, prAgentTimeout)
+	c.keepTree(v, p, before)
+	if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+		err = fmt.Errorf("it took longer than %s", prAgentTimeout)
+	}
+	return text, err
 }
 
-// prPrompt builds the PR text model's request. The model runs without tools, so the chosen skills'
-// instructions go in the prompt, read from the branch's worktree for a project's skills.
+// runJob sends prompt to a new one-off session and returns its answer, closing the session after. It
+// gives up after timeout.
+func (c *Core) runJob(ctx context.Context, op agent.OpenParams, prompt string, timeout time.Duration) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	op.SessionID = agent.NewUUID()
+	ended := make(chan agent.Event, 4)
+	c.mu.Lock()
+	c.jobs[op.SessionID] = ended
+	c.mu.Unlock()
+	defer func() {
+		cctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		if err := c.agent.Close(cctx, op.SessionID); err != nil {
+			c.log.Warn("core: closing a one-off session", "err", err)
+		}
+		cancel()
+		c.mu.Lock()
+		delete(c.jobs, op.SessionID)
+		c.mu.Unlock()
+	}()
+	if err := c.agent.Open(ctx, op); err != nil {
+		return "", err
+	}
+	if _, err := c.agent.Send(ctx, op.SessionID, prompt, false); err != nil {
+		return "", err
+	}
+	for {
+		select {
+		case e := <-ended:
+			switch {
+			case e.Kind == agent.EventExited:
+				return "", errors.New(cmp.Or(e.Error, "Claude stopped before it answered"))
+			case e.Steered:
+			case e.Status != agent.TurnCompleted:
+				return "", errors.New(cmp.Or(e.Error, "Claude's turn ended "+e.Status))
+			default:
+				return e.Result, nil
+			}
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+	}
+}
+
+// treeState is what a worktree has checked out, and its uncommitted changes.
+type treeState struct {
+	ok                   bool
+	branch, head, status string
+}
+
+func readTree(ctx context.Context, dir string) treeState {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+	branch, _ := git.Run(ctx, dir, "symbolic-ref", "-q", "HEAD") // "" when detached
+	head, err := git.Run(ctx, dir, "rev-parse", "HEAD")
+	if err != nil {
+		return treeState{}
+	}
+	status, err := git.Run(ctx, dir, "status", "--porcelain", "-uall")
+	if err != nil {
+		return treeState{}
+	}
+	return treeState{true, strings.TrimSpace(branch), strings.TrimSpace(head), status}
+}
+
+// keepTree puts a worktree back as it was before the PR text agent ran (before), if the agent changed
+// it, and says so.
+func (c *Core) keepTree(v ThreadView, p PartView, before treeState) {
+	if !before.ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	after := readTree(ctx, p.Worktree)
+	if !after.ok || after == before {
+		return
+	}
+	if before.status != "" {
+		c.addNotice(v.ID, "warning", fmt.Sprintf("The PR text agent changed the worktree%s, and Solo couldn't put it back on its own because it had uncommitted changes. Check it before you go on.", inRepo(v, p)))
+		return
+	}
+	var err error
+	if before.branch != "" && after.branch != before.branch {
+		_, err = git.Run(ctx, p.Worktree, "checkout", "-q", "-f", strings.TrimPrefix(before.branch, "refs/heads/"))
+	}
+	if err == nil {
+		_, err = git.Run(ctx, p.Worktree, "reset", "-q", "--hard", before.head)
+	}
+	if err == nil {
+		_, err = git.Run(ctx, p.Worktree, "clean", "-fdq") // not -x: ignored files (builds, dependencies) stay
+	}
+	if err != nil {
+		c.addNotice(v.ID, "warning", fmt.Sprintf("The PR text agent changed the worktree%s, and Solo couldn't put it back (%v). Check it before you go on.", inRepo(v, p), err))
+		return
+	}
+	c.addNotice(v.ID, "warning", fmt.Sprintf("The PR text agent changed the worktree%s, so Solo put it back as it was.", inRepo(v, p)))
+}
+
+// prRequest is what the PR text model (or agent) is asked for one repository's part of a thread.
+type prRequest struct {
+	system, prompt string
+	subjects       []string    // the worker's own commits' subjects
+	skills         []namedText // the chosen skills found, with their SKILL.md paths: the agent writes it
+	missing        []string    // skills Settings names that weren't found
+}
+
+// prPrompt builds the PR text request. Without skills it is for the PR text model, which runs without
+// tools; with skills, for the PR text agent, which loads them itself, from the branch's worktree for a
+// project's skills.
 func prPrompt(ctx context.Context, v ThreadView, p PartView, s Settings) prRequest {
 	var r prRequest
 	// The worker's own commits, not Solo's commit of what it left uncommitted.
@@ -291,10 +453,13 @@ func prPrompt(ctx context.Context, v ThreadView, p PartView, s Settings) prReque
 			}
 		}
 	}
-	rules := prRules(s)
-	skills, missing := skillRules(cmp.Or(p.Worktree, p.Repo), s.PRSkills)
-	r.missing = missing
-	rules += prSkillRules(skills)
+	r.skills, r.missing = skillPaths(cmp.Or(p.Worktree, p.Repo), s.PRSkills)
+	var rules string
+	if len(r.skills) > 0 {
+		rules = prAgentRules(s, r.skills)
+	} else {
+		rules = prRules(s)
+	}
 	var files []string
 	if fc, err := git.Changes(ctx, p.Worktree, p.BaseCommit); err == nil {
 		for i, f := range fc {
@@ -312,23 +477,52 @@ func prPrompt(ctx context.Context, v ThreadView, p PartView, s Settings) prReque
 	r.prompt = fmt.Sprintf("Write the pull request for this change.\n\n%s\n\nRepository: %s%s\nBranch: %s into %s\nTask title: %s\nTask:\n%s\n\nWhat the agent that made the change reported:\n%s\n\nCommits:\n%s\n\nFiles changed:\n%s",
 		rules, p.Name, scope, p.Branch, p.BaseBranch, v.Title, clipText(v.Prompt, 1500),
 		clipText(strings.TrimSpace(v.Summary), 3000), strings.Join(r.subjects, "\n"), strings.Join(files, "\n"))
-	r.system = prSystem
-	if s.SkipPRDescription {
+	switch {
+	case len(r.skills) > 0 && s.SkipPRDescription:
+		r.system = fmt.Sprintf(prAgentSystem, prAnswerFormatTitle)
+	case len(r.skills) > 0:
+		r.system = fmt.Sprintf(prAgentSystem, prAnswerFormat)
+	case s.SkipPRDescription:
 		r.system = prSystemTitle
+	default:
+		r.system = prSystem
 	}
 	return r
 }
 
-// prSkillRules is the part of the PR text model's prompt that gives the chosen skills' instructions,
-// or "" with none.
-func prSkillRules(skills []namedText) string {
-	if len(skills) == 0 {
-		return ""
-	}
+// prAgentRules is the rules part of the PR text agent's prompt: the skills to use and Settings' own
+// rules. Where Settings has none, the skills alone say how to write it; the default rules would
+// override their format.
+func prAgentRules(s Settings, skills []namedText) string {
 	var b strings.Builder
-	b.WriteString("\n\nAlso follow these skills' instructions where they say how to write the pull request. You can't run tools or open\nfiles, so leave out any steps that need them.")
+	names := make([]string, len(skills))
+	for i, sk := range skills {
+		names[i] = sk.name
+	}
+	fmt.Fprintf(&b, "Write it with %s: load each with the Skill tool and follow its instructions fully, including running the scripts and commands it gives. ", skillList(names))
+	b.WriteString("If the Skill tool can't load one, read its SKILL.md instead; paths in a skill are relative to its folder:")
 	for _, sk := range skills {
-		fmt.Fprintf(&b, "\n\n<skill name=%q>\n%s\n</skill>", sk.name, sk.text)
+		fmt.Fprintf(&b, "\n- /%s: %s", sk.name, sk.text)
+	}
+	title := strings.TrimSpace(s.PRTitleRules)
+	desc := strings.TrimSpace(s.PRDescriptionRules)
+	if s.SkipPRDescription {
+		desc = ""
+		b.WriteString("\n\nWrite a title only, with no description.")
+	}
+	switch {
+	case title != "" && title == desc:
+		b.WriteString("\n\nAlso follow these rules for the title and description:\n" + title)
+	default:
+		if title != "" {
+			b.WriteString("\n\nAlso follow these rules for the title:\n" + title)
+		}
+		if desc != "" {
+			b.WriteString("\n\nAlso follow these rules for the description:\n" + desc)
+		}
+	}
+	if title == "" {
+		b.WriteString("\n\nIf the skills don't say how to write the title, make it " + strings.ToLower(defaultPRTitleRules[:1]) + defaultPRTitleRules[1:])
 	}
 	return b.String()
 }
@@ -366,14 +560,22 @@ func prRules(s Settings) string {
 	return "Rules for the title:\n" + title + "\n\nRules for the description:\n" + desc
 }
 
-// parsePRText reads "TITLE: …" and "DESCRIPTION:" from the PR text model's answer.
+// parsePRText reads "TITLE: …" and "DESCRIPTION:" from the PR text model's answer. An agent may say
+// what it did first, so the answer starts at the last line that begins with "TITLE:"; a code fence
+// around the answer is dropped.
 func parsePRText(s string) (title, desc string) {
-	s = strings.TrimSpace(strings.Trim(strings.TrimSpace(s), "`"))
-	head, rest, _ := strings.Cut(s, "\n")
-	t, ok := strings.CutPrefix(strings.TrimSpace(head), "TITLE:")
-	if !ok {
+	s = strings.TrimSpace(s)
+	i := strings.LastIndex("\n"+s, "\nTITLE:")
+	if i < 0 {
 		return "", ""
 	}
+	lead := strings.TrimSpace(s[:i])
+	s = strings.TrimSpace(s[i:])
+	if strings.HasPrefix(lead[strings.LastIndex(lead, "\n")+1:], "```") {
+		s = strings.TrimSpace(strings.TrimSuffix(s, "```"))
+	}
+	head, rest, _ := strings.Cut(s, "\n")
+	t, _ := strings.CutPrefix(strings.TrimSpace(head), "TITLE:")
 	title = strings.Trim(strings.TrimSpace(t), "\"'`")
 	if len(title) > 200 {
 		title = title[:200]
