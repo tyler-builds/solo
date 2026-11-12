@@ -6,6 +6,7 @@
 package core
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -176,6 +177,11 @@ type ResolvingError struct{ Title string }
 func (e *ResolvingError) Error() string {
 	return fmt.Sprintf("%q conflicts with newer work; its thread is resolving that and merges when done", e.Title)
 }
+
+// ErrBusy is returned by a landing action (merging, opening a pull request, marking ready, discarding,
+// marking done, restoring) on a thread that has one under way: from another window or device, or from
+// Solo. The one under way decides what the thread becomes; the second would act on a stale view of it.
+var ErrBusy = errors.New("another action on this thread is still running; try again when it finishes")
 
 // PendingQuestion is a question a thread is waiting on.
 type PendingQuestion struct {

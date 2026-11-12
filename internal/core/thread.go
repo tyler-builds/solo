@@ -843,11 +843,6 @@ func (c *Core) Merge(ctx context.Context, threadID string) (string, error) {
 	return c.MergeRepo(ctx, threadID, "")
 }
 
-// ErrBusy is returned by a landing action (merging, opening a pull request, marking ready, discarding,
-// marking done, restoring) on a thread that has one under way: from another window or device, or from
-// Solo. The one under way decides what the thread becomes; the second would act on a stale view of it.
-var ErrBusy = errors.New("another action on this thread is still running; try again when it finishes")
-
 // land marks a landing action as under way on a thread, and returns what ends it. It fails with ErrBusy
 // when the thread already has one.
 func (c *Core) land(threadID string) (func(), error) {
