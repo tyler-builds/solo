@@ -1,10 +1,114 @@
 # Remote access
 
 Solo in a browser, driving a machine that runs Solo, through a relay in your own Cloudflare account. This
-file records what was measured before the design was built on. The design itself will be written here as it
-lands.
+file is the design, as far as it has landed, and then what was measured before it was built on.
 
-## Spike results (2026-11-12)
+Remote control of Solo is remote code execution on the machine, since its agents run with full permissions.
+So one rule shapes everything: **the relay is trusted with nothing**. It forwards bytes it cannot read or
+change, and it cannot say who is at the other end. Every decision that matters is made between a device and
+a machine.
+
+## What is and is not protected
+
+A relay that turns hostile, or anyone reading its traffic, cannot read messages, threads, diffs or images,
+cannot forge or alter a request, cannot add a device, and cannot replay old traffic.
+
+Not protected, by design:
+
+- **Whoever controls the Cloudflare account can replace the web client's code**, and so use a paired
+  device's key the next time that page opens. Solo keeps the Cloudflare token in the keyring, so that
+  includes any program running as you on that machine.
+- A stolen, unlocked, paired device has full access until it is revoked, and revoking needs the machine
+  online. Deleting the Worker in the Cloudflare dashboard stops everything from anywhere.
+- Anyone who finds the relay's address can flood it and use up the free plan's 100,000 requests a day;
+  remote access is then down until midnight UTC. The desktop app is unaffected.
+- The relay sees addresses, public keys, timing and sizes.
+
+## Identities and keys (`internal/remote/secure`)
+
+No primitive is written here. The handshake is the Noise protocol (`github.com/flynn/noise`) with X25519,
+ChaCha20-Poly1305 and BLAKE2s; keys for separate uses come from HKDF with a label for each.
+
+- **A machine** has a 32-byte seed, its one secret. From it come the X25519 key it speaks Noise with and the
+  Ed25519 key it signs for the relay with. Its ID is a hash of the two public keys.
+- **A device** has an X25519 key, made in the browser. Its ID is a hash of the public key.
+
+## Pairing
+
+A device is added only at the machine, and the person there approves it.
+
+1. The machine makes a **pairing code** and shows it as a QR code for
+   `https://<relay>/#p=<code>`: the machine's ID, its Noise public key, a secret used once, and an expiry.
+   The fragment is not sent to any server, and the page removes it from the address at once.
+2. The device runs the handshake as the one who starts it, pinned to the machine's key from the code, with a
+   pre-shared key derived from the code's secret. Both ends hash the purpose ("pair"), the relay's origin,
+   the machine's ID and the whole code into it, so a code that was altered on the way, or a message meant for
+   another relay or another purpose, makes the handshake fail.
+3. **The pre-shared key is mixed in at the first message** (Noise's IKpsk1). The machine therefore rejects,
+   at its first look, anyone who does not hold the code; with the usual placement it would answer anyone who
+   knows its public key. Neither handshake message carries data, since a first message can be replayed. The
+   machine acts on nothing until a message opens on the new channel, which only the device that ran this
+   handshake can make.
+4. Both ends show **six digits** derived from the handshake's hash. The person types the device's digits
+   into the machine, which approves the request that has them. Someone who photographed the QR code can also
+   ask to pair, but their handshake has other digits.
+5. On approval the machine records the device's public key, gives it a random key of its own for later
+   sessions and a voucher for the relay, and the code is spent.
+
+## Sessions
+
+A paired device runs the same handshake with the purpose "session" and its own key from pairing as the
+pre-shared key. The machine looks the device up by the ID the relay passed along, and then demands the
+device's registered public key in the handshake: the relay's word alone opens nothing. Every connection is a
+new handshake with new keys.
+
+On a finished handshake's **channel**, a message that was altered, repeated, dropped or reordered does not
+open, and the channel is over; the device connects again.
+
+## Messages (`internal/remote/wire`)
+
+A message is cut into records of at most 60,000 bytes, each sealed and sent as one frame. One message
+crosses at a time in each direction, and a message is at most 1 MiB: anything larger is asked for in pages by
+the layer above. A machine compresses what it sends before sealing it (text compresses five times or more,
+and the relay's quota counts frames); a page does not.
+
+The other end is authenticated but not trusted to behave, since a paired device may be taken over. Every
+size is checked before anything is kept: a record that is not the message's last must be full, a flag no
+link uses is refused, and a compressed message may inflate to 8 MiB at most. Breaking a rule ends the link.
+
+## The relay
+
+A Cloudflare Worker and one Durable Object, with the web client as static assets. It holds no secret. Its
+configuration is `HOST_KEYS`, the public relay keys of the machines allowed to connect, which only someone
+with the Cloudflare account can change.
+
+**Admission** is by a token in the WebSocket's second subprotocol (the first is `solo.v1`), base64url:
+
+| Path | Token | Checked |
+|---|---|---|
+| `/v1/machine` | the machine's relay key, its ID, the time and a nonce, signed by that key for this relay's origin | by the Worker, which keeps nothing: the key is in `HOST_KEYS`, the signature is good, the time is within two minutes |
+| `/v1/device` | a voucher: the machine's signature, for this relay's origin, over its ID and the device's | by the Worker: the signing key is in `HOST_KEYS` |
+| `/v1/pair` | the machine's ID and a ticket derived from the pairing code's secret | by the Durable Object against the ticket's hash, which the machine registered. The relay never has the secret |
+
+A voucher is a pass to the relay, not to the machine. `/v1/device` and `/v1/pair` also require the page's
+own origin.
+
+**Forwarding.** A device's socket carries only its own conversation, so its frames are the sealed records
+themselves. A machine's one socket carries every device's, so its frames start with a type:
+
+| Type | Direction | Body |
+|---|---|---|
+| 1 data | both | connection (8 bytes), then a sealed record |
+| 2 open | to the machine | connection, kind (1 device, 2 pairing), the device's ID |
+| 3 close | both | connection |
+| 4 ticket | from the machine | add or remove, the ticket's hash, expiry, uses |
+| 5 usage | to the machine | the day's counts, as JSON |
+
+The relay stamps the connection from the socket a frame arrived on. Lying about it only makes a handshake
+fail.
+
+
+## What was measured first (2026-11-12)
 
 Measured in Chromium with an NVIDIA GPU, a 390×844 page at 2× (a phone's size), and the CPU slowed 4×, which
 stands in for a mid-range phone. The web client is `cmd/solo-web`, built with TinyGo 0.44.0
