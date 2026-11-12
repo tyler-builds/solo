@@ -171,6 +171,17 @@ themselves. A machine's one socket carries every device's, so its frames start w
 The relay stamps the connection from the socket a frame arrived on. Lying about it only makes a handshake
 fail.
 
+`relay/` is the Worker and its Durable Object, in TypeScript with no dependencies at run time, and
+`scripts/relay.sh` builds it into the one module Solo uploads. Sockets hibernate: who a socket is lives in
+its tags and attachment, so routing survives the object being evicted. It writes to storage for tickets
+and once in a thousand frames for the day's count, never per frame. Its own tests run in the Workers
+runtime (`cd relay && bun run test`), and check the tokens against vectors the Go code made.
+`SOLO_TEST_WORKER=1 go test ./internal/remote/host -run TestAgainstTheWorker` runs the machine's and the
+device's Go code against that Worker on this machine: pairing, sessions and removal.
+
+A device's large uploads are paced under the relay's limit on a device's frames (50 a second after a
+burst of 200), which exists so that one device cannot spend the day's quota.
+
 
 ## What was measured first (2026-11-12)
 

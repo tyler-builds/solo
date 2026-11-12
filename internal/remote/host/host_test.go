@@ -26,7 +26,9 @@ import (
 // world is a relay, a machine connected to it, and what a test needs to play devices.
 type world struct {
 	t       *testing.T
-	relay   *relaytest.Relay
+	relay   *relaytest.Relay // nil when the relay is the real Worker (worker_test.go)
+	url     string           // the relay's address
+	origin  string
 	remote  *Remote
 	backend *sample.Backend
 	dir     string
@@ -34,30 +36,58 @@ type world struct {
 	dial    device.Dialer
 }
 
+// worker, when set, is the address of the real Worker running locally, and workerSeed the seed of the
+// one machine it lets in: the tests that only need a relay then run against it (worker_test.go).
+var (
+	worker     string
+	workerSeed string
+)
+
 func newWorld(t *testing.T) *world {
 	t.Helper()
-	w := &world{t: t, relay: relaytest.New(), backend: sample.New(sample.Options{Threads: 8, Items: 30}),
-		dir: t.TempDir(), secrets: MemSecrets{}}
-	t.Cleanup(w.relay.Close)
-	w.dial = relaytest.Dialer(w.relay.URL())
+	w := &world{t: t, backend: sample.New(sample.Options{Threads: 8, Items: 30}), dir: t.TempDir(), secrets: MemSecrets{}}
+	if worker != "" {
+		w.url, w.secrets = worker, MemSecrets{seedName: workerSeed}
+	} else {
+		w.relay = relaytest.New()
+		t.Cleanup(w.relay.Close)
+		w.url = w.relay.URL()
+	}
+	w.origin = device.Origin(strings.TrimPrefix(strings.TrimPrefix(w.url, "http://"), "https://"))
+	w.dial = relaytest.Dialer(w.url)
 	w.open()
 	key, err := w.remote.RelayKey()
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw, _ := base64.RawURLEncoding.DecodeString(key)
-	w.relay.Allow(raw)
-	if err := w.remote.SetRelay(w.relay.URL()); err != nil {
+	if w.relay != nil {
+		raw, _ := base64.RawURLEncoding.DecodeString(key)
+		w.relay.Allow(raw)
+	}
+	if err := w.remote.SetRelay(w.url); err != nil {
 		t.Fatal(err)
 	}
 	w.online()
 	return w
 }
 
+// local skips a test that needs to control the relay when the relay is the real Worker.
+func (w *world) local() *relaytest.Relay {
+	w.t.Helper()
+	if w.relay == nil {
+		w.t.Skip("needs a relay the test controls")
+	}
+	return w.relay
+}
+
 func (w *world) open() {
 	w.t.Helper()
-	r, err := New(Config{Dir: w.dir, Backend: w.backend, Secrets: w.secrets, Name: "box",
-		Retry: 10 * time.Millisecond, FlushEvery: 5 * time.Millisecond})
+	cfg := Config{Dir: w.dir, Backend: w.backend, Secrets: w.secrets, Name: "box",
+		Retry: 10 * time.Millisecond, FlushEvery: 5 * time.Millisecond}
+	if worker != "" {
+		cfg.HTTP = relaytest.LocalHTTP
+	}
+	r, err := New(cfg)
 	if err != nil {
 		w.t.Fatal(err)
 	}
@@ -94,7 +124,7 @@ func newKey(t *testing.T) noise.DHKey {
 func (w *world) code(link string) secure.PairingCode {
 	w.t.Helper()
 	_, frag, ok := strings.Cut(link, "#p=")
-	if !ok || !strings.HasPrefix(link, w.relay.URL()+"/") {
+	if !ok || !strings.HasPrefix(link, w.url+"/") {
 		w.t.Fatalf("pairing link %q", link)
 	}
 	code, err := secure.ParsePairingCode(frag)
@@ -112,7 +142,7 @@ func (w *world) pair(name string, readOnly bool) (noise.DHKey, device.Machine) {
 		w.t.Fatal(err)
 	}
 	key := newKey(w.t)
-	req, err := device.Pair(context.Background(), w.dial, w.relay.Origin(), w.code(p.Link), key, name, rand.Reader)
+	req, err := device.Pair(context.Background(), w.dial, w.origin, w.code(p.Link), key, name, rand.Reader)
 	if err != nil {
 		w.t.Fatal(err)
 	}
@@ -130,7 +160,7 @@ func (w *world) pair(name string, readOnly bool) (noise.DHKey, device.Machine) {
 // session connects a paired device and returns its client, synced, and its Run's result.
 func (w *world) session(key noise.DHKey, m device.Machine, c *rpc.Client) chan error {
 	w.t.Helper()
-	link, err := device.Connect(context.Background(), w.dial, w.relay.Origin(), m, key, rand.Reader)
+	link, err := device.Connect(context.Background(), w.dial, w.origin, m, key, rand.Reader)
 	if err != nil {
 		w.t.Fatal(err)
 	}
@@ -152,7 +182,7 @@ func TestPairAndUse(t *testing.T) {
 		t.Errorf("the code lasts %v", time.Until(p.Expires))
 	}
 	key := newKey(t)
-	req, err := device.Pair(context.Background(), w.dial, w.relay.Origin(), w.code(p.Link), key, "Tyler's \u202ephone\x07", rand.Reader)
+	req, err := device.Pair(context.Background(), w.dial, w.origin, w.code(p.Link), key, "Tyler's \u202ephone\x07", rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,7 +219,7 @@ func TestPairAndUse(t *testing.T) {
 		t.Errorf("after pairing: %+v", st)
 	}
 	// The code is spent: it opens nothing again, even at the relay.
-	if _, err := device.Pair(context.Background(), w.dial, w.relay.Origin(), w.code(p.Link), newKey(t), "again", rand.Reader); err == nil {
+	if _, err := device.Pair(context.Background(), w.dial, w.origin, w.code(p.Link), newKey(t), "again", rand.Reader); err == nil {
 		t.Error("a spent code was accepted")
 	}
 
@@ -234,11 +264,11 @@ func TestStolenPairingLink(t *testing.T) {
 	p, _ := w.remote.StartPairing()
 	code := w.code(p.Link)
 	ctx := context.Background()
-	mine, err := device.Pair(ctx, w.dial, w.relay.Origin(), code, newKey(t), "My phone", rand.Reader)
+	mine, err := device.Pair(ctx, w.dial, w.origin, code, newKey(t), "My phone", rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	theirs, err := device.Pair(ctx, w.dial, w.relay.Origin(), code, newKey(t), "My phone", rand.Reader)
+	theirs, err := device.Pair(ctx, w.dial, w.origin, code, newKey(t), "My phone", rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -266,7 +296,7 @@ func TestStolenPairingLink(t *testing.T) {
 func TestWrongDigitsEndThePairing(t *testing.T) {
 	w := newWorld(t)
 	p, _ := w.remote.StartPairing()
-	req, err := device.Pair(context.Background(), w.dial, w.relay.Origin(), w.code(p.Link), newKey(t), "Phone", rand.Reader)
+	req, err := device.Pair(context.Background(), w.dial, w.origin, w.code(p.Link), newKey(t), "Phone", rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -301,7 +331,7 @@ func TestPairingNeedsTheCode(t *testing.T) {
 
 	forged := code
 	forged.Secret[0] ^= 1 // another secret: another ticket, which the relay doesn't know
-	if _, err := device.Pair(ctx, w.dial, w.relay.Origin(), forged, newKey(t), "x", rand.Reader); err == nil {
+	if _, err := device.Pair(ctx, w.dial, w.origin, forged, newKey(t), "x", rand.Reader); err == nil {
 		t.Error("a code with another secret reached the machine")
 	}
 	// The right ticket with a handshake for another relay's origin: the relay lets it in, the machine's
@@ -312,7 +342,7 @@ func TestPairingNeedsTheCode(t *testing.T) {
 	// An expired code.
 	old := code
 	old.Expires = time.Now().Add(-time.Minute)
-	if _, err := device.Pair(ctx, w.dial, w.relay.Origin(), old, newKey(t), "x", rand.Reader); err == nil {
+	if _, err := device.Pair(ctx, w.dial, w.origin, old, newKey(t), "x", rand.Reader); err == nil {
 		t.Error("an altered code was accepted")
 	}
 	time.Sleep(30 * time.Millisecond)
@@ -337,7 +367,7 @@ func TestRevokeAndReadOnly(t *testing.T) {
 		t.Errorf("the revoked device's session ended with %v", err)
 	}
 	// Its voucher still opens the relay; the machine answers nothing.
-	if _, err := device.Connect(context.Background(), w.dial, w.relay.Origin(), m, key, rand.Reader); err == nil {
+	if _, err := device.Connect(context.Background(), w.dial, w.origin, m, key, rand.Reader); err == nil {
 		t.Error("a revoked device connected")
 	}
 
@@ -353,10 +383,10 @@ func TestRevokeAndReadOnly(t *testing.T) {
 	// Another device's session key doesn't work with this device's key pair, and the reverse.
 	stolen := m2
 	stolen.PSK = m.PSK
-	if _, err := device.Connect(context.Background(), w.dial, w.relay.Origin(), stolen, key2, rand.Reader); err == nil {
+	if _, err := device.Connect(context.Background(), w.dial, w.origin, stolen, key2, rand.Reader); err == nil {
 		t.Error("connected with another device's session key")
 	}
-	if _, err := device.Connect(context.Background(), w.dial, w.relay.Origin(), m2, newKey(t), rand.Reader); err == nil {
+	if _, err := device.Connect(context.Background(), w.dial, w.origin, m2, newKey(t), rand.Reader); err == nil {
 		t.Error("connected with the right session key and another key pair")
 	}
 }
@@ -369,7 +399,7 @@ func TestReconnectAndRestart(t *testing.T) {
 	c := rpc.NewClient(rpc.ClientOptions{Random: rand.Reader})
 	done := w.session(key, m, c)
 
-	w.relay.DropMachines()
+	w.local().DropMachines()
 	if err := <-done; err == nil {
 		t.Error("the device's session outlived the machine's connection")
 	}
@@ -399,7 +429,7 @@ func TestReconnectAndRestart(t *testing.T) {
 	if st := w.remote.State(); st.Connection != Off {
 		t.Errorf("turned off: %+v", st)
 	}
-	if _, err := device.Connect(context.Background(), w.dial, w.relay.Origin(), m, key, rand.Reader); err == nil {
+	if _, err := device.Connect(context.Background(), w.dial, w.origin, m, key, rand.Reader); err == nil {
 		t.Error("a device connected to a machine that is off")
 	}
 }
@@ -408,6 +438,7 @@ func TestReconnectAndRestart(t *testing.T) {
 // told so and doesn't hammer it.
 func TestClockAndRefusal(t *testing.T) {
 	w := newWorld(t)
+	w.local()
 	w.remote.SetEnabled(false)
 	w.relay.SetClockOffset(20 * time.Minute)
 	w.remote.SetEnabled(true)
@@ -415,7 +446,7 @@ func TestClockAndRefusal(t *testing.T) {
 
 	other := &world{t: t, relay: w.relay, backend: w.backend, dir: t.TempDir(), secrets: MemSecrets{}}
 	other.open()
-	if err := other.remote.SetRelay(w.relay.URL()); err != nil {
+	if err := other.remote.SetRelay(w.url); err != nil {
 		t.Fatal(err)
 	}
 	other.wait("the refusal", func() bool { return other.remote.State().Connection == Refused })
@@ -460,6 +491,7 @@ func TestTamperingRelay(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			w := newWorld(t)
+			w.local()
 			key, m := w.pair("Phone", false)
 			c := rpc.NewClient(rpc.ClientOptions{Random: rand.Reader})
 			done := w.session(key, m, c)

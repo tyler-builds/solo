@@ -37,6 +37,10 @@ const (
 	maxTries = 3
 )
 
+// uploadPace is the wait after each part of a large upload. A part is four of the relay's frames, so
+// this is 32 frames a second, under the 50 the relay allows a device: about 1.5 MB a second.
+const uploadPace = 125 * time.Millisecond
+
 // ErrOffline is returned by a request made while the machine can't be reached.
 var ErrOffline = errors.New("Not connected to the machine. Try again in a moment.")
 
@@ -141,6 +145,7 @@ func (c *Client) setStatus(f func(*Status)) {
 // The mirror is kept, and the next connection resumes from it.
 func (c *Client) Run(link Link) error {
 	s := newSession(link, maxFromMachine)
+	s.pace = uploadPace
 	c.mu.Lock()
 	hello := Hello{Protocol: Protocol, Epoch: c.epoch, Rev: c.rev}
 	c.mu.Unlock()
