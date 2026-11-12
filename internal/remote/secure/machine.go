@@ -58,7 +58,6 @@ func (m Machine) NewPairingCode(random io.Reader, now time.Time, ttl time.Durati
 // relay's origin and those fields, so a signature made for one purpose or one relay is no use for
 // another. The relay checks them without keeping anything (relay/src/auth.ts).
 const (
-	authVersion = 1
 	// MachineAuthSize and VoucherSize are the sizes of the two tokens.
 	MachineAuthSize = 1 + ed25519.PublicKeySize + 16 + 8 + 16 + ed25519.SignatureSize
 	VoucherSize     = 1 + ed25519.PublicKeySize + 16 + 16 + 8 + ed25519.SignatureSize

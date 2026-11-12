@@ -62,6 +62,19 @@ func (c PairingCode) PSK() [KeySize]byte { return derive(c.Secret[:], "pair/psk"
 // relay can tell that a connection holds the code, and learns nothing that helps it pair.
 func (c PairingCode) Ticket() [KeySize]byte { return derive(c.Secret[:], "pair/ticket") }
 
+// RelayToken is what a device presents to the relay to open a pairing connection: the machine it is
+// for, and the ticket.
+func (c PairingCode) RelayToken() []byte {
+	ticket := c.Ticket()
+	b := make([]byte, 0, 1+len(c.Machine)+len(ticket))
+	b = append(b, authVersion)
+	b = append(b, c.Machine[:]...)
+	return append(b, ticket[:]...)
+}
+
+// authVersion starts every token the relay reads.
+const authVersion = 1
+
 // TicketHash is what the relay stores of a ticket.
 func TicketHash(ticket [KeySize]byte) [sha256.Size]byte { return sha256.Sum256(ticket[:]) }
 
