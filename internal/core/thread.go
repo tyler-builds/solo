@@ -435,7 +435,7 @@ func (c *Core) startWorker(id string) {
 // spec reads core state.
 func (c *Core) openParams(row store.Thread) agent.OpenParams {
 	c.mu.Lock()
-	spec, claudePath, effort := c.orchSpec, c.settings.ClaudePath, c.settings.WorkerEffort
+	spec, claudePath, effort, commitRules := c.orchSpec, c.settings.ClaudePath, c.settings.WorkerEffort, c.settings.CommitRules
 	c.mu.Unlock()
 	if row.Kind == store.KindOrchestrator && spec != nil {
 		p := spec()
@@ -452,14 +452,16 @@ func (c *Core) openParams(row store.Thread) agent.OpenParams {
 		Model:          row.Model,
 		Effort:         cmp.Or(row.Effort, effort),
 		Title:          row.Title,
-		SystemAppend:   workerInstructions(row),
+		SystemAppend:   workerInstructions(row, commitRules),
 		PermissionMode: agent.PermissionBypass,
 		ToolPolicy:     agent.ToolPolicyAllow,
 		ClaudePath:     agent.FindClaude(claudePath).Path,
 	}
 }
 
-func workerInstructions(r store.Thread) string {
+// workerInstructions are what a thread is told about working in Solo, after Claude Code's own. With
+// commitRules (Settings.CommitRules), its commits follow them rather than Conventional Commits.
+func workerInstructions(r store.Thread, commitRules string) string {
 	ps := loadParts(r)
 	where := fmt.Sprintf(`You work alone in a git worktree of %s on branch %s, created from %s. Other workers may be changing
 other branches of the same repository at the same time; stay on your branch and in this worktree.`, r.RepoPath, r.Branch, r.BaseBranch)
@@ -491,16 +493,26 @@ files at once, with no branch or copy to review first, and other threads may wor
 branch and in these worktrees. Change only the repositories the task needs; commit in each one you change.`)
 		where = b.String()
 	}
+	commit, rules := "with a Conventional Commit message", ""
+	if r := strings.TrimSpace(commitRules); r != "" {
+		commit = "with a message that follows the commit message rules below"
+		rules = `
+
+Commit message rules, from the user. They apply to every commit you make in this thread (including
+merge commits and fixes made later), and override any other commit message convention, such as the
+repository's or your own defaults:
+` + r
+	}
 	return `You are a thread in Solo. Solo is the lead agent the user talks to; it gave you this task.
 ` + where + `
 
 - Do the task you were given completely, verifying your work (build, tests) where the project allows.
 - You own the whole task. When parts of it are independent and large, run them in parallel with
   subagents (the Agent tool), and always when Solo or the user asks you to.
-- When you are done, commit your changes on this branch with a Conventional Commit message. Don't push,
+- When you are done, commit your changes on this branch ` + commit + `. Don't push,
   merge, rebase onto other branches, or switch branches; the user reviews and merges your branch.
 - End with a short summary of what you changed and anything left undone, for the user and Solo.
-- If you need a decision only the user can make, ask with AskUserQuestion.`
+- If you need a decision only the user can make, ask with AskUserQuestion.` + rules
 }
 
 // Send sends the user's message, with any images (see ImportImage), to a thread, starting its session

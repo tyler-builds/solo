@@ -200,7 +200,7 @@ var settingsTabs = []struct {
 	{"general", "General", icons.Settings2},
 	{"repos", "Repositories", icons.FolderGit2},
 	{"models", "Models", icons.Bot},
-	{"branches", "Branches", icons.GitBranch},
+	{"branches", "Branches and commits", icons.GitBranch},
 	{"prs", "Pull requests", icons.GitPullRequest},
 	{"remote", "Remote", icons.MonitorSmartphone},
 	{"history", "History", icons.Archive},
@@ -371,7 +371,9 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 		onFail := ui.Local(ctx, "on-fail", initial.OnChecksFail)
 		prModel := ui.Local(ctx, "pr-model", initial.PRModel)
 		prEffort := ui.Local(ctx, "pr-effort", initial.PREffort)
-		prRules := ui.Local(ctx, "pr-rules", initial.PRRules)
+		commitRules := ui.Local(ctx, "commit-rules", initial.CommitRules)
+		prTitleRules := ui.Local(ctx, "pr-title-rules", initial.PRTitleRules)
+		prDescRules := ui.Local(ctx, "pr-desc-rules", initial.PRDescriptionRules)
 		prDescribe := ui.Local(ctx, "pr-describe", !initial.SkipPRDescription)
 		editorCmd := ui.Local(ctx, "editor-cmd", initial.EditorCommand)
 		terminalCmd := ui.Local(ctx, "terminal-cmd", initial.TerminalCommand)
@@ -393,8 +395,10 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 			s.OrchestratorEffort, s.WorkerEffort, s.NamingEffort = orchEffort.Get(), workerEffort.Get(), namingEffort.Get()
 			s.SoloSessionTokens, _ = strconv.Atoi(soloSession.Get())
 			s.BranchRules, s.RepoBranchRules = strings.TrimSpace(branchRules.Get()), repoRules.Get()
+			s.CommitRules = strings.TrimSpace(commitRules.Get())
 			s.AutoMerge, s.MergeMethod, s.OnChecksFail = autoMerge.Get(), mergeMethod.Get(), onFail.Get()
-			s.PRModel, s.PREffort, s.PRRules, s.SkipPRDescription = prModel.Get(), prEffort.Get(), strings.TrimSpace(prRules.Get()), !prDescribe.Get()
+			s.PRModel, s.PREffort, s.SkipPRDescription = prModel.Get(), prEffort.Get(), !prDescribe.Get()
+			s.PRTitleRules, s.PRDescriptionRules = strings.TrimSpace(prTitleRules.Get()), strings.TrimSpace(prDescRules.Get())
 		}
 		saver := ui.Local(ctx, "saver", &settingsSaver{last: initial}).Peek()
 		want := initial
@@ -430,8 +434,10 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 				s.OrchestratorEffort, s.WorkerEffort, s.NamingEffort = snap.OrchestratorEffort, snap.WorkerEffort, snap.NamingEffort
 				s.SoloSessionTokens = snap.SoloSessionTokens
 				s.BranchRules, s.RepoBranchRules = snap.BranchRules, snap.RepoBranchRules
+				s.CommitRules = snap.CommitRules
 				s.AutoMerge, s.MergeMethod, s.OnChecksFail = snap.AutoMerge, snap.MergeMethod, snap.OnChecksFail
-				s.PRModel, s.PREffort, s.PRRules, s.SkipPRDescription = snap.PRModel, snap.PREffort, snap.PRRules, snap.SkipPRDescription
+				s.PRModel, s.PREffort, s.SkipPRDescription = snap.PRModel, snap.PREffort, snap.SkipPRDescription
+				s.PRTitleRules, s.PRDescriptionRules = snap.PRTitleRules, snap.PRDescriptionRules
 			}
 			if saver.timer != nil {
 				saver.timer.Stop()
@@ -625,24 +631,37 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 			settingsSection(ctx, "Helpers", "", nil,
 				settingRow(ctx, "Branch names and pull request text", "Small models that apply your rules, each set on its page.",
 					ui.Div().Row().Gap(space2).
-						Child(ui.Button("Branches").IconEnd(icons.ArrowRight).Ghost().Small().OnClick(func() { tab.Set("branches") })).
+						Child(ui.Button("Branches and commits").IconEnd(icons.ArrowRight).Ghost().Small().OnClick(func() { tab.Set("branches") })).
 						Child(ui.Button("Pull requests").IconEnd(icons.ArrowRight).Ghost().Small().OnClick(func() { tab.Set("prs") })))))
 
-		branchesTab := settingsPage(ctx, "Branches", "How Solo names the branch each thread works on.",
+		branchesTab := settingsPage(ctx, "Branches and commits", "How Solo names the branch each thread works on, and how threads write their commits.",
 			settingsSection(ctx, "Naming", "", nil,
 				settingBlock(ctx, "How to name branches", "In your words: a prefix, a ticket format, a length. Leave empty to name branches solo/<title>.",
 					ui.TextArea(branchRules).Placeholder("For example: feature/<ticket>-<short-summary>, lowercase, hyphens, under 50 characters. Use fix/ for bug fixes.").
 						Label("Branch naming rules").MinRows(1).MaxHeight(ui.Px(140)).Width(ui.Full).Key("branch-rules")),
 				settingRow(ctx, "Model", "Applies the rules. A small, fast model is enough.", helperPickers("Branch names", namingModel, namingEffort))),
-			a.repoRulesEditor(ctx, repoRules))
+			a.repoRulesEditor(ctx, repoRules),
+			settingsSection(ctx, "Commits", "", nil,
+				settingBlock(ctx, "How to write commit messages", "Every thread follows this for each commit it makes. Leave empty for Conventional Commits.",
+					ui.TextArea(commitRules).Placeholder("For example: start with the ticket, like OW-123: Refresh tokens before they expire. Imperative mood, subject under 72 characters, a body that says why.").
+						Label("Commit message rules").MinRows(1).MaxHeight(ui.Px(140)).Width(ui.Full).Key("commit-rules"))))
+
+		// Description rules matter only when pull requests get a description.
+		var prDescBlock ui.Element
+		if prDescribe.Get() {
+			prDescBlock = settingBlock(ctx, "How to write descriptions", "Leave empty for what changed and why, then a short list of the main changes.",
+				ui.TextArea(prDescRules).Placeholder("For example: Markdown with Summary, Changes and Testing sections. Link the ticket, like Closes OW-123. No screenshots.").
+					Label("Pull request description rules").MinRows(1).MaxHeight(ui.Px(140)).Width(ui.Full).Key("pr-desc-rules"))
+		}
 
 		prsTab := settingsPage(ctx, "Pull requests", "Solo pushes a thread's branch and opens a pull request (GitHub, with gh) or merge request (GitLab, with glab). Repositories without a remote merge locally.",
 			settingsSection(ctx, "Title and description", "", nil,
 				settingRow(ctx, "Write a description", "Off: pull requests get a title only.", ui.Switch("Write a description", prDescribe)),
-				settingBlock(ctx, "How to write titles and descriptions", "A model applies this to the thread's commits, changes and summary.",
-					ui.TextArea(prRules).Placeholder("For example: Conventional Commit title with the ticket, like feat(auth): OW-123 refresh tokens. Description: Summary, Changes, Testing.").
-						Label("Pull request text rules").MinRows(1).MaxHeight(ui.Px(140)).Width(ui.Full).Key("pr-rules")),
-				settingRow(ctx, "Model", "Writes the title and description.", helperPickers("Pull request text", prModel, prEffort))),
+				settingBlock(ctx, "How to write titles", "Leave empty for a short, specific title in the imperative mood.",
+					ui.TextArea(prTitleRules).Placeholder("For example: Conventional Commit style with the ticket, like feat(auth): OW-123 refresh tokens before they expire. Under 70 characters.").
+						Label("Pull request title rules").MinRows(1).MaxHeight(ui.Px(140)).Width(ui.Full).Key("pr-title-rules")),
+				prDescBlock,
+				settingRow(ctx, "Model", "Applies the rules to the thread's commits, changes and summary.", helperPickers("Pull request text", prModel, prEffort))),
 			settingsSection(ctx, "Merging", "", nil,
 				settingRow(ctx, "Auto-merge", "Merge once required checks and reviews pass, with the forge's auto-merge.", ui.Switch("Auto-merge", autoMerge)),
 				settingRow(ctx, "Merge method", "How the branch lands on its base.", ui.Select(mergeMethod, ui.Option[string]{Value: "squash", Label: "Squash"},

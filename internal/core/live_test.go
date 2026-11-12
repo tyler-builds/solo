@@ -161,7 +161,7 @@ func TestLivePRText(t *testing.T) {
 	}
 	defer c.Close()
 	text, err := c.agent.Complete(context.Background(), agent.CompleteParams{Model: "haiku", System: prSystem,
-		Prompt:     "Write the pull request for this change.\n\nRules:\nConventional Commit title with the ticket. Description: Summary, Changes, Testing.\n\nTask title: Fix token refresh\nTask:\nOW-4821: refresh the OAuth token on a 401 and retry once.\n\nWhat the agent that made the change reported:\nAdded a single retry after refreshing on 401 in src/auth/refresh.ts, with a test. Auth tests pass.\n\nCommits:\nfix(auth): retry once after refreshing on 401\n\nFiles changed:\nM src/auth/refresh.ts (+14 −3)\nM src/auth/refresh.test.ts (+38 −0)",
+		Prompt:     "Write the pull request for this change.\n\nRules for the title:\nConventional Commit title with the ticket.\n\nRules for the description:\nSummary, Changes, Testing.\n\nTask title: Fix token refresh\nTask:\nOW-4821: refresh the OAuth token on a 401 and retry once.\n\nWhat the agent that made the change reported:\nAdded a single retry after refreshing on 401 in src/auth/refresh.ts, with a test. Auth tests pass.\n\nCommits:\nfix(auth): retry once after refreshing on 401\n\nFiles changed:\nM src/auth/refresh.ts (+14 −3)\nM src/auth/refresh.test.ts (+38 −0)",
 		ClaudePath: agent.FindClaude("").Path})
 	if err != nil {
 		t.Fatal(err)

@@ -179,7 +179,10 @@ func (p SettingsPatch) CheckRemote(isDir func(path string) bool) error {
 			return errors.New("a repository's branch rules are too long")
 		}
 	}
-	for name, v := range map[string]string{"branchRules": s.BranchRules, "prRules": s.PRRules} {
+	for name, v := range map[string]string{
+		"branchRules": s.BranchRules, "commitRules": s.CommitRules, "prTitleRules": s.PRTitleRules,
+		"prDescriptionRules": s.PRDescriptionRules, "prRules": s.PRRules,
+	} {
 		if len(v) > maxSettingText {
 			return fmt.Errorf("%q is too long", name)
 		}
