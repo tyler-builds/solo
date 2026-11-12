@@ -85,11 +85,12 @@ func waitMergedRepo(t *testing.T, f *fakeBackend, want string) {
 }
 
 // A thread in two repositories where only one changed and has a pull request names that pull
-// request, in its header and on its merge card, and merges only it; it never says "Merge all".
+// request, and merges only it; it never says "Merge all". Its merge card names the repository; its
+// header, whose chips name it, gives the number alone.
 func TestMergeOnePRNamesIt(t *testing.T) {
 	f, u := mergeUI(t, mergePart("solo", 3, forge.GitHub, openPR("solo", 5, true)), mergePart("jamb", 0, forge.GitHub, nil))
-	if n := buttons(u, "Merge solo #5"); n != 2 {
-		t.Fatalf("%d buttons say Merge solo #5, want 2 (header and card)", n)
+	if card, header := buttons(u, "Merge solo #5"), buttons(u, "Merge #5"); card != 1 || header != 1 {
+		t.Fatalf("%d buttons say Merge solo #5 and %d Merge #5, want 1 (card) and 1 (header)", card, header)
 	}
 	if buttons(u, "Merge all") > 0 || u.HasRole(access.RoleGroup, "Merge all") {
 		t.Fatal(`one pull request says "Merge all"`)
@@ -103,8 +104,10 @@ func TestMergeOneBlockedPRNamesIt(t *testing.T) {
 	pr := openPR("solo", 5, false)
 	pr.Blocked = "checks failed"
 	_, u := mergeUI(t, mergePart("solo", 3, forge.GitHub, pr), mergePart("jamb", 0, forge.GitHub, nil))
-	if b := u.ByRole(access.RoleButton, "Merge solo #5"); !b.Disabled() {
-		t.Fatal("a blocked pull request's button is enabled")
+	for _, name := range []string{"Merge solo #5", "Merge #5"} { // the card's, the header's
+		if b := u.ByRole(access.RoleButton, name); !b.Disabled() {
+			t.Fatalf("a blocked pull request's button %q is enabled", name)
+		}
 	}
 	if buttons(u, "Merge all") > 0 || buttons(u, "Merge") > 0 {
 		t.Fatal("a blocked pull request isn't named")
@@ -137,8 +140,8 @@ func TestMergeTwoPRsIsMergeAll(t *testing.T) {
 func TestMergeOneOfTwoReadyNamesIt(t *testing.T) {
 	_, u := mergeUI(t, mergePart("solo", 3, forge.GitHub, openPR("solo", 5, true)),
 		mergePart("jamb", 2, forge.GitHub, &forge.PR{Kind: forge.GitHub, Number: 9, State: forge.StateOpen, Blocked: "waiting for checks"}))
-	if n := buttons(u, "Merge solo #5"); n != 2 {
-		t.Fatalf("%d buttons say Merge solo #5, want 2", n)
+	if card, header := buttons(u, "Merge solo #5"), buttons(u, "Merge #5"); card != 1 || header != 1 {
+		t.Fatalf("%d buttons say Merge solo #5 and %d Merge #5, want 1 (card) and 1 (header)", card, header)
 	}
 	u.ByRole(access.RoleGroup, "Merge solo #5").ByRole(access.RoleButton, "More options").Click()
 	u.Settle()

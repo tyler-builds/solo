@@ -62,14 +62,14 @@ func (a *App) mergeLocal(id string) {
 
 // landControl is a thread's main landing action: Open PR, Merge (its pull request, or locally without
 // a forge), or a note that auto-merge will do it. While the action runs, the button shows it is busy.
-// nil when there is nothing to land.
-func (a *App) landControl(ctx *ui.Context, th core.ThreadView) ui.Element {
+// nil when there is nothing to land. short is mergeControlMulti's.
+func (a *App) landControl(ctx *ui.Context, th core.ThreadView, short bool) ui.Element {
 	if th.Resolving {
 		return ui.Button("Merge").Icon(icons.GitMerge).Primary().Small().Loading(true).Key("land-" + th.ID).
 			Tooltip("Resolving conflicts: newer work landed in " + th.BaseBranch + " since this started. " +
 				"The thread is merging it in, then Solo merges.")
 	}
-	e := a.landButton(ctx, th)
+	e := a.landButton(ctx, th, short)
 	if a.busy.Get()[th.ID] {
 		switch b := e.(type) {
 		case *ui.ButtonElement:
@@ -83,10 +83,11 @@ func (a *App) landControl(ctx *ui.Context, th core.ThreadView) ui.Element {
 
 // landAction is what a thread's header and its merge card offer to land it: landControl when it can
 // land, or while it is busy with changes to land (working, or waiting on background work) the
-// disabled button of landBlocked. nil with nothing to land.
-func (a *App) landAction(ctx *ui.Context, th core.ThreadView) ui.Element {
+// disabled button of landBlocked. nil with nothing to land. short is mergeControlMulti's: the header
+// asks for it, the card doesn't.
+func (a *App) landAction(ctx *ui.Context, th core.ThreadView, short bool) ui.Element {
 	if th.Resolving {
-		return a.landControl(ctx, th) // it merges by itself once the conflicts are resolved
+		return a.landControl(ctx, th, short) // it merges by itself once the conflicts are resolved
 	}
 	busy := core.Active(th.Status) || th.Status == core.StatusQueued
 	if busy && th.IsWorker && !th.InPlace && (th.Changed > 0 || len(openPRs(th)) > 0) {
@@ -95,7 +96,7 @@ func (a *App) landAction(ctx *ui.Context, th core.ThreadView) ui.Element {
 	if !th.CanOpenPR && !th.CanMerge && !th.CanMarkReady && len(openPRs(th)) == 0 {
 		return nil
 	}
-	return a.landControl(ctx, th)
+	return a.landControl(ctx, th, short)
 }
 
 // landBlocked is the landing button of a thread that can't land now, disabled, its tooltip saying why:
@@ -136,11 +137,11 @@ func landBlockedReason(th core.ThreadView) string {
 }
 
 // landButton is landControl's button, without the busy state.
-func (a *App) landButton(ctx *ui.Context, th core.ThreadView) ui.Element {
+func (a *App) landButton(ctx *ui.Context, th core.ThreadView, short bool) ui.Element {
 	t := ctx.Theme()
 	id := th.ID
 	if th.MultiRepo() {
-		return a.landControlMulti(ctx, th)
+		return a.landControlMulti(ctx, th, short)
 	}
 	switch {
 	case th.CanOpenPR:
@@ -211,7 +212,7 @@ func (a *App) mergeRepo(id, repo string) {
 // landControlMulti is landControl for a thread in several repositories: a split button that acts on
 // all of them, with each repository on its own in its menu. Repositories with nothing to land don't
 // count: with one pull request (or one branch to merge locally), its button names that one.
-func (a *App) landControlMulti(ctx *ui.Context, th core.ThreadView) ui.Element {
+func (a *App) landControlMulti(ctx *ui.Context, th core.ThreadView, short bool) ui.Element {
 	id := th.ID
 	var canOpen, drafts []core.PartView
 	for _, p := range th.Parts {
@@ -242,7 +243,7 @@ func (a *App) landControlMulti(ctx *ui.Context, th core.ThreadView) ui.Element {
 				a.runBusy(id, "Marking them ready", func(ctx context.Context) error { return a.b.MarkReady(ctx, id) })
 			})
 	}
-	return a.mergeControlMulti(ctx, th)
+	return a.mergeControlMulti(ctx, th, short)
 }
 
 // mergeTargets are what a multi-repository thread has to merge: each open pull request, and each
@@ -268,19 +269,34 @@ func partMergeLabel(p core.PartView) string {
 	return "Merge " + p.Name + " locally"
 }
 
+// partMergeShort is partMergeLabel without the repository's name, "Merge #142": for the thread's
+// header, whose chips name each repository beside its pull request's number.
+func partMergeShort(p core.PartView) string {
+	if p.PR != nil && p.PR.State == forge.StateOpen {
+		return fmt.Sprintf("Merge #%d", p.PR.Number)
+	}
+	return partMergeLabel(p)
+}
+
 // partMergeTip says what merging one repository of a thread does.
 func partMergeTip(p core.PartView) string {
 	if p.PR != nil && p.PR.State == forge.StateOpen {
-		return fmt.Sprintf("Merge %s #%d into %s", p.PR.Kind.Noun(), p.PR.Number, p.BaseBranch)
+		return fmt.Sprintf("Merge %s's %s #%d into %s", p.Name, p.PR.Kind.Noun(), p.PR.Number, p.BaseBranch)
 	}
 	return "No remote, so no pull request: merges " + p.Branch + " into your local " + p.BaseBranch
 }
 
 // mergeControlMulti is the merge button of a thread in several repositories: named for the one
 // repository it merges, or "Merge all" when two or more have something to merge. nil with nothing.
-func (a *App) mergeControlMulti(ctx *ui.Context, th core.ThreadView) ui.Element {
+// short names that one repository by its pull request's number alone (partMergeShort); the menu always
+// names it in full.
+func (a *App) mergeControlMulti(ctx *ui.Context, th core.ThreadView, short bool) ui.Element {
 	t := ctx.Theme()
 	id := th.ID
+	name := partMergeLabel
+	if short {
+		name = partMergeShort
+	}
 	targets, ready := mergeTargets(th)
 	autoAll := len(targets) > 0
 	for _, p := range targets {
@@ -299,7 +315,7 @@ func (a *App) mergeControlMulti(ctx *ui.Context, th core.ThreadView) ui.Element 
 		repo := p.Repo
 		switch {
 		case p.CanMerge:
-			return ui.Button(partMergeLabel(p)).Icon(icons.GitMerge).Primary().Small().Tooltip(partMergeTip(p)).
+			return ui.Button(name(p)).Icon(icons.GitMerge).Primary().Small().Tooltip(partMergeTip(p)).
 				OnClick(func() { a.mergeRepo(id, repo) }).Key("merge-" + id)
 		case autoAll:
 			return autoMerge("It merges once its required checks pass")
@@ -308,7 +324,7 @@ func (a *App) mergeControlMulti(ctx *ui.Context, th core.ThreadView) ui.Element 
 		if p.PR.Blocked != "" {
 			tip += ": " + p.PR.Blocked
 		}
-		return ui.Button(partMergeLabel(p)).Icon(icons.GitMerge).Secondary().Small().Disabled(true).Tooltip(tip).
+		return ui.Button(name(p)).Icon(icons.GitMerge).Secondary().Small().Disabled(true).Tooltip(tip).
 			Key("merge-" + id)
 	}
 	menu := func() []ui.MenuItem {
@@ -330,7 +346,7 @@ func (a *App) mergeControlMulti(ctx *ui.Context, th core.ThreadView) ui.Element 
 			Tooltip("Merge each repository into its base branch").Key("merge-" + id)
 	case len(ready) == 1:
 		repo := ready[0].Repo
-		return ui.SplitButton(partMergeLabel(ready[0]), func() { a.mergeRepo(id, repo) }, menu).
+		return ui.SplitButton(name(ready[0]), func() { a.mergeRepo(id, repo) }, menu).
 			Icon(icons.GitMerge).Primary().Small().Tooltip(partMergeTip(ready[0])).Key("merge-" + id)
 	case len(ready) > 1:
 		return ui.SplitButton(fmt.Sprintf("Merge %d ready", len(ready)), func() { a.mergeRepo(id, "") }, menu).
@@ -350,10 +366,10 @@ func plural(n int, noun string) string {
 }
 
 // repoChips name a multi-repository thread's repositories, each with its pull request's state; a chip
-// with a pull request opens it.
-func (a *App) repoChips(ctx *ui.Context, th core.ThreadView) ui.Element {
+// with a pull request opens it. They are for a row that wraps.
+func (a *App) repoChips(ctx *ui.Context, th core.ThreadView) []ui.Element {
 	t := ctx.Theme()
-	row := ui.Div().Row().Align(ui.Center).Gap(space1 + 2).Wrap().MinWidth(ui.Px(0))
+	var chips []ui.Element
 	for _, p := range th.Parts {
 		chip := ui.Div().Row().Align(ui.Center).Gap(5).PaddingX(space2).Height(ui.Px(20)).Radius(10).
 			Border(1, t.Border).Shrink(0)
@@ -391,9 +407,9 @@ func (a *App) repoChips(ctx *ui.Context, th core.ThreadView) ui.Element {
 			}
 			chip = chip.Child(ui.Text(p.Name).FontSize(11).Medium().TextColor(color).NoWrap())
 		}
-		row = row.Child(chip.Tooltip(tip))
+		chips = append(chips, chip.Tooltip(tip))
 	}
-	return row
+	return chips
 }
 
 func checkNamesOf(cs []forge.Check) []string {
@@ -492,32 +508,42 @@ func (a *App) threadPanel(ctx *ui.Context) ui.Element {
 		ctx.After(time.Second, func() { tick.Update(func(n int) int { return n + 1 }) })
 	}
 
-	// A narrow panel moves the change size into the meta line and keeps only Merge's icon.
-	stat := ui.Div().Row().Gap(6).
-		Child(ui.Text(fmt.Sprintf("+%d", added)).FontSize(12).Medium().TextColor(t.Success)).
-		Child(ui.Text(fmt.Sprintf("−%d", removed)).FontSize(12).Medium().TextColor(t.Danger))
+	// The change size sits at the end of the tab row, beside Changes.
+	stat := ui.Div().Row().Gap(6).Shrink(0).
+		Child(ui.Text(fmt.Sprintf("+%d", added)).FontSize(12).Medium().TextColor(t.Success).NoWrap()).
+		Child(ui.Text(fmt.Sprintf("−%d", removed)).FontSize(12).Medium().TextColor(t.Danger).NoWrap())
+	// The header is two rows. The title shares the first with the small controls (tools): the checks, the
+	// folder's buttons, More and Close. The wide ones that land the thread (land) are in the second,
+	// beside where the thread is, so a long button never squeezes the title.
 	// A compact window has no room for the folder's buttons beside the title: they are in More there.
 	compact := isCompact(ctx)
-	actions := ui.Div().Row().Align(ui.Center).Gap(space1).Shrink(0).Child(a.headerChecks(ctx, th))
+	tools := ui.Div().Row().Align(ui.Center).Gap(space1).Shrink(0).Child(a.headerChecks(ctx, th))
 	if th.Dir != "" && launch.Available && !compact {
 		dir := th.Dir
-		actions = actions.
+		tools = tools.
 			Child(ui.IconButton(icons.SquareCode).Ghost().Small().Label("Open in editor").Tooltip("Open in editor").
 				OnClick(func() { a.openEditor(dir) })).
 			Child(ui.IconButton(icons.SquareTerminal).Ghost().Small().Label("Open terminal").Tooltip("Open terminal").
 				OnClick(func() { a.openTerminal(dir) }))
 	}
-	actions = actions.Child(a.prLink(ctx, th))
-	switch land := a.landAction(ctx, th); {
-	case land != nil:
-		actions = actions.Child(land)
+	var land []ui.Element
+	if pr := a.prLink(ctx, th); pr != nil {
+		land = append(land, pr)
+	}
+	switch l := a.landAction(ctx, th, true); {
+	case l != nil:
+		land = append(land, l)
 	case th.CanDone && !th.Unlanded:
-		actions = actions.Child(ui.Button("Done").Icon(icons.Check).Primary().Small().
+		land = append(land, ui.Button("Done").Icon(icons.Check).Primary().Small().
 			Tooltip("Take it out of your list. Settings › History can restore it.").
 			OnClick(func() { a.markDone(th) }))
 	}
+	if compact {
+		// One wrapping row there, under the window's bar: the landing controls come before More.
+		tools = tools.Children(land...)
+	}
 	if th.CanDiscard || th.CanInterrupt || th.CanMergeLocal || th.Unlanded || th.Dir != "" {
-		actions = actions.Child(ui.DropdownMenu(
+		tools = tools.Child(ui.DropdownMenu(
 			ui.IconButton(icons.Ellipsis).Ghost().Small().Label("More actions").Tooltip("More"),
 			func() []ui.MenuItem {
 				var items []ui.MenuItem
@@ -554,43 +580,48 @@ func (a *App) threadPanel(ctx *ui.Context) ui.Element {
 			}))
 	}
 	if !compact {
-		actions = actions.Child(ui.IconButton(icons.X).Ghost().Small().Label("Close thread").Tooltip("Close").
+		tools = tools.Child(ui.IconButton(icons.X).Ghost().Small().Label("Close thread").Tooltip("Close").
 			OnClick(a.closeThread))
 	}
 
-	// The mark carries the status, so the line under the title is just where it is and how big.
-	repo := ui.Div().Child(ui.Text(filepath.Base(th.RepoPath)).FontSize(12).Medium().TextColor(t.TextMuted).NoWrap())
-	if th.Branch != "" {
-		repo = repo.Tooltip(branchLabel(th) + " → " + th.BaseBranch)
-	}
-	meta := ui.Div().Row().Align(ui.Center).Gap(space2).Wrap().MinWidth(ui.Px(0)).Child(repo)
-	if th.InPlace {
-		meta = meta.Child(ui.Div().Tooltip("This folder isn't in git, so the thread edits it directly: no separate copy, diff or merge. Settings › General can put it in git.").
-			Child(subtle(ctx, "not in git")))
-	}
+	// The mark carries the status, so the row under the title is just where the thread is, then what
+	// lands it. It is one row that wraps: the landing controls end its last line, at the right, so they
+	// take a line of their own only when the repositories leave them no room.
+	meta := ui.Div().Row().Wrap().Align(ui.Center).Gap(space2).MinWidth(ui.Px(0))
 	if th.MultiRepo() {
-		meta = ui.Div().Row().Align(ui.Center).Gap(space2).Wrap().MinWidth(ui.Px(0)).Child(a.repoChips(ctx, th))
-	}
-	if added+removed > 0 {
-		meta = meta.Child(stat)
+		meta = meta.Gap(space1 + 2).Children(a.repoChips(ctx, th)...)
+	} else {
+		repo := ui.Div().Child(ui.Text(filepath.Base(th.RepoPath)).FontSize(12).Medium().TextColor(t.TextMuted).NoWrap())
+		if th.Branch != "" {
+			repo = repo.Tooltip(branchLabel(th) + " → " + th.BaseBranch)
+		}
+		meta = meta.Child(repo)
+		if th.InPlace {
+			meta = meta.Child(ui.Div().Tooltip("This folder isn't in git, so the thread edits it directly: no separate copy, diff or merge. Settings › General can put it in git.").
+				Child(subtle(ctx, "not in git")))
+		}
 	}
 	if a.cfg.Get().ShowCosts && th.CostUSD > 0 {
 		meta = meta.Child(subtle(ctx, fmt.Sprintf("$%.2f", th.CostUSD)))
 	}
-	header := ui.Div().Row().Align(ui.Start).Gap(space2).PaddingLeft(space4).PaddingRight(space2).PaddingY(space3).Shrink(0).
-		Child(ui.Div().Column().Gap(space1).Grow(1).MinWidth(ui.Px(0)).
-			Child(ui.Div().Row().Align(ui.Center).Gap(space2).MinWidth(ui.Px(0)).
-				Child(statusMark(ctx, shownStatus(th)).Tooltip(statusLabel(th))).
-				Child(ui.Div().MinWidth(ui.Px(0)).Tooltip(th.Title).ContextMenu(func() []ui.MenuItem { return a.folderMenu(th) }).
-					Child(ui.Text(th.Title).FontSize(14).Semibold().Truncate()))).
-			Child(ui.Div().PaddingLeft(space5 + 2).Child(meta))).
-		Child(actions)
+	var header *ui.DivElement
 	if compact {
 		// The window's bar has the title (compactBar); here is where the thread is, and what can be done
 		// with it.
 		header = ui.Div().Row().Wrap().Align(ui.Center).Gap(space2).PaddingX(space4).PaddingY(space2).Shrink(0).
 			Child(ui.Div().Grow(1).MinWidth(ui.Px(0)).Child(meta)).
-			Child(actions)
+			Child(tools)
+	} else {
+		if len(land) > 0 {
+			meta = meta.Child(ui.Div().Row().Align(ui.Center).Justify(ui.End).Gap(space1).Grow(1).Children(land...))
+		}
+		header = ui.Div().Column().Gap(space1).PaddingLeft(space4).PaddingRight(space2).PaddingY(space3).Shrink(0).
+			Child(ui.Div().Row().Align(ui.Center).Gap(space2).MinWidth(ui.Px(0)).
+				Child(statusMark(ctx, shownStatus(th)).Tooltip(statusLabel(th))).
+				Child(ui.Div().Grow(1).MinWidth(ui.Px(0)).Tooltip(th.Title).ContextMenu(func() []ui.MenuItem { return a.folderMenu(th) }).
+					Child(ui.Text(th.Title).FontSize(14).Semibold().Truncate())).
+				Child(tools)).
+			Child(ui.Div().PaddingLeft(space5 + 2).Child(meta))
 	}
 	changesLabel := "Changes"
 	if n := len(res.Data.files); n > 0 {
@@ -603,6 +634,12 @@ func (a *App) threadPanel(ctx *ui.Context) ui.Element {
 	tabs := ui.Div().Row().Align(ui.Center).PaddingX(space4).Shrink(0).
 		BorderEdges(ui.Edges{Bottom: 1}, t.Border).
 		Child(ui.Tabs(a.openTab, tabList...))
+	if added+removed > 0 {
+		// The tab list draws a line under itself and now ends where the change size starts: the same
+		// line under the change size carries it to the row's end.
+		tabs = tabs.Child(ui.Div().Row().Align(ui.Center).Justify(ui.End).Grow(1).AlignSelf(ui.Stretch).PaddingLeft(space3).
+			BorderEdges(ui.Edges{Bottom: 1}, t.Border).Child(stat))
+	}
 
 	var content ui.Element
 	if tab == "changes" && th.HasWorktree {

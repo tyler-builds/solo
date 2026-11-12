@@ -1244,7 +1244,7 @@ func (a *App) proposalCard(ctx *ui.Context, d core.ProposalData, steps []*core.I
 			narrow := a.chatWidth(ctx) < 640
 			// The same control as the thread's header, and when it can't land yet, the same disabled
 			// button saying why.
-			land := a.landAction(ctx, th)
+			land := a.landAction(ctx, th, false)
 			if land == nil {
 				land = landBlocked(th)
 			}
