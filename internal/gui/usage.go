@@ -15,6 +15,11 @@ import (
 // warns.
 const usageHigh = 0.8
 
+// claudeWarnFrom is the share of a limit below which Claude Code ignores the server's allowed_warning
+// status. The server sets it once usage passes any of its warning thresholds, early ones (25%, say)
+// included, so it alone doesn't mean the limit is close; Claude Code only warns from this share on.
+const claudeWarnFrom = 0.7
+
 // limitNames are the short label and the full name of each kind of usage limit.
 var limitNames = map[string][2]string{
 	"five_hour":                  {"5h", "5-hour limit"},
@@ -34,13 +39,26 @@ func limitName(kind string) (short, full string) {
 	return strings.ReplaceAll(kind, "_", " "), strings.ReplaceAll(kind, "_", " ") + " limit"
 }
 
-// usageColor is the color of a limit's bar: the accent, the warning color once Claude warns or most of
-// the limit is used, and the danger color once it is reached.
+// nearLimit reports whether a limit not yet reached is close to it, by how much of it is used: most of
+// it, or enough that Claude Code would warn, when the server warns. When how much is used isn't known,
+// the server's warning is all there is to go by.
+func nearLimit(e agent.Event, used float64, known bool) bool {
+	switch {
+	case e.Status == "rejected":
+		return false
+	case !known:
+		return e.Status == "allowed_warning"
+	}
+	return used >= usageHigh || (e.Status == "allowed_warning" && used >= claudeWarnFrom)
+}
+
+// usageColor is the color of a limit's bar: the accent, the warning color once it is near the limit, and
+// the danger color once it is reached.
 func usageColor(t *ui.Theme, e agent.Event, used float64) ui.Color {
 	switch {
 	case e.Status == "rejected":
 		return t.Danger
-	case e.Status == "allowed_warning" || used >= usageHigh:
+	case nearLimit(e, used, true):
 		return t.Warning
 	}
 	return t.Accent
@@ -74,10 +92,10 @@ func usageTip(e agent.Event, used float64, known bool, now time.Time) string {
 	if known {
 		parts[0] += fmt.Sprintf(": %d%% used", percent(used))
 	}
-	switch e.Status {
-	case "rejected":
+	switch {
+	case e.Status == "rejected":
 		parts = append(parts, "Limit reached")
-	case "allowed_warning":
+	case nearLimit(e, used, known):
 		parts = append(parts, "Near the limit")
 	}
 	if r := resetLine(e.ResetsAt, now); r != "" {
@@ -124,7 +142,7 @@ func (a *App) usagePanel(ctx *ui.Context) ui.Element {
 	// Nothing says how much is used: say so only when a limit is near or reached.
 	var worst *agent.Event
 	for i, e := range limits {
-		if e.Status == "rejected" || (e.Status == "allowed_warning" && (worst == nil || worst.Status != "rejected")) {
+		if e.Status == "rejected" || (nearLimit(e, 0, false) && (worst == nil || worst.Status != "rejected")) {
 			worst = &limits[i]
 		}
 	}
