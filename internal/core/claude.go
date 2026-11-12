@@ -1,3 +1,5 @@
+//go:build !js
+
 package core
 
 import (
@@ -7,16 +9,6 @@ import (
 
 	"github.com/tyler-builds/solo/internal/agent"
 )
-
-// ClaudeStatus is what Settings shows about Claude Code.
-type ClaudeStatus struct {
-	Path    string // the executable Solo runs; "" when none was found
-	Source  string // how it was found: "setting", "PATH", "default location" or "bundled"
-	Version string
-	Account string // such as "you@example.com · Max"; "" when unknown
-	Err     string // why Claude Code can't be used; "" when it can
-	Models  []agent.ModelInfo
-}
 
 // CheckClaude finds Claude Code with override as the Settings path ("" to detect it), runs it for its
 // version, and starts it once to read the signed-in account.

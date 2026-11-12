@@ -209,12 +209,20 @@ var settingsTabs = []struct {
 func settingsNav(ctx *ui.Context, tab *ui.Signal[string]) ui.Element {
 	t := ctx.Theme()
 	nav := ui.Div().Column().Gap(2).Width(ui.Px(184)).Shrink(0).Role(access.RoleTabList).Label("Settings pages")
+	compact := isCompact(ctx)
+	if compact {
+		// A row across the top, which scrolls sideways when the pages don't fit.
+		nav = ui.Div().Row().Gap(2).Shrink(0).ScrollX().Role(access.RoleTabList).Label("Settings pages")
+	}
 	for _, p := range settingsTabs {
 		value := p.value
 		on := tab.Get() == value
 		item := ui.Div().Row().Align(ui.Center).Gap(space2 + 2).PaddingX(space3).Height(ui.Px(34)).Radius(radiusS).
 			Cursor(ui.CursorPointer).Role(access.RoleTab).Label(p.label).AccessSelected(on).Key("settings-tab-" + value).
 			OnClick(func() { tab.Set(value) })
+		if compact {
+			item = item.Shrink(0)
+		}
 		icon, text := t.TextMuted, t.TextMuted
 		if on {
 			item = item.Background(t.SurfaceActive)
@@ -224,7 +232,7 @@ func settingsNav(ctx *ui.Context, tab *ui.Signal[string]) ui.Element {
 		}
 		nav = nav.Child(item.
 			Child(ui.Icon(p.icon).Size(15).Color(icon)).
-			Child(ui.Text(p.label).FontSize(13).Medium().TextColor(text)))
+			Child(ui.Text(p.label).FontSize(13).Medium().TextColor(text).NoWrap()))
 	}
 	return nav
 }
@@ -288,6 +296,13 @@ func settingLabel(ctx *ui.Context, title, help string) *ui.DivElement {
 
 // settingRow is one setting: its name and what it does on the left, its control on the right.
 func settingRow(ctx *ui.Context, title, help string, control ui.Element) ui.Element {
+	if isCompact(ctx) {
+		// A narrow window keeps a small control, such as a switch, beside the name, and puts a wide one
+		// under it.
+		return ui.Div().Row().Wrap().Align(ui.Center).Gap(space3).PaddingX(space4).PaddingY(space3).MinHeight(ui.Px(60)).
+			Child(settingLabel(ctx, title, help).Basis(ui.Px(180))).
+			Child(ui.Div().Row().Wrap().Align(ui.Center).Gap(space2).MaxWidth(ui.Full).Child(control))
+	}
 	return ui.Div().Row().Align(ui.Center).Gap(space6).PaddingX(space4).PaddingY(space3).MinHeight(ui.Px(60)).
 		Child(settingLabel(ctx, title, help)).
 		Child(ui.Div().Row().Align(ui.Center).Gap(space2).Shrink(0).Child(control))
@@ -309,6 +324,9 @@ const (
 // pickerHeads labels the model and effort columns over a section's pickers.
 func pickerHeads(ctx *ui.Context) ui.Element {
 	t := ctx.Theme()
+	if isCompact(ctx) {
+		return nil // the pickers sit under each name there, not in columns
+	}
 	head := func(s string) ui.Element {
 		return ui.Text(strings.ToUpper(s)).FontSize(11).FontWeight(ui.FontSemibold).TextColor(t.TextSubtle)
 	}
@@ -479,11 +497,17 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 				where = st.Path + " · " + map[string]string{"setting": "from the path below", "PATH": "found on PATH",
 					"default location": "found in its default location", "bundled": "shipped with Solo"}[st.Source]
 			}
-			claudeRow = ui.Div().Row().Align(ui.Center).Gap(space3).PaddingX(space4).PaddingY(space3).MinHeight(ui.Px(60)).
-				Child(ui.Icon(icon).Size(16).Color(color)).
-				Child(ui.Div().Column().Gap(2).Grow(1).MinWidth(ui.Px(0)).
-					Child(ui.Text(line).FontSize(13).Medium().TextColor(t.Text).Truncate()).
-					Child(caption(ctx, where).TruncateHead())).
+			about := ui.Div().Column().Gap(2).Grow(1).MinWidth(ui.Px(0)).
+				Child(ui.Text(line).FontSize(13).Medium().TextColor(t.Text).Truncate()).
+				Child(caption(ctx, where).TruncateHead())
+			row := ui.Div().Row().Align(ui.Center).Gap(space3).PaddingX(space4).PaddingY(space3).MinHeight(ui.Px(60)).
+				Child(ui.Icon(icon).Size(16).Color(color))
+			if isCompact(ctx) {
+				// The button goes under the lines there, which need the row's width.
+				row = row.Wrap()
+				about = about.Basis(ui.Px(180))
+			}
+			claudeRow = row.Child(about).
 				Child(ui.Button("Check again").Icon(icons.RefreshCw).Secondary().Small().OnClick(check))
 		}
 		input := func(in *ui.TextInputElement) *ui.TextInputElement { return in.Small().Width(ui.Px(280)) }
@@ -642,13 +666,24 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 		}
 		// One height for every page, so the dialog doesn't move between them: the tallest page's, or what
 		// the window allows beside the title and footer. A longer page scrolls.
-		_, winH := ctx.WindowSize()
+		winW, winH := ctx.WindowSize()
 		bodyH := min(max(winH-220, 360), 660)
 		body := ui.Div().Row().Width(ui.Full).Height(ui.Px(bodyH)).Gap(space6).
 			Child(settingsNav(ctx, tab)).
 			Child(ui.Div().Column().Grow(1).MinWidth(ui.Px(0)).ScrollY().PaddingRight(space4).PaddingBottom(space6).
 				Key("settings-page-" + tab.Get()).
 				Child(page))
+		width := ui.Px(900)
+		if isCompact(ctx) {
+			// A narrow window gives Settings nearly all of itself: the pages' names across the top, and the
+			// page under them.
+			width = ui.Px(max(winW-2*space2, 280))
+			body = ui.Div().Column().Width(ui.Full).Height(ui.Px(max(winH-200, 240))).Gap(space3).
+				Child(settingsNav(ctx, tab)).
+				Child(ui.Div().Column().Grow(1).MinHeight(ui.Px(0)).ScrollY().PaddingBottom(space4).
+					Key("settings-page-" + tab.Get()).
+					Child(page))
+		}
 
 		status := "Changes save as you make them"
 		switch saved.Get() {
@@ -659,7 +694,7 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 		}
 		doneFocus := ui.Local(ctx, "done-focus", ui.NewFocusHandle()).Peek()
 		done := ui.Button("Done").Secondary().Key("settings-done").FocusHandle(doneFocus).OnClick(closeDialog)
-		return ui.Modal("Settings", body).Width(ui.Px(900)).MaxWidth(ui.Px(900)).CloseButton(true).InitialFocus(doneFocus).
+		return ui.Modal("Settings", body).Width(width).MaxWidth(width).CloseButton(true).InitialFocus(doneFocus).
 			Footer(ui.Div().Row().Align(ui.Center).Gap(space1+2).Grow(1).
 				Child(ui.Icon(icons.Check).Size(13).Color(t.TextSubtle)).
 				Child(caption(ctx, status)), done).
@@ -714,7 +749,8 @@ func (a *App) confirmDialog(ctx *ui.Context) ui.Element {
 		a.confirm.Set(nil)
 		c.run()
 	})
-	return ui.Modal(c.title, ui.Div().Width(ui.Full).Child(muted(ctx, c.body))).Width(ui.Px(460)).
+	winW, _ := ctx.WindowSize()
+	return ui.Modal(c.title, ui.Div().Width(ui.Full).Child(muted(ctx, c.body))).Width(ui.Px(min(460, winW-2*space2))).
 		Footer(ui.Button("Cancel").Secondary().OnClick(func() { a.confirm.Set(nil) }), do).
 		OnClose(func() { a.confirm.Set(nil) }).Key("confirm")
 }

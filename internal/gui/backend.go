@@ -8,7 +8,6 @@ import (
 	"github.com/tyler-builds/solo/internal/agent"
 	"github.com/tyler-builds/solo/internal/core"
 	"github.com/tyler-builds/solo/internal/git"
-	"github.com/tyler-builds/solo/internal/orchestrator"
 )
 
 // Backend is what the UI drives: the core and the orchestrator. Tests and screenshots use a fake.
@@ -51,14 +50,4 @@ type Backend interface {
 	InitRepo(ctx context.Context, folder string) (string, error)
 	RateLimits() []agent.Event
 	CheckClaude(ctx context.Context, override string) core.ClaudeStatus
-}
-
-// Live is the real backend.
-type Live struct {
-	*core.Core
-	O *orchestrator.Orchestrator
-}
-
-func (l Live) SendToOrchestrator(ctx context.Context, text string, images ...string) error {
-	return l.O.Send(ctx, text, images...)
 }

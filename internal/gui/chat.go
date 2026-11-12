@@ -26,6 +26,15 @@ import (
 
 const chatMaxWidth = 780
 
+// gutter is the space at each side of a conversation: less in a compact window, whose width the text
+// needs.
+func gutter(ctx *ui.Context) float32 {
+	if isCompact(ctx) {
+		return space4
+	}
+	return space6
+}
+
 // code colors the code blocks of every transcript; one highlighter for the app.
 var code = mdcode.Highlight()
 
@@ -44,7 +53,7 @@ func (a *App) orchestratorView(ctx *ui.Context) ui.Element {
 	return ui.Div().Column().Grow(1).MinHeight(ui.Px(0)).
 		Child(a.orchestratorBar(ctx, v)).
 		Child(body).
-		Child(ui.Div().Column().Align(ui.Center).PaddingX(space6).PaddingBottom(space4).Shrink(0).
+		Child(ui.Div().Column().Align(ui.Center).PaddingX(gutter(ctx)).PaddingBottom(gutter(ctx) - space2).Shrink(0).
 			Child(ui.Div().Column().Gap(space2).Width(ui.Full).MaxWidth(ui.Px(chatMaxWidth)).
 				Child(a.questionStrip(ctx)).
 				Child(a.composer(ctx, v, "orch-draft", "orch", "Message Solo…", func(text string, images []string) error {
@@ -53,9 +62,11 @@ func (a *App) orchestratorView(ctx *ui.Context) ui.Element {
 		Background(t.Background)
 }
 
-func (a *App) orchestratorBar(ctx *ui.Context, v core.ThreadView) ui.Element {
+// orchState says what Solo is doing, beside its name: waiting for an answer, working, or waiting on
+// background work. It is empty when Solo is idle.
+func (a *App) orchState(ctx *ui.Context, v core.ThreadView) *ui.DivElement {
 	t := ctx.Theme()
-	state := ui.Div().Row().Align(ui.Center).Gap(6).MinWidth(ui.Px(0))
+	state := ui.Div().Row().Align(ui.Center).Gap(6).Shrink(1).MinWidth(ui.Px(0))
 	if v.Status == core.StatusWaiting {
 		state = state.Child(statusMark(ctx, core.StatusWaiting)).
 			Child(ui.Text("Waiting for your answer").FontSize(12).TextColor(t.Warning).Truncate().MinWidth(ui.Px(0)))
@@ -70,11 +81,19 @@ func (a *App) orchestratorBar(ctx *ui.Context, v core.ThreadView) ui.Element {
 		state = state.Child(statusMark(ctx, core.StatusBackground)).
 			Child(ui.Text("Waiting on " + bgLine(v)).FontSize(12).TextColor(t.TextMuted).Truncate().MinWidth(ui.Px(0)))
 	}
+	return state
+}
+
+func (a *App) orchestratorBar(ctx *ui.Context, v core.ThreadView) ui.Element {
+	t := ctx.Theme()
+	if isCompact(ctx) {
+		return nil // the window's bar names Solo and says what it is doing (compactBar)
+	}
 	return ui.Div().Row().Align(ui.Center).Gap(space3).PaddingX(space4).Height(ui.Px(52)).Shrink(0).
 		BorderEdges(ui.Edges{Bottom: 1}, t.Border).
 		Child(brandMark(20)).
 		Child(ui.Text("Solo").FontSize(14).Semibold().NoWrap()).
-		Child(state).
+		Child(a.orchState(ctx, v)).
 		Child(ui.Div().Grow(1)).
 		Child(a.threadsSummary(ctx))
 }
@@ -109,6 +128,7 @@ func (a *App) threadsSummary(ctx *ui.Context) ui.Element {
 		}
 		slices.SortStableFunc(in, func(x, y core.ThreadView) int { return y.UpdatedAt.Compare(x.UpdatedAt) })
 		text := fmt.Sprintf("%d %s", len(in), g.label)
+		shown := text
 		first := in[0].ID
 		row = row.Child(ui.Div().Row().Align(ui.Center).Gap(6).PaddingLeft(space2-2).PaddingRight(space2+2).
 			Height(ui.Px(24)).Radius(999).Border(1, t.Border).
@@ -117,7 +137,7 @@ func (a *App) threadsSummary(ctx *ui.Context) ui.Element {
 			Tooltip(g.title + ": open the newest · Ctrl+J opens the next that needs you").
 			OnClick(func() { a.openThread(first, "conversation") }).
 			Child(statusMark(ctx, g.status)).
-			Child(ui.Text(text).FontSize(12).TextColor(t.TextMuted).NoWrap()))
+			Child(ui.Text(shown).FontSize(12).TextColor(t.TextMuted).NoWrap()))
 	}
 	return row
 }
@@ -210,7 +230,7 @@ func (a *App) transcript(ctx *ui.Context, v core.ThreadView, items []core.Item, 
 		return ui.Component(func(rctx *ui.Context) ui.Element {
 			a.markBuilt(rctx, scope, key, true)
 			rctx.OnDispose(func() { a.markBuilt(rctx, scope, key, false) })
-			return ui.Div().Column().Align(ui.Center).PaddingX(space6).
+			return ui.Div().Column().Align(ui.Center).PaddingX(gutter(rctx)).
 				Child(ui.Div().Column().Width(ui.Full).MaxWidth(ui.Px(chatMaxWidth)).PaddingY(space1 + 2).
 					Child(a.rowView(rctx, v, r)))
 		})
@@ -1245,6 +1265,9 @@ func (a *App) proposalCard(ctx *ui.Context, d core.ProposalData, steps []*core.I
 					Child(ui.Text(label).FontSize(12).TextColor(t.TextSubtle).NoWrap()).
 					Child(ui.Icon(map[bool]*icons.Icon{true: icons.ChevronDown, false: icons.ChevronRight}[open.Get()]).Size(12).Color(t.TextSubtle)))
 		}
+		if isCompact(ctx) {
+			actions.Wrap() // the steps go under the buttons there
+		}
 		card := ui.Div().Column().Gap(space3).Padding(space4).Radius(radiusL).Background(t.Surface).Key("proposal-"+d.ThreadID).
 			Border(1, t.BorderStrong).
 			Child(a.proposalHeader(ctx, th)).
@@ -1349,7 +1372,7 @@ func (a *App) askForm(ctx *ui.Context, threadID, toolUseID string, qs []agent.Qu
 				// Picking an option answers at once; the arrow says so on hover, the key otherwise.
 				if hover.Get() {
 					o2 = o2.Child(ui.Icon(icons.ArrowRight).Size(14).Color(t.Link))
-				} else if i < 9 {
+				} else if i < 9 && !a.Touch {
 					o2 = o2.Child(ui.Kbd(fmt.Sprint(i + 1)))
 				}
 				return o2
@@ -1577,7 +1600,13 @@ func (a *App) composer(ctx *ui.Context, v core.ThreadView, key, scope, placehold
 				Tooltip("Send (Enter) · Shift+Enter for a new line").OnClick(submit)
 		}
 		actions := ui.Div().Row().Align(ui.Center).Gap(space1).Shrink(0)
-		if v.IsWorker && !core.Finished(v.Status) {
+		// A compact window gives the text the box's width, and puts the thread's model under it, at the
+		// start of the buttons' row.
+		under := isCompact(ctx) && v.IsWorker && !core.Finished(v.Status)
+		if under {
+			actions = ui.Div().Row().Align(ui.Center).Gap(space1).
+				Child(a.modelPicker(ctx, v)).Child(ui.Div().Grow(1))
+		} else if v.IsWorker && !core.Finished(v.Status) {
 			actions = actions.Child(a.modelPicker(ctx, v))
 		}
 		actions = actions.
@@ -1613,7 +1642,9 @@ func (a *App) composer(ctx *ui.Context, v core.ThreadView, key, scope, placehold
 				})
 			}).
 			OnKeyDown(func(e *ui.KeyEvent) {
-				if e.Key == input.KeyEnter && e.Mods&input.ModShift == 0 {
+				// A phone's keyboard has no Shift+Enter, so Enter makes a new line there, and the
+				// button sends.
+				if e.Key == input.KeyEnter && e.Mods&input.ModShift == 0 && !a.Touch {
 					e.StopPropagation()
 					submit()
 				}
@@ -1635,6 +1666,11 @@ func (a *App) composer(ctx *ui.Context, v core.ThreadView, key, scope, placehold
 				}))
 			}
 			box = box.Child(strip)
+		}
+		if under {
+			return box.Child(ui.Div().Key(key + "-row").Column().Gap(space1).
+				Child(ui.Div().Column().MinWidth(ui.Px(0)).PaddingY(space1).Child(area)).
+				Child(actions))
 		}
 		return box.Child(ui.Div().Key(key + "-row").Row().Align(ui.End).Gap(space2).
 			Child(ui.Div().Column().Grow(1).MinWidth(ui.Px(0)).PaddingY(space1).Child(area)).
@@ -1950,6 +1986,9 @@ func hiddenActions(built, action []bool, top bool) []int {
 // chatWidth estimates the width of Solo's conversation column.
 func (a *App) chatWidth(ctx *ui.Context) float32 {
 	w, _ := ctx.WindowSize()
+	if isCompact(ctx) {
+		return w
+	}
 	chat := w - railW(ctx) - space2
 	if a.openID.Get() != "" {
 		chat -= a.panelWidth(ctx) + space2

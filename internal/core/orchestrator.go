@@ -1,3 +1,5 @@
+//go:build !js
+
 package core
 
 import (
@@ -12,25 +14,6 @@ import (
 	"github.com/tyler-builds/solo/internal/forge"
 	"github.com/tyler-builds/solo/internal/store"
 )
-
-// OrchestratorID is the ID of the one orchestrator thread.
-const OrchestratorID = "orchestrator"
-
-// ItemProposal is a merge proposal the orchestrator made, shown as a card with a Merge button. Its
-// data is ProposalData; Ref is the worker's thread ID. A thread has at most one: proposing it again,
-// or its checks passing after they failed, removes the card and posts it anew at the end of the
-// conversation, so the card the user can act on is always the latest one.
-const ItemProposal = "proposal"
-
-// ProposalData is a merge proposal.
-type ProposalData struct {
-	ThreadID string `json:"threadId"`
-	Title    string `json:"title"`
-	Summary  string `json:"summary"`
-	// ChecksFailed is set while the thread's pull request checks have failed since the card was
-	// posted; when they pass again, the card is posted anew.
-	ChecksFailed bool `json:"checksFailed,omitempty"`
-}
 
 // SetOrchestratorSpec sets how the orchestrator's session is opened. Core fills in the session ID and
 // resume flag.
@@ -104,12 +87,6 @@ func (c *Core) FindThread(idOrPrefix string) (ThreadView, error) {
 	default:
 		return ThreadView{}, fmt.Errorf("%q matches %d threads; use more of the ID", idOrPrefix, len(found))
 	}
-}
-
-// PendingQuestion is a question a thread is waiting on.
-type PendingQuestion struct {
-	ToolUseID string
-	Questions []agent.Question
 }
 
 // PendingQuestions returns the questions a thread is waiting on.

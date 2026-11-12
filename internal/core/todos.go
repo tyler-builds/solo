@@ -1,3 +1,5 @@
+//go:build !js
+
 package core
 
 import (
@@ -11,44 +13,11 @@ import (
 	"github.com/tyler-builds/solo/internal/forge"
 )
 
-// Todo is one entry of the user's to-do list, which Solo keeps as they talk: an outcome the user
-// wants, not a thread. Most have no thread, and Solo ticks them off when it sees they're done. Solo
-// links threads only when their work finishes the todo; it is then done once that work lands: a pull
-// request opened or merged, a local merge, or the user marking the thread done.
-type Todo struct {
-	ID        string    `json:"id"`
-	Text      string    `json:"text"`
-	Threads   []string  `json:"threads,omitempty"` // threads whose work landing finishes it; most todos have none
-	CreatedAt time.Time `json:"created_at"`
-	// DoneAt is when it was completed, and DoneBy who completed it: TodoByUser, TodoBySolo or
-	// TodoByThread (its threads landed).
-	DoneAt time.Time `json:"done_at,omitzero"`
-	DoneBy string    `json:"done_by,omitempty"`
-}
-
-// Who completed a todo (Todo.DoneBy).
-const (
-	TodoByUser   = "user"
-	TodoBySolo   = "solo"
-	TodoByThread = "thread"
-)
-
-// Done reports whether the todo is completed.
-func (t Todo) Done() bool { return !t.DoneAt.IsZero() }
-
 // keepDone is how many completed todos are kept, newest first, so Solo can see what was done lately.
 const keepDone = 30
 
 // todosKey is the setting the list is saved under.
 const todosKey = "todos"
-
-// TodoChange changes a todo; nil fields stay as they are.
-type TodoChange struct {
-	Text    *string
-	Threads *[]string // replaces the linked threads
-	Done    *bool
-	By      string // who completes it, when Done is true; default TodoBySolo
-}
 
 func (c *Core) loadTodos() {
 	if _, err := c.db.GetSetting(todosKey, &c.todos); err != nil {

@@ -26,8 +26,21 @@ const (
 	railWidth       = 304
 	railWidthNarrow = 248 // below narrowWindow, so the chat and a thread still fit side by side
 	narrowWindow    = 1200
-	itemLimit       = 400 // transcript items loaded per thread
+	// Below compactWindow, as on a phone, there is room for one conversation at a time: Solo's, or
+	// the open thread's. The threads are in a drawer (see compactCenter and threadsDrawer).
+	compactWindow = 700
+	itemLimit     = 400 // transcript items loaded per thread
+	// touchZoom scales the UI on a touchscreen (App.Touch): the desktop's 13 px text and 28 px buttons
+	// become about 16 and 34, the sizes of a phone's apps.
+	touchZoom = 1.2
 )
+
+// isCompact reports whether the window is too narrow for the rail, the conversation and a thread side
+// by side: it then shows one of them at a time.
+func isCompact(ctx *ui.Context) bool {
+	w, _ := ctx.WindowSize()
+	return w < compactWindow
+}
 
 // App is the window's state.
 type App struct {
@@ -40,6 +53,8 @@ type App struct {
 	rate    *ui.Signal[[]agent.Event]                     // the latest of each usage limit (usage.go)
 	pending *ui.Signal[map[string][]core.PendingQuestion] // worker questions, by thread
 	navSel  *ui.Signal[string]                            // sidebar: "orchestrator" or "repo:<path>"
+	drawer  *ui.Signal[bool]                              // a compact window's drawer of threads is open
+	compact bool                                          // the window is compact, as of its last render (UI thread only)
 	openID  *ui.Signal[string]                            // the thread in the side panel
 	openTab *ui.Signal[string]
 	cfg     *ui.Signal[core.Settings]
@@ -81,6 +96,12 @@ type App struct {
 	raise      func()            // brings Solo's window to the front (UI thread only)
 	clipboard  func(text string) // copies text (UI thread only)
 
+	// Touch says the UI is used with fingers, as on a phone: it is drawn larger (touchZoom), Enter in a
+	// message makes a new line rather than sending it, and the hints of keyboard shortcuts are left out.
+	// Set it before Run.
+	Touch  bool
+	zoomed bool // touchZoom was applied (UI thread only)
+
 	// Notify shows a desktop notification; nil shows none. Set it before Run.
 	Notify func(Notification)
 	// ClearNotifications removes the notifications Solo has shown. It runs off the UI thread.
@@ -112,6 +133,7 @@ func New(b Backend) *App {
 		rate:       ui.NewSignal(b.RateLimits()),
 		pending:    ui.NewSignal(loadPending(b, b.Threads())),
 		navSel:     ui.NewSignal("orchestrator"),
+		drawer:     ui.NewSignal(false),
 		openID:     ui.NewSignal(""),
 		openTab:    ui.NewSignal("conversation"),
 		cfg:        ui.NewSignal(b.Settings()),
@@ -388,12 +410,14 @@ func (a *App) folderMenu(th core.ThreadView) []ui.MenuItem {
 		return nil
 	}
 	dir := th.Dir
-	items := []ui.MenuItem{
-		{Label: "Open in editor", Icon: icons.SquareCode, OnClick: func() { a.openEditor(dir) }},
-		{Label: "Open terminal", Icon: icons.SquareTerminal, OnClick: func() { a.openTerminal(dir) }},
-		ui.MenuSeparator(),
-		{Label: "Copy folder path", Icon: icons.Copy, OnClick: func() { a.copyText("the folder path", dir) }},
+	var items []ui.MenuItem
+	if launch.Available {
+		items = append(items,
+			ui.MenuItem{Label: "Open in editor", Icon: icons.SquareCode, OnClick: func() { a.openEditor(dir) }},
+			ui.MenuItem{Label: "Open terminal", Icon: icons.SquareTerminal, OnClick: func() { a.openTerminal(dir) }},
+			ui.MenuSeparator())
 	}
+	items = append(items, ui.MenuItem{Label: "Copy folder path", Icon: icons.Copy, OnClick: func() { a.copyText("the folder path", dir) }})
 	if th.MultiRepo() {
 		for _, p := range th.Parts {
 			if p.Worktree == "" {
@@ -446,12 +470,26 @@ func (a *App) Root(ctx *ui.Context) ui.Element {
 	}
 	a.mu.Unlock()
 	t := ctx.Theme()
+	if a.Touch && !a.zoomed {
+		a.zoomed = true
+		ctx.SetZoom(touchZoom)
+	}
+	a.compact = isCompact(ctx)
 	root := ui.Div().Column().Size(ui.Full, ui.Full).Background(t.Panel).TextColor(t.Text).
 		OnAction(nextAction, a.nextAttention).
 		OnAction(paletteAction, func() { a.palette.Set(true) })
 	for i, act := range jumpActions {
 		n := i
 		root = root.OnAction(act, func() { a.jumpTo(n) })
+	}
+	palette := ui.CommandPalette(a.palette).ItemsOnly().Placeholder("Search threads and messages").MaxRows(12).Items(a.paletteItems)
+	if a.compact {
+		// Search is 520 wide, more than a compact window: it takes the window's width, less a margin.
+		winW, _ := ctx.WindowSize()
+		palette = palette.Styles(ui.CommandPaletteStyle{
+			Panel:  ui.Style{Width: ui.Px(max(winW-2*space2, 240))},
+			Detail: ui.Style{MaxWidth: ui.Px(110)},
+		})
 	}
 	return root.
 		Child(a.titleBar(ctx)).
@@ -461,7 +499,8 @@ func (a *App) Root(ctx *ui.Context) ui.Element {
 		Child(ui.Component(a.confirmDialog)).
 		Child(ui.Component(a.lightboxDialog)).
 		Child(ui.Component(a.focusWatch)).
-		Child(ui.CommandPalette(a.palette).ItemsOnly().Placeholder("Search threads and messages").MaxRows(12).Items(a.paletteItems)).
+		Child(ui.Component(a.threadsDrawer)).
+		Child(palette).
 		Child(ui.Toaster().Key("toaster"))
 }
 
@@ -469,6 +508,9 @@ func (a *App) Root(ctx *ui.Context) ui.Element {
 // It carries no Solo mark: the orchestrator's header just below already shows the mark and the name.
 func (a *App) titleBar(ctx *ui.Context) ui.Element {
 	t := ctx.Theme()
+	if isCompact(ctx) {
+		return a.compactBar(ctx)
+	}
 	find := ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space3).Height(ui.Px(26)).Width(ui.Px(320)).
 		Radius(radiusS).Border(1, t.Border).Background(t.Background).Cursor(ui.CursorPointer).
 		Hover(ui.Style{BorderColor: t.BorderStrong}).
@@ -476,7 +518,7 @@ func (a *App) titleBar(ctx *ui.Context) ui.Element {
 		OnClick(func() { a.palette.Set(true) }).
 		Child(ui.Icon(icons.Search).Size(13).Color(t.TextSubtle)).
 		Child(ui.Text("Search").FontSize(12).TextColor(t.TextSubtle).Grow(1)).
-		Child(ui.Kbd("Ctrl+K"))
+		Child(ui.If(!a.Touch, ui.Kbd("Ctrl+K")))
 	var trailing []ui.Element
 	if a.cfg.Get().ShowCosts {
 		var cost float64
@@ -492,6 +534,97 @@ func (a *App) titleBar(ctx *ui.Context) ui.Element {
 		Trailing(trailing...)
 }
 
+// compactBar is the one bar of a compact window: the button that opens the drawer of threads, then
+// what the window shows, Solo or the open thread, and for a thread the button that closes it. It is
+// the window's title bar, so a desktop window drags by it and has its own buttons at its end.
+func (a *App) compactBar(ctx *ui.Context) ui.Element {
+	t := ctx.Theme()
+	needs := 0
+	for _, th := range a.threads.Get() {
+		if inRail(th) && needsUser(th) {
+			needs++
+		}
+	}
+	label := "Threads"
+	if needs > 0 {
+		label = fmt.Sprintf("Threads: %d need you", needs)
+	}
+	menu := ui.Div().Row().Align(ui.Center).Shrink(0).
+		Child(ui.IconButton(icons.Menu).Ghost().Label(label).Key("open-drawer").
+			OnClick(func() { a.drawer.Set(true) }))
+	if needs > 0 {
+		// How many threads need the user, by the button that lists them.
+		menu = menu.Child(ui.Div().Row().Align(ui.Center).Justify(ui.Center).MinWidth(ui.Px(18)).Height(ui.Px(18)).
+			PaddingX(5).Radius(999).Background(t.Warning).AccessHidden().
+			Child(ui.Text(fmt.Sprint(needs)).FontSize(11).Semibold().TextColor(t.Background)))
+	}
+	title := ui.Div().Row().Align(ui.Center).Gap(space2).Shrink(1).MinWidth(ui.Px(0))
+	var trailing []ui.Element
+	if th, ok := a.thread(a.openID.Get()); ok && a.openID.Get() != "" {
+		title = title.
+			Child(statusMark(ctx, shownStatus(th)).Tooltip(statusLabel(th))).
+			Child(ui.Div().Shrink(1).MinWidth(ui.Px(0)).ContextMenu(func() []ui.MenuItem { return a.folderMenu(th) }).
+				Child(ui.Text(th.Title).FontSize(14).Semibold().Truncate()))
+		trailing = append(trailing, ui.IconButton(icons.X).Ghost().Label("Close thread").Key("thread-close").
+			OnClick(a.closeThread))
+	} else {
+		v, _ := a.thread(core.OrchestratorID)
+		title = title.
+			Child(brandMark(20)).
+			Child(ui.Text("Solo").FontSize(14).Semibold().NoWrap()).
+			Child(a.orchState(ctx, v))
+	}
+	return ui.TitleBar().Height(ui.Px(48)).
+		Child(ui.Div().Row().Align(ui.Center).Gap(space2).PaddingLeft(space1).Shrink(1).MinWidth(ui.Px(0)).
+			Child(menu).Child(title)).
+		Trailing(trailing...)
+}
+
+// threadsDrawer is a compact window's drawer: the way to Solo, search and Settings, over the rail of
+// todos and threads. It slides in from the left over the conversation, and closes when the user picks
+// something.
+func (a *App) threadsDrawer(ctx *ui.Context) ui.Element {
+	if !a.drawer.Get() || !isCompact(ctx) {
+		return nil
+	}
+	t := ctx.Theme()
+	shut := func() { a.drawer.Set(false) }
+	home := ui.Div().Row().Align(ui.Center).Gap(space2 + 2).PaddingX(space3).Height(ui.Px(40)).Radius(radiusM).
+		Grow(1).MinWidth(ui.Px(0)).Cursor(ui.CursorPointer).
+		Role(access.RoleButton).Label("Solo").TabIndex(0).Key("drawer-solo").
+		OnClick(func() {
+			shut()
+			if a.openID.Peek() != "" {
+				a.closeThread()
+			}
+		}).
+		Child(brandMark(20)).
+		Child(ui.Text("Solo").FontSize(14).Semibold().NoWrap())
+	if a.openID.Get() == "" {
+		home = home.Background(t.SurfaceActive)
+	} else {
+		home = home.Hover(ui.Style{Background: t.SurfaceHover})
+	}
+	top := ui.Div().Row().Align(ui.Center).Gap(space1).PaddingX(space2).PaddingTop(space2).PaddingBottom(space1).Shrink(0).
+		Child(home).
+		Child(ui.IconButton(icons.Search).Ghost().Label("Search").Key("drawer-search").
+			OnClick(func() { shut(); a.palette.Set(true) })).
+		Child(ui.IconButton(icons.Settings).Ghost().Label("Settings").Key("open-settings").
+			OnClick(func() { shut(); a.settings.Set(true) }))
+	body := ui.Div().Column().Size(ui.Full, ui.Full).Background(t.Panel).
+		Child(top).
+		Child(ui.Div().Column().Grow(1).MinHeight(ui.Px(0)).Child(ui.Component(a.rail)))
+	winW, _ := ctx.WindowSize()
+	// A style's zero is "unset", so the panel's own padding and gap are taken out with a hair's width.
+	none := ui.All(0.01)
+	return ui.Drawer("Threads", body).Side(ui.DrawerLeft).Width(ui.Px(min(340, winW-44))).OnClose(shut).
+		Styles(ui.DrawerStyle{
+			Panel: ui.Style{Padding: none, Gap: 0.01, Background: t.Panel},
+			Title: ui.Style{Height: ui.Px(0), OverflowX: ui.OverflowHidden, OverflowY: ui.OverflowHidden}, // the body names itself
+			Body:  ui.Style{Grow: 1},
+		}).Key("threads-drawer")
+}
+
 // inset is a content panel: rounded, a step off the window background, with a hairline border.
 func inset(ctx *ui.Context, content ui.Element) *ui.DivElement {
 	t := ctx.Theme()
@@ -505,6 +638,9 @@ func inset(ctx *ui.Context, content ui.Element) *ui.DivElement {
 // slides back out when closed.
 func (a *App) center(ctx *ui.Context) ui.Element {
 	t := ctx.Theme()
+	if isCompact(ctx) {
+		return a.compactCenter(ctx)
+	}
 	orch := ui.Div().Column().Size(ui.Full, ui.Full).PaddingBottom(space2).
 		Child(inset(ctx, ui.Component(a.orchestratorView)))
 	anim := a.panelAnim.Get()
@@ -554,15 +690,44 @@ func (a *App) center(ctx *ui.Context) ui.Element {
 		Child(ui.Div().Column().Grow(1).Basis(ui.Px(0)).MinWidth(ui.Px(0)).Height(ui.Full).Child(main))
 }
 
+// compactCenter is the center of a compact window, which has room for one conversation: the open
+// thread, or else Solo's. It fills the window, edge to edge; the threads are in the drawer.
+func (a *App) compactCenter(ctx *ui.Context) ui.Element {
+	t := ctx.Theme()
+	var pane ui.Element = ui.Component(a.orchestratorView)
+	if a.openID.Get() != "" {
+		pane = ui.Div().Column().Size(ui.Full, ui.Full).Background(t.Background).
+			OnKeyDown(func(e *ui.KeyEvent) {
+				if e.Key == input.KeyEscape {
+					e.StopPropagation()
+					a.closeThread()
+				}
+			}).
+			Child(ui.Component(a.threadPanel))
+	}
+	return ui.Div().Column().Size(ui.Full, ui.Full).BorderEdges(ui.Edges{Top: 1}, t.Border).Child(pane)
+}
+
 // openThread shows a thread beside the orchestrator, on a tab ("conversation" or "changes").
 func (a *App) openThread(id, tab string) {
+	a.drawer.Set(false) // a compact window's drawer gives way to the thread
 	a.openTab.Set(tab)
 	a.openID.Set(id)
 	a.animatePanel(1, nil)
 }
 
-// closeThread hides the thread panel.
+// closeThread hides the thread panel. A compact window shows what was under it at once: the panel
+// covered the window, and has nowhere to slide to.
 func (a *App) closeThread() {
+	if a.compact {
+		if a.animStop != nil {
+			a.animStop()
+			a.animStop = nil
+		}
+		a.panelAnim.Set(0)
+		a.openID.Set("")
+		return
+	}
 	a.animatePanel(0, func() { a.openID.Set("") })
 }
 
@@ -768,6 +933,9 @@ func (a *App) jumpTo(n int) {
 
 // railW is the rail's width for the window's width.
 func railW(ctx *ui.Context) float32 {
+	if isCompact(ctx) {
+		return 0 // the rail is in the drawer
+	}
 	if w, _ := ctx.WindowSize(); w < narrowWindow {
 		return railWidthNarrow
 	}

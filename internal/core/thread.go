@@ -1,3 +1,5 @@
+//go:build !js
+
 package core
 
 import (
@@ -18,35 +20,6 @@ import (
 	"github.com/tyler-builds/solo/internal/git"
 	"github.com/tyler-builds/solo/internal/store"
 )
-
-// Thread statuses.
-const (
-	StatusQueued   = "queued"   // created; about to start
-	StatusStarting = "starting" // creating its worktree and session
-	StatusRunning  = "running"  // a turn is in progress
-	StatusWaiting  = "waiting"  // asked the user a question
-	// StatusBackground: its turn ended, but work it started in the background (a command, a subagent)
-	// still runs, and Claude carries on when it finishes. Not ready until then.
-	StatusBackground  = "background"
-	StatusIdle        = "idle"        // its last turn finished; ready for review or more instructions
-	StatusFailed      = "failed"      // its last turn, or its start, failed
-	StatusInterrupted = "interrupted" // stopped by the user, or by Solo closing
-	StatusMerged      = "merged"      // its branch was merged and its worktree removed
-	StatusDiscarded   = "discarded"   // its worktree and branch were deleted
-	// StatusArchived: marked done before it merged. Its worktree was removed, and its branch too unless it
-	// held work that hadn't landed (ThreadView.Unlanded), which Restore brings back.
-	StatusArchived = "archived"
-)
-
-// Active reports whether a thread with the status is starting or working, its background work included.
-func Active(status string) bool {
-	return status == StatusStarting || status == StatusRunning || status == StatusWaiting || status == StatusBackground
-}
-
-// Finished reports whether a thread with the status is closed for good.
-func Finished(status string) bool {
-	return status == StatusMerged || status == StatusDiscarded || status == StatusArchived
-}
 
 // thread is a thread's state. Guarded by Core.mu, except sess.
 type thread struct {
@@ -99,18 +72,6 @@ type thread struct {
 	prScanned bool
 }
 
-// BackgroundTask is work a thread's agent runs in the background: a command run with
-// run_in_background, or a background subagent.
-type BackgroundTask struct {
-	ID          string
-	Type        string // local_bash, local_agent, …
-	Description string
-	Started     time.Time // when Solo first saw it running
-}
-
-// Kind names what the task is, for people: "command", "subagent" or "task".
-func (b BackgroundTask) Kind() string { return taskKind(b.Type) }
-
 // DescribeBackground names background work in a line: `command "Run benchmarks", running 4m`; several
 // are joined with "; ".
 func DescribeBackground(bg []BackgroundTask) string {
@@ -143,65 +104,6 @@ type liveKey struct {
 	message string
 	index   int
 }
-
-// ThreadView is a snapshot of a thread.
-type ThreadView struct {
-	store.Thread
-	InTurn      bool
-	TurnStarted time.Time // when the running turn began
-	Step        *ToolData // the tool call in progress, if any
-	// Thought is the running turn's newest thinking, streaming or finished. Claude sends a summary of
-	// its thinking only when that thinking is done, often all at once just before the finished block
-	// replaces the live one, so Live rarely holds any for long; Thought keeps the newest until the next.
-	Thought     string
-	ActualModel string
-	Retry       string
-	PendingAsk  bool
-	// Resolving: the worker is resolving merge conflicts, and its branch merges when it finishes.
-	Resolving bool
-	Live      []LiveBlock
-	// Background is the work still running in the background, oldest first. With status Background the
-	// turn has ended and the thread waits on it; it can also run on under a turn.
-	Background   []BackgroundTask
-	IsWorker     bool
-	HasWorktree  bool
-	CanMerge     bool
-	CanDiscard   bool
-	CanInterrupt bool
-	// CanDone: the user may mark it done, which takes it out of the rail into History: any worker that
-	// isn't working and isn't done yet, landed or not.
-	CanDone bool
-	// Unlanded: marking it done now leaves changes that haven't landed (or aren't counted yet). Done
-	// keeps its branch then, so nothing is lost; the user confirms first. Discard is what deletes work.
-	Unlanded bool
-	// Changed is how many files a worker's branch changes from where it started; -1 until counted.
-	Changed int
-	// NoChanges is a worker whose last turn finished with nothing to merge.
-	NoChanges bool
-	// Forge is where the repository's pull requests go (None: it merges locally), and PR the thread's
-	// pull request once opened.
-	Forge forge.Kind
-	PR    *forge.PR
-	// CanOpenPR: it has changes to land in a repository with a forge, and no open pull request.
-	CanOpenPR bool
-	// CanMergeLocal: it has changes and no open pull request, so it can merge in the local checkout.
-	CanMergeLocal bool
-	// CanMarkReady: its pull request is an open draft.
-	CanMarkReady bool
-	// Dir is the folder it works in: its worktree, or for several repositories the folder that holds
-	// theirs. "" without a worktree.
-	Dir string
-	// InPlace: it works directly in a folder that isn't in git (Part.InPlace), so there is nothing to
-	// review or merge; the user marks it done when it has done its work.
-	InPlace bool
-	// Parts are the repositories it works in, each with its branch and pull request. The fields above
-	// sum them up: Changed adds them, the Can flags hold when any part can, and Forge and PR are the
-	// first part's, set only when there is one part.
-	Parts []PartView
-}
-
-// MultiRepo reports whether the thread works in more than one repository.
-func (v ThreadView) MultiRepo() bool { return len(v.Parts) > 1 }
 
 func (t *thread) view() ThreadView {
 	v := ThreadView{
@@ -1044,14 +946,6 @@ func (c *Core) mergeLocalParts(ctx context.Context, v ThreadView, todo []PartVie
 	}
 	c.finishIfLanded(v.ID)
 	return commit, nil
-}
-
-// ResolvingError is a merge that conflicted and went back to its worker to resolve; the branch merges
-// on its own once the worker finishes.
-type ResolvingError struct{ Title string }
-
-func (e *ResolvingError) Error() string {
-	return fmt.Sprintf("%q conflicts with newer work; its thread is resolving that and merges when done", e.Title)
 }
 
 // maxResolveTries is how many times a merge goes back to the worker before the user is told.

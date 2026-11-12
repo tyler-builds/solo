@@ -1,3 +1,5 @@
+//go:build !js
+
 package core
 
 import (
@@ -185,16 +187,6 @@ func stoppedTool(d ToolData) string {
 		return "subagent: " + in.Description
 	}
 	return ""
-}
-
-func taskKind(taskType string) string {
-	switch {
-	case strings.Contains(taskType, "bash"), strings.Contains(taskType, "shell"):
-		return "command"
-	case strings.Contains(taskType, "agent"):
-		return "subagent"
-	}
-	return "task"
 }
 
 // keepQuestion lets the question a thread was waiting on when Solo closed still be answered: it is

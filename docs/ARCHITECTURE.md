@@ -232,6 +232,39 @@ Raw `SDKMessage`s are also appended to a per-session JSONL file for debugging an
   thread asks, fails or finishes, a PR's checks fail or it merges, and when Solo replies. A click
   opens the thread. Solo is a single instance; on Windows its AppID is the installer's identity.
 - Text deltas are coalesced (~30 ms) before signals update, to keep re-renders cheap.
+- **Compact windows:** under 700 px wide, as on a phone, there is room for one conversation
+  (`isCompact`, `compactCenter`): Solo's, or the open thread's. One bar tops the window (`compactBar`):
+  the button that opens the drawer, with a count of the threads that need you, then Solo or the
+  thread's title, and for a thread the button that closes it. The drawer (`threadsDrawer`) slides in
+  from the left with Solo, search and Settings over the rail of todos and threads, and closes when
+  you pick one. A thread puts its model under its message box, Settings lists its pages across the
+  top, and diffs are unified. The desktop window can be made that narrow too.
+- **Touch:** an entry point sets `App.Touch` where the UI is used with fingers (a web page whose
+  pointer is coarse). The UI is then drawn 1.2 times larger, so text is about 16 px, Enter in a
+  message makes a new line and the button sends, and the hints of keyboard shortcuts are left out.
+
+## Web build
+
+The UI also builds for a web page (`GOOS=js GOARCH=wasm`, jamb's web target), so that Solo can be used
+from a browser, on a phone too. `internal/gui` reaches Solo only through `gui.Backend`; the desktop's
+backend, `gui.Live`, is in `backend_live.go`, which a page leaves out.
+
+A page shares the desktop's types, not its code. In `core`, `store`, `git`, `forge`, `agent` and
+`launch`, the files that run git, Claude, the database or the user's apps are marked
+`//go:build !js`, and the types a client sees are in files that build everywhere:
+
+- `core/view.go` (threads, parts, todos, settings, changes) and `core/items.go` (the transcript)
+- `forge/pr.go`, `git/change.go`, `store/thread.go`, `agent/protocol.go`
+- `launch/launch_js.go`: a page opens no editor or terminal, so its calls answer with an error
+
+Keep code that touches the machine out of those files. `TestBuildsForWeb` (`internal/gui`) builds the
+UI for the web and fails when it reaches something a page does not have.
+
+A page cannot open an editor or a terminal (`launch.Available` is false there), so the UI leaves those
+buttons out.
+
+Not there yet: a page's own `Backend` (it talks to a Solo over the relay), and attachments by their
+contents rather than by a path.
 
 ## Repo layout
 
@@ -241,7 +274,7 @@ internal/core/       orchestrator, threads, notifications
 internal/store/      SQLite schema + queries
 internal/git/        repo scan, worktrees, diff, merge
 internal/agent/      sidecar supervisor + JSON-RPC client + event types
-internal/ui/         jamb views
+internal/gui/        jamb views; builds for the desktop and for a web page
 sidecar/             TypeScript (Bun): rpc, session, normalize, tools; fixture tests
 docs/
 ```

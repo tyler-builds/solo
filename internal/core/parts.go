@@ -1,3 +1,5 @@
+//go:build !js
+
 package core
 
 import (
@@ -11,20 +13,6 @@ import (
 	"github.com/tyler-builds/solo/internal/store"
 )
 
-// Part is one repository a worker works in: its worktree, branch and pull request. Most threads have
-// one; a task that spans repositories (a client, its API and its database, say) has one per repository.
-type Part struct {
-	Repo       string    `json:"repo"`
-	Worktree   string    `json:"worktree,omitempty"`
-	Branch     string    `json:"branch,omitempty"`
-	BaseBranch string    `json:"baseBranch,omitempty"`
-	BaseCommit string    `json:"baseCommit,omitempty"`
-	PR         *forge.PR `json:"pr,omitempty"`
-	// InPlace: Repo isn't in git, so the worker works directly in it, as t3code does: no worktree,
-	// branch, diff or merge, and nothing of it is ever removed.
-	InPlace bool `json:"inPlace,omitempty"`
-}
-
 // part is a Part with what Solo learns at run time.
 type part struct {
 	Part
@@ -33,16 +21,6 @@ type part struct {
 }
 
 func (p *part) prOpen() bool { return p.PR != nil && p.PR.State == forge.StateOpen }
-
-// PartView is a snapshot of a Part, with what can be done with it.
-type PartView struct {
-	Part
-	Name    string // the repository's folder name
-	Changed int    // -1 until counted
-	Forge   forge.Kind
-	// CanOpenPR, CanMerge, CanMergeLocal and CanMarkReady are as on ThreadView, for this repository.
-	CanOpenPR, CanMerge, CanMergeLocal, CanMarkReady bool
-}
 
 // loadParts reads a thread's parts from its row: the parts column, or, for rows written before
 // threads could span repositories, its single repository's columns.
