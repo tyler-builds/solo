@@ -197,13 +197,7 @@ const minFold = 3
 
 // transcript renders a thread's items, its streaming text, and a working indicator, newest at the bottom.
 func (a *App) transcript(ctx *ui.Context, v core.ThreadView, items []core.Item, scope string) ui.Element {
-	var rows []row
-	if scope == "orch" {
-		rows = a.orchRows(items)
-	} else {
-		rows = a.threadRows(items)
-	}
-	rows = a.mergeHandoffs(rows)
+	rows := a.transcriptRows(scope, items)
 	for i := range v.Live {
 		// Solo's chat says it is thinking in its working line, not in a block of thoughts.
 		if scope == "orch" && v.Live[i].Thinking {
@@ -337,6 +331,37 @@ func jumpControl(ctx *ui.Context, h *ui.ListHandle, j jump, top bool) ui.Element
 			Child(ui.Icon(icons.ArrowDown).Size(16).Color(t.TextMuted)))
 	}
 	return strip
+}
+
+// rowCache is the rows laid out for a transcript, and what they were laid out from.
+type rowCache struct {
+	first   *core.Item // the items' first element and their count: the same slice gives the same rows
+	n       int
+	threads int // how many threads there were: a tool call's row names its thread once the thread exists
+	rows    []row
+}
+
+// transcriptRows lays out a transcript's items as rows, once for each list of items. Laying them out
+// decodes every item, and a transcript renders again far more often than its items change: whenever
+// its thread's streaming text does. The rows are not to be appended to in place.
+func (a *App) transcriptRows(scope string, items []core.Item) []row {
+	var first *core.Item
+	if len(items) > 0 {
+		first = &items[0]
+	}
+	threads := len(a.threads.Peek())
+	if c := a.rows[scope]; c != nil && c.first == first && c.n == len(items) && c.threads == threads {
+		return c.rows[:len(c.rows):len(c.rows)]
+	}
+	var rows []row
+	if scope == "orch" {
+		rows = a.orchRows(items)
+	} else {
+		rows = a.threadRows(items)
+	}
+	rows = a.mergeHandoffs(rows)
+	a.rows[scope] = &rowCache{first: first, n: len(items), threads: threads, rows: rows}
+	return rows[:len(rows):len(rows)]
 }
 
 // orchRows lays out Solo's chat one exchange at a time: each message to Solo, one quiet folded line
@@ -1428,12 +1453,16 @@ func (a *App) questionStrip(ctx *ui.Context) ui.Element {
 		pq core.PendingQuestion
 	}
 	var asks []ask
-	for _, th := range a.threads.Get() {
-		qs := pending[th.ID]
-		if len(qs) == 0 || th.ID == core.OrchestratorID || th.ID == a.openID.Get() {
+	// The strip follows the questions and the threads that ask them, not the whole list of threads,
+	// which changes with every chunk of streaming text. The list only gives their order.
+	for _, t := range a.threads.Peek() {
+		qs := pending[t.ID]
+		if len(qs) == 0 || t.ID == core.OrchestratorID || t.ID == a.openID.Get() {
 			continue
 		}
-		asks = append(asks, ask{th, qs[0]})
+		if th, ok := a.thread(t.ID); ok {
+			asks = append(asks, ask{th, qs[0]})
+		}
 	}
 	open := ""
 	if !writing {

@@ -53,7 +53,7 @@ func (c *chatRig) turn(fn func(v *core.ThreadView)) {
 		}
 	}
 	c.f.mu.Unlock()
-	c.a.threads.Set(c.f.Threads())
+	c.a.setThreads(c.f.Threads())
 }
 
 // atLatest reports whether the chat shows its latest row: the list is at its end and the button

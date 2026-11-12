@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"github.com/tyler-builds/solo/internal/launch"
 	"maps"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -81,6 +82,12 @@ type App struct {
 	lists       map[string]*ui.ListHandle   // transcript lists, by scope, so a send can scroll one (UI thread only)
 
 	items map[string]*ui.Signal[[]core.Item] // UI thread only
+	// views holds a signal for each thread that something has asked for by ID (see thread), and rows
+	// the rows last laid out for each transcript (see transcriptRows). UI thread only.
+	views map[string]*ui.Signal[core.ThreadView]
+	rows  map[string]*rowCache
+	// needsUser counts the open threads that wait on the user.
+	needsUser *ui.Computed[int]
 
 	// Quotes waiting for each conversation's next message, and the threads' composers, for focusing
 	// them when a quote is added (quote.go). UI thread only.
@@ -110,8 +117,10 @@ type App struct {
 	dirtyAll           bool
 	dirty              map[string]bool
 	watched            map[string]bool
-	scheduled          bool
+	wake               chan struct{} // wakes the refresher: something changed (see onChange)
+	quit               chan struct{} // closed by Close: the refresher stops
 	unsub              func()
+	closing            sync.Once
 }
 
 // confirmation is a question to confirm before a destructive or lasting action.
@@ -154,15 +163,31 @@ func New(b Backend) *App {
 		railQuery:  ui.NewSignal(""),
 		imgs:       map[string]*ui.ImageSource{},
 		items:      map[string]*ui.Signal[[]core.Item]{},
+		views:      map[string]*ui.Signal[core.ThreadView]{},
+		rows:       map[string]*rowCache{},
 		dirty:      map[string]bool{},
 		watched:    map[string]bool{},
+		wake:       make(chan struct{}, 1),
+		quit:       make(chan struct{}),
 	}
+	a.needsUser = ui.NewComputed(func() int {
+		n := 0
+		for _, th := range a.threads.Get() {
+			if inRail(th) && needsUser(th) {
+				n++
+			}
+		}
+		return n
+	})
 	a.unsub = b.Subscribe(a.onChange)
 	return a
 }
 
 // Close stops listening to the backend.
-func (a *App) Close() { a.unsub() }
+func (a *App) Close() {
+	a.unsub()
+	a.closing.Do(func() { close(a.quit) })
+}
 
 func loadPending(b Backend, threads []core.ThreadView) map[string][]core.PendingQuestion {
 	out := map[string][]core.PendingQuestion{}
@@ -190,21 +215,52 @@ func (a *App) onChange(ch core.Change) {
 	default:
 		a.dirtyAll = true
 	}
-	if a.scheduled || a.post == nil {
-		a.mu.Unlock()
-		return
-	}
-	a.scheduled = true
+	ready := a.post != nil
 	a.mu.Unlock()
-	// Coalesce bursts (streaming text arrives many times a second) into one update per frame or two.
-	time.AfterFunc(33*time.Millisecond, a.refresh)
+	if ready {
+		a.wakeRefresher()
+	}
 }
 
-// refresh reads what changed off the UI thread, then hands it to the UI thread.
-func (a *App) refresh() {
+// wakeRefresher asks the refresher to read what changed. It never blocks: one pending wake is enough.
+func (a *App) wakeRefresher() {
+	select {
+	case a.wake <- struct{}{}:
+	default:
+	}
+}
+
+// refresher applies the backend's changes to the UI: one goroutine for the app's life, woken by
+// onChange. A timer per change would start a goroutine each time, which in a web page is a megabyte of
+// stack for the collector to find again, thirty times a second while text streams.
+//
+// It coalesces a burst (streaming text arrives many times a second) into one update per frame or two,
+// and it waits for the UI to take an update before it reads the next. A page in a background tab draws
+// no frames, so its updates would otherwise pile up, each holding a copy of every list.
+func (a *App) refresher() {
+	for {
+		select {
+		case <-a.quit:
+			return
+		case <-a.wake:
+		}
+		time.Sleep(33 * time.Millisecond)
+		applied := a.refresh()
+		select {
+		case <-a.quit:
+			return
+		case <-applied:
+		}
+	}
+}
+
+// refresh reads what changed off the UI thread, then hands it to the UI thread. The channel it returns
+// is closed once the UI has taken the update.
+func (a *App) refresh() <-chan struct{} {
+	applied := make(chan struct{})
 	a.mu.Lock()
 	all, dirty := a.dirtyAll, a.dirty
-	a.dirtyAll, a.dirty, a.scheduled = false, map[string]bool{}, false
+	a.dirtyAll, a.dirty = false, map[string]bool{}
 	var load []string
 	for id := range dirty {
 		if a.watched[id] {
@@ -236,18 +292,29 @@ func (a *App) refresh() {
 		}
 	}
 	post(func() {
+		defer close(applied)
 		if threads != nil {
-			a.threads.Set(threads)
-			a.todos.Set(todos)
+			// Each list is set only when it changed: a refresh reads them all, and most refreshes are
+			// for one thread's streaming text, which is none of these.
+			a.setThreads(threads)
+			if !reflect.DeepEqual(todos, a.todos.Peek()) {
+				a.todos.Set(todos)
+			}
 			if !slices.Equal(repos, a.repos.Peek()) {
 				a.repos.Set(repos)
 			}
 			if !slices.Equal(plain, a.plain.Peek()) {
 				a.plain.Set(plain)
 			}
-			a.rate.Set(rate)
-			a.pending.Set(pending)
-			a.cfg.Set(cfg)
+			if !reflect.DeepEqual(rate, a.rate.Peek()) {
+				a.rate.Set(rate)
+			}
+			if !reflect.DeepEqual(pending, a.pending.Peek()) {
+				a.pending.Set(pending)
+			}
+			if !reflect.DeepEqual(cfg, a.cfg.Peek()) {
+				a.cfg.Set(cfg)
+			}
 		}
 		for id, items := range loaded {
 			if s := a.items[id]; s != nil {
@@ -255,6 +322,7 @@ func (a *App) refresh() {
 			}
 		}
 	})
+	return applied
 }
 
 // itemsOf returns the signal holding a thread's transcript, loading it the first time. UI thread only.
@@ -271,14 +339,38 @@ func (a *App) itemsOf(id string) *ui.Signal[[]core.Item] {
 	return s
 }
 
-// thread returns the current snapshot of a thread from the threads signal (tracked).
+// thread returns the current snapshot of a thread (tracked). Each thread has a signal of its own, so
+// what shows one thread renders again when that thread changes, not when any does: text streaming
+// into one thread would otherwise rebuild every transcript on screen thirty times a second. UI thread
+// only.
 func (a *App) thread(id string) (core.ThreadView, bool) {
-	for _, t := range a.threads.Get() {
+	if id == "" {
+		return core.ThreadView{}, false // no thread is meant, so there is nothing to wait for
+	}
+	if s := a.views[id]; s != nil {
+		return s.Get(), true
+	}
+	for _, t := range a.threads.Peek() {
 		if t.ID == id {
-			return t, true
+			s := ui.NewSignal(t)
+			a.views[id] = s
+			return s.Get(), true
 		}
 	}
+	// No such thread yet: the caller renders again when the list changes, and finds it then.
+	a.threads.Get()
 	return core.ThreadView{}, false
+}
+
+// setThreads takes a new list of threads: the list's signal, and the signal of each thread that
+// something watches and that changed. UI thread only.
+func (a *App) setThreads(threads []core.ThreadView) {
+	a.threads.Set(threads)
+	for i := range threads {
+		if s := a.views[threads[i].ID]; s != nil && !reflect.DeepEqual(s.Peek(), threads[i]) {
+			s.Set(threads[i])
+		}
+	}
 }
 
 // run does slow work off the UI thread, and reports a failure in a toast.
@@ -464,9 +556,10 @@ func (a *App) Root(ctx *ui.Context) ui.Element {
 		a.focused = ctx.Window().Focused
 		a.raise = ctx.Window().Focus
 		a.clipboard = ctx.SetClipboard
-		// Pick up what changed before the window existed.
-		a.scheduled = true
-		go a.refresh()
+		// Pick up what changed before the window existed, and from now on.
+		a.dirtyAll = true
+		go a.refresher()
+		a.wakeRefresher()
 	}
 	a.mu.Unlock()
 	t := ctx.Theme()
@@ -539,12 +632,7 @@ func (a *App) titleBar(ctx *ui.Context) ui.Element {
 // the window's title bar, so a desktop window drags by it and has its own buttons at its end.
 func (a *App) compactBar(ctx *ui.Context) ui.Element {
 	t := ctx.Theme()
-	needs := 0
-	for _, th := range a.threads.Get() {
-		if inRail(th) && needsUser(th) {
-			needs++
-		}
-	}
+	needs := a.needsUser.Get() // a count, so the bar renders again when it changes, not when any thread does
 	label := "Threads"
 	if needs > 0 {
 		label = fmt.Sprintf("Threads: %d need you", needs)

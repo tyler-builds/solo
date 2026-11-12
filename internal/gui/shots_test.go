@@ -54,7 +54,7 @@ func TestShots(t *testing.T) {
 		// A thread whose turn ended while its benchmarks run in the background: at work, not ready.
 		{"background", func(a *App, f *fakeBackend) {
 			th := waitingOnBackground(f)
-			a.threads.Set(f.Threads())
+			a.setThreads(f.Threads())
 			a.openThread(th.ID, "conversation")
 		}},
 		{"repo-filter", func(a *App, f *fakeBackend) { a.navSel.Set("repo:/home/dev/code/api") }},
@@ -66,8 +66,8 @@ func TestShots(t *testing.T) {
 		{"usage", func(a *App, f *fakeBackend) { f.rate = demoLimits(); a.rate.Set(f.rate) }},
 		{"usage-narrow", func(a *App, f *fakeBackend) { f.rate = demoLimits(); a.rate.Set(f.rate) }},
 		// Many threads at work: the pinned Working group caps its height and scrolls within itself.
-		{"working-many", func(a *App, f *fakeBackend) { manyWorking(f); a.threads.Set(f.Threads()); f.rate = demoLimits(); a.rate.Set(f.rate) }},
-		{"working-many-narrow", func(a *App, f *fakeBackend) { manyWorking(f); a.threads.Set(f.Threads()); f.rate = demoLimits(); a.rate.Set(f.rate) }},
+		{"working-many", func(a *App, f *fakeBackend) { manyWorking(f); a.setThreads(f.Threads()); f.rate = demoLimits(); a.rate.Set(f.rate) }},
+		{"working-many-narrow", func(a *App, f *fakeBackend) { manyWorking(f); a.setThreads(f.Threads()); f.rate = demoLimits(); a.rate.Set(f.rate) }},
 		{"usage-notice", func(a *App, f *fakeBackend) {
 			f.rate = []agent.Event{{Kind: agent.EventRateLimit, RateLimitType: "five_hour", Status: "rejected",
 				ResetsAt: float64(time.Now().Add(time.Hour).Unix())}}
@@ -119,7 +119,7 @@ func TestShots(t *testing.T) {
 						"**Checking the merge state** of the forms thread before I land it, since its checks were still pending an hour ago and the base may have moved.\nThen I'll merge."
 				}
 			}
-			a.threads.Set(f.Threads())
+			a.setThreads(f.Threads())
 		}},
 		{"land-cards", func(a *App, f *fakeBackend) {
 			// Merge cards in each checks state, a local merge, and one whose Merge is under way.
@@ -139,7 +139,7 @@ func TestShots(t *testing.T) {
 			for _, id := range []string{"c3d4e5f6-forms", "a1f3c9d2-oauth", "b1b2b3b4-paginate", "c1c2c3c4-csv"} {
 				f.add(o, core.ItemProposal, core.ProposalData{ThreadID: id, Summary: "Ready to land."})
 			}
-			a.threads.Set(f.Threads())
+			a.setThreads(f.Threads())
 			a.items = map[string]*ui.Signal[[]core.Item]{}
 		}},
 		// Scrolled up from the latest message: the round button above the composer goes back down.
