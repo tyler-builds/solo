@@ -303,12 +303,20 @@ type Settings struct {
 	BranchRules     string            `json:"branchRules,omitempty"`
 	RepoBranchRules map[string]string `json:"repoBranchRules,omitempty"`
 
-	// PRModel and PREffort write pull request titles and descriptions, following PRRules. With
-	// SkipPRDescription, pull requests get a title only.
-	PRModel           string `json:"prModel,omitempty"`
-	PREffort          string `json:"prEffort,omitempty"`
-	PRRules           string `json:"prRules,omitempty"`
-	SkipPRDescription bool   `json:"skipPRDescription,omitempty"`
+	// CommitRules tell every thread how to write its commit messages; they go in its instructions, as
+	// threads make their own commits. Empty leaves them to the default (Conventional Commits).
+	CommitRules string `json:"commitRules,omitempty"`
+
+	// PRModel and PREffort write pull request titles and descriptions, following PRTitleRules and
+	// PRDescriptionRules. With SkipPRDescription, pull requests get a title only.
+	PRModel            string `json:"prModel,omitempty"`
+	PREffort           string `json:"prEffort,omitempty"`
+	PRTitleRules       string `json:"prTitleRules,omitempty"`
+	PRDescriptionRules string `json:"prDescriptionRules,omitempty"`
+	SkipPRDescription  bool   `json:"skipPRDescription,omitempty"`
+	// PRRules are the rules for titles and descriptions together, from before they were split. They
+	// are only read: normalize moves them to both PRTitleRules and PRDescriptionRules.
+	PRRules string `json:"prRules,omitempty"`
 
 	// AutoMerge turns on the forge's auto-merge when Solo opens a pull request, so it merges once its
 	// required checks pass.
@@ -346,6 +354,12 @@ func (s *Settings) normalize() {
 	if s.OnChecksFail == "" {
 		s.OnChecksFail = ChecksFix
 	}
+	// One set of rules covered both title and description; it can't be split reliably, so it goes to
+	// both, which is what it meant. A device still on the old setting writes it here too.
+	if r := strings.TrimSpace(s.PRRules); r != "" {
+		s.PRTitleRules, s.PRDescriptionRules = r, r
+	}
+	s.PRRules = ""
 }
 
 // BranchRulesFor returns the branch naming rules for a repository.

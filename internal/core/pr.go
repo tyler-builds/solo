@@ -3,6 +3,7 @@
 package core
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"github.com/tyler-builds/solo/internal/agent"
@@ -254,10 +255,7 @@ func (c *Core) prText(ctx context.Context, v ThreadView, p PartView) (string, st
 		body = ""
 	}
 
-	rules := strings.TrimSpace(s.PRRules)
-	if rules == "" {
-		rules = "A short, specific title in the imperative mood. A brief description: what changed and why, then a short list of the main changes."
-	}
+	rules := prRules(s)
 	var files []string
 	if fc, err := git.Changes(ctx, p.Worktree, p.BaseCommit); err == nil {
 		for i, f := range fc {
@@ -272,7 +270,7 @@ func (c *Core) prText(ctx context.Context, v ThreadView, p PartView) (string, st
 	if v.MultiRepo() {
 		scope = fmt.Sprintf("\nThis pull request is the %s part of a change across %s; describe this repository's part.", p.Name, repoNames(partRepos(v.Parts)))
 	}
-	prompt := fmt.Sprintf("Write the pull request for this change.\n\nRules:\n%s\n\nRepository: %s%s\nBranch: %s into %s\nTask title: %s\nTask:\n%s\n\nWhat the agent that made the change reported:\n%s\n\nCommits:\n%s\n\nFiles changed:\n%s",
+	prompt := fmt.Sprintf("Write the pull request for this change.\n\n%s\n\nRepository: %s%s\nBranch: %s into %s\nTask title: %s\nTask:\n%s\n\nWhat the agent that made the change reported:\n%s\n\nCommits:\n%s\n\nFiles changed:\n%s",
 		rules, p.Name, scope, p.Branch, p.BaseBranch, v.Title, clipText(v.Prompt, 1500),
 		clipText(strings.TrimSpace(v.Summary), 3000), strings.Join(subjects, "\n"), strings.Join(files, "\n"))
 	system := prSystem
@@ -298,6 +296,27 @@ func (c *Core) prText(ctx context.Context, v ThreadView, p PartView) (string, st
 		d = body
 	}
 	return t, d
+}
+
+// Rules for pull request text when Settings has none.
+const (
+	defaultPRTitleRules       = "A short, specific title in the imperative mood."
+	defaultPRDescriptionRules = "A brief description: what changed and why, then a short list of the main changes."
+)
+
+// prRules is the rules part of the PR text model's prompt: Settings' rules for the title and, unless
+// pull requests get a title only, for the description, or the defaults where it has none. The same
+// rules for both (as moved from the single setting there was before) are given once.
+func prRules(s Settings) string {
+	title := cmp.Or(strings.TrimSpace(s.PRTitleRules), defaultPRTitleRules)
+	if s.SkipPRDescription {
+		return "Rules for the title:\n" + title
+	}
+	desc := cmp.Or(strings.TrimSpace(s.PRDescriptionRules), defaultPRDescriptionRules)
+	if title == desc {
+		return "Rules for the title and description:\n" + title
+	}
+	return "Rules for the title:\n" + title + "\n\nRules for the description:\n" + desc
 }
 
 // parsePRText reads "TITLE: …" and "DESCRIPTION:" from the PR text model's answer.

@@ -194,11 +194,19 @@ func TestShots(t *testing.T) {
 		{"tall-settings-branches", func(a *App, f *fakeBackend) {
 			f.settings.BranchRules = "feature/<ticket>-<short-summary>, lowercase, under 50 characters. fix/ for bug fixes."
 			f.settings.RepoBranchRules = map[string]string{"/home/dev/code/api": "api-<ticket>-<summary>"}
+			f.settings.CommitRules = "Start with the ticket, like OW-123: Refresh tokens. Imperative mood, under 72 characters."
 			a.settingsTab = "branches"
 			a.settings.Set(true)
 		}},
 		{"tall-settings-prs", func(a *App, f *fakeBackend) {
-			f.settings.PRRules = "Conventional Commit title with the ticket. Description: Summary, Changes, Testing."
+			f.settings.PRTitleRules = "Conventional Commit title with the ticket, like feat(auth): OW-123 refresh tokens."
+			f.settings.PRDescriptionRules = "Summary, Changes, Testing."
+			a.settingsTab = "prs"
+			a.settings.Set(true)
+		}},
+		// Pull requests that get a title only: no description rules.
+		{"tall-settings-prs-title-only", func(a *App, f *fakeBackend) {
+			f.settings.SkipPRDescription = true
 			a.settingsTab = "prs"
 			a.settings.Set(true)
 		}},
@@ -207,7 +215,7 @@ func TestShots(t *testing.T) {
 		{"settings-git", func(a *App, f *fakeBackend) {
 			f.settings.BranchRules = "feature/<ticket>-<short-summary>, lowercase, under 50 characters. fix/ for bug fixes."
 			f.settings.RepoBranchRules = map[string]string{"/home/dev/code/api": "api-<ticket>-<summary>"}
-			f.settings.PRRules = "Conventional Commit title with the ticket. Description: Summary, Changes, Testing."
+			f.settings.PRTitleRules = "Conventional Commit title with the ticket."
 			a.settingsTab = "git"
 			a.settings.Set(true)
 		}},
@@ -231,6 +239,7 @@ func TestShots(t *testing.T) {
 		{"phone-multi", func(a *App, f *fakeBackend) { a.openThread("e5e6e7e8-landing", "conversation") }},
 		{"phone-question", func(a *App, f *fakeBackend) { a.openThread("b7e21a90-limit", "conversation") }},
 		{"phone-settings", func(a *App, f *fakeBackend) { a.settings.Set(true) }},
+		{"phone-settings-branches", func(a *App, f *fakeBackend) { a.settingsTab = "branches"; a.settings.Set(true) }},
 		{"phone-palette", func(a *App, f *fakeBackend) { a.palette.Set(true) }},
 		{"phone-empty", nil},
 	}

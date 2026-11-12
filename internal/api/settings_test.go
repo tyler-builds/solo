@@ -40,11 +40,11 @@ func TestSettingsPatchRoundTrip(t *testing.T) {
 	}
 	// A patch changes only its own fields: another device's change to a different one survives.
 	other := old
-	other.PRRules = "from another device"
+	other.CommitRules = "from another device"
 	if err := p.Apply(&other); err != nil {
 		t.Fatal(err)
 	}
-	if other.PRRules != "from another device" || other.WorkerModel != "opus" {
+	if other.CommitRules != "from another device" || other.WorkerModel != "opus" {
 		t.Errorf("the patch undid a different change: %+v", other)
 	}
 	if len(DiffSettings(old, old)) != 0 {
@@ -125,6 +125,9 @@ func TestSettingsPatchCheckRemote(t *testing.T) {
 		"checks":        {"onChecksFail": []byte(`"explode"`)},
 		"model newline": {"workerModel": []byte(`"a\nb"`)},
 		"long rules":    {"prRules": []byte(`"` + strings.Repeat("x", maxSettingText+1) + `"`)},
+		"long commits":  {"commitRules": []byte(`"` + strings.Repeat("x", maxSettingText+1) + `"`)},
+		"long titles":   {"prTitleRules": []byte(`"` + strings.Repeat("x", maxSettingText+1) + `"`)},
+		"long descs":    {"prDescriptionRules": []byte(`"` + strings.Repeat("x", maxSettingText+1) + `"`)},
 		"unknown":       {"x": []byte(`1`)},
 		"huge":          {"branchRules": []byte(`"` + strings.Repeat("x", maxPatchBytes) + `"`)},
 	} {

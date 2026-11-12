@@ -152,9 +152,16 @@ Raw `SDKMessage`s are also appended to a per-session JSONL file for debugging an
 - Branch names: `solo/<title>-<id>`, unless Settings has naming rules (global, or per repository).
   Then a small model (`complete` RPC: one turn, no tools, no session) names it; an unusable answer
   falls back to the default name, and a taken name gets a numeric suffix.
+- Commit messages: threads write their own commits. Settings' commit rules, when set, go in every
+  thread's instructions (its system prompt, so resumed sessions get the current ones) in place of the
+  Conventional Commits default. Solo's own commits don't follow them: the fallback commit of what a
+  thread left uncommitted (`chore: uncommitted work from <title>`, which the PR text skips), the
+  local merge commit (`Merge <branch>: <title>`) and the first commit of a folder put in git. A squash
+  merge on the forge takes its message from the PR title, which has its own rules.
 - Settings (laid out as t3code's: a page list on the left, rows in cards, changes saved as they're made)
-  has a page each for General, Repositories, Models (Solo and threads), Branches (naming rules and their
-  model), Pull requests (text rules, its model, merging) and History. The worktree is removed after merge
+  has a page each for General, Repositories, Models (Solo and threads), Branches and commits (naming
+  rules and their model, commit message rules), Pull requests (title and description rules, their
+  model, merging) and History. The worktree is removed after merge
   or discard; the branch is kept until merged.
 - Session: `cwd` = worktree, `permissionMode: "bypassPermissions"`,
   `allowDangerouslySkipPermissions: true`, default model configurable.
@@ -195,8 +202,8 @@ Raw `SDKMessage`s are also appended to a per-session JSONL file for debugging an
 - Pull requests (`internal/forge`): the forge comes from origin's host, or `git config solo.forge
   github|gitlab` for self-hosted ones. Open PR commits leftovers, pushes the branch and opens the PR
   against the base branch. The PR text model (Settings › Models; Haiku by default) writes the title and
-  description from the commits, changed files and summary, following Settings › Git's rules; the
-  description can be turned off. If it fails, the title is the worker's one commit (else the thread
+  description from the commits, changed files and summary, following Settings › Pull requests' title
+  and description rules (one call); the description can be turned off. If it fails, the title is the worker's one commit (else the thread
   title) and the body its summary. Open PR is a split button whose menu opens a draft; a draft gets
   Ready for review, and auto-merge turns on only once it's ready.
   With Settings › Git › Auto-merge, Solo also runs `gh pr merge --auto` (`glab mr merge --auto-merge`).
