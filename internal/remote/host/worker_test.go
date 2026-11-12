@@ -94,4 +94,5 @@ func TestAgainstTheWorker(t *testing.T) {
 	t.Run("wrong digits", TestWrongDigitsEndThePairing)
 	t.Run("pairing needs the code", TestPairingNeedsTheCode)
 	t.Run("revoke and read-only", TestRevokeAndReadOnly)
+	t.Run("pair without a code", TestPairWithoutACode)
 }

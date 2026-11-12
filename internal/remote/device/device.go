@@ -3,6 +3,7 @@
 package device
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -42,7 +43,12 @@ const (
 	CloseLimit        = 4003
 	CloseProtocol     = 4004
 	CloseReload       = 4005 // the web client is out of date
+	CloseAmbiguous    = 4006 // more than one machine has pairing open to devices with no code
 )
+
+// OpenPairToken is the token of a pairing connection that holds no code: one byte that says so. The
+// relay lets it in only while a machine has pairing open.
+const OpenPairToken = 2
 
 // Origin is the relay's origin as both ends hash it into a handshake: the address the web client is
 // served from. host is the address's host, with its port if it has one.
@@ -64,17 +70,21 @@ type Machine struct {
 
 // The two messages of a pairing, on its secure channel.
 type (
-	// Request is the device's: who is asking.
+	// Request is the device's: who is asking. In a pairing without a code it also reveals the number
+	// the device committed to before the handshake (secure.OpenCommitment).
 	Request struct {
-		Name string `json:"name"`
+		Name  string `json:"name"`
+		Nonce []byte `json:"nonce,omitempty"`
 	}
-	// Decision is the machine's.
+	// Decision is the machine's. Machine is the machine's ID, which a device that had no code learns
+	// here.
 	Decision struct {
 		OK       bool   `json:"ok"`
 		PSK      []byte `json:"psk,omitempty"`
 		Voucher  []byte `json:"voucher,omitempty"`
 		Name     string `json:"name,omitempty"`
 		ReadOnly bool   `json:"readOnly,omitempty"`
+		Machine  string `json:"machine,omitempty"`
 	}
 )
 
@@ -88,8 +98,79 @@ var (
 type Pairing struct {
 	// Digits are the six digits to type at the machine.
 	Digits string
-	code   secure.PairingCode
 	link   *wire.Link
+	// The machine, as far as the device knows it: from the code, or from the handshake when there was
+	// no code, in which case its ID comes with the decision.
+	machineID  string
+	machineKey []byte
+	deviceKey  []byte
+	// Unconfirmed: nothing told this device beforehand which machine it was talking to (it had no
+	// code), so the machine's "paired" is only the word of whoever answered. The person confirms it at
+	// the machine before the device keeps anything (see Wait).
+	Unconfirmed bool
+}
+
+// ErrSeveralOpen is a pairing without a code while more than one machine has pairing open: the relay
+// won't choose between them.
+var ErrSeveralOpen = errors.New("More than one machine has Add a device open. Close it on all but the one you mean, then try again here.")
+
+// ErrNotOpen is a pairing without a code that found no machine waiting for one.
+var ErrNotOpen = errors.New("No machine is waiting to pair a browser. On the computer that runs Solo, open Settings, then Remote, choose Add a device, and then its option for a computer's browser. Then try again here.")
+
+// PairOpen asks to pair with whichever machine has pairing open, for a device that holds no code: a
+// browser that was only given the relay's address. The digits it returns are the only thing that ties
+// this device to the machine, so the person must type exactly these at the machine (see
+// secure/open.go for why nobody in between can arrange for them to match).
+func PairOpen(ctx context.Context, dial Dialer, origin string, key noise.DHKey, name string, random io.Reader) (*Pairing, error) {
+	// notOpen says what a refusal means here. A browser doesn't say why a connection was refused, and
+	// a machine with no pairing open hangs up without a word.
+	notOpen := func(err error) error {
+		var closed *CloseError
+		switch {
+		case errors.As(err, &closed) && closed.Code == CloseAmbiguous:
+			return ErrSeveralOpen
+		case errors.As(err, &closed) && closed.Code != CloseNormal:
+			return err
+		}
+		return ErrNotOpen
+	}
+	conn, err := dial(ctx, PathPair, []byte{OpenPairToken})
+	if err != nil {
+		return nil, notOpen(err)
+	}
+	defer within(ctx, conn)()
+	ini, first, err := secure.InitiateOpen(origin, key, random)
+	if err != nil {
+		conn.Close()
+		return nil, err
+	}
+	if err := conn.Write(first); err != nil {
+		conn.Close()
+		return nil, err
+	}
+	answer, err := conn.Read()
+	if err != nil {
+		conn.Close()
+		return nil, notOpen(err)
+	}
+	third, ch, err := ini.Finish(answer)
+	if err != nil {
+		conn.Close()
+		return nil, errors.New("The machine's answer couldn't be read.")
+	}
+	if err := conn.Write(third); err != nil {
+		conn.Close()
+		return nil, err
+	}
+	link := wire.NewLink(conn, ch)
+	// Only now, with the handshake behind both ends, is the number revealed.
+	req, _ := json.Marshal(Request{Name: name, Nonce: ini.Nonce()})
+	if err := link.Send(req); err != nil {
+		link.Close()
+		return nil, err
+	}
+	return &Pairing{Digits: secure.OpenDigits(ch, ini.Nonce()), link: link, machineKey: append([]byte(nil), ch.Peer()...),
+		deviceKey: key.Public, Unconfirmed: true}, nil
 }
 
 // within closes conn if ctx ends before the function it returns is called: a relay that accepts a
@@ -141,7 +222,8 @@ func Pair(ctx context.Context, dial Dialer, origin string, code secure.PairingCo
 		link.Close()
 		return nil, err
 	}
-	return &Pairing{Digits: ch.SAS(), code: code, link: link}, nil
+	return &Pairing{Digits: ch.SAS(), link: link, machineID: code.Machine.String(), machineKey: code.MachineKey[:],
+		deviceKey: key.Public}, nil
 }
 
 // Wait waits for the machine's decision, and returns what to keep of the machine.
@@ -161,7 +243,20 @@ func (p *Pairing) Wait() (Machine, error) {
 	if len(d.PSK) != secure.KeySize || len(d.Voucher) != secure.VoucherSize {
 		return Machine{}, errors.New("The machine's answer couldn't be read.")
 	}
-	return Machine{ID: p.code.Machine.String(), Key: p.code.MachineKey[:], PSK: d.PSK, Voucher: d.Voucher,
+	// What the machine sent must hang together: the voucher is for this device, and it names the
+	// machine whose key the handshake was with. A machine's ID is a hash of that key and of the key the
+	// voucher is signed with, so a machine can't claim another's ID here.
+	const relayKeyAt, machineAt, deviceAt = 1, 1 + secure.KeySize, 1 + secure.KeySize + 16
+	relayKey := d.Voucher[relayKeyAt:machineAt]
+	id := secure.MachineID(p.machineKey, relayKey)
+	own := secure.DeviceID(p.deviceKey)
+	if !bytes.Equal(d.Voucher[machineAt:deviceAt], id[:]) || !bytes.Equal(d.Voucher[deviceAt:deviceAt+16], own[:]) {
+		return Machine{}, errors.New("The machine's answer doesn't hold together. Nothing was kept.")
+	}
+	if p.machineID != "" && p.machineID != id.String() {
+		return Machine{}, errors.New("The machine that answered isn't the one the code is from. Nothing was kept.")
+	}
+	return Machine{ID: id.String(), Key: p.machineKey, PSK: d.PSK, Voucher: d.Voucher,
 		Name: CleanName(d.Name), ReadOnly: d.ReadOnly}, nil
 }
 

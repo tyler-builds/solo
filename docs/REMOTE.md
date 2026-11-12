@@ -30,7 +30,8 @@ Limits worth knowing, found when the finished code was reviewed (see "Review" at
   before Solo pauses, and not at all if no token is kept. It is detection, not prevention.
 - A machine's key stays on the relay's list until the relay is removed: a machine that was retired can
   still connect to the relay as itself, and see when devices come and go. It can't read anything, and
-  can no longer take another machine's place.
+  can't take another machine's place; it can open pairing of its own, which a device with no code would
+  reach only if no other machine had pairing open, and which the person would then have to confirm.
 - A device that was removed keeps its pass to the relay: it can open connections there, which the
   machine closes unanswered.
 - A paired device, even one that may only look, can ask for things that cost the machine work (a long
@@ -70,6 +71,42 @@ A device is added only at the machine, and the person there approves it.
    handshakes at most, whatever the relay lets through, and five wrong sets of digits end it.
 5. On approval the machine records the device's public key, gives it a random key of its own for later
    sessions and a voucher for the relay, and the code is spent.
+
+### Pairing without a code
+
+A browser on another computer has no camera to scan with, and nobody can hand it a link. For that, the
+person chooses, at the machine, to pair a computer's browser instead of showing a code: the card then
+shows the relay's address. They open it there and choose Pair this device, the page shows six digits,
+and they type them at the machine (over remote desktop if that is how they reach it). The two kinds of
+pairing are never open together: nothing but the digits tells a device with no code from one with a
+code, and pairing with a code should owe nothing to chance.
+
+Here the device knows nothing of the machine beforehand, so the handshake (Noise XX) authenticates
+nobody, and the six digits do all the work. Six digits are few, and the relay sits in the middle of what
+would be two handshakes, one with each end; left alone, it could shape its part of the device's handshake
+until the device showed digits the relay had already got from the machine. So **the device commits
+first**: it sends a hash of its public key and of a random number, and reveals the number only when the
+handshake is done; the digits depend on it. Towards the device, the relay must finish before it learns
+the number; towards the machine, the relay is the one committed, and the machine checks the key and the
+number against the commitment. The two sets of digits are then independent, equal once in a million.
+
+What bounds the tries: the machine answers eight connections for each time pairing is opened; a
+connection has ten seconds to finish its handshake and say who is asking, in one small message, and then
+waits two minutes at most; three may wait at once. So a few in a million, for each time the person
+types digits, is the chance of whoever controls the relay being paired in place of the device. With a
+code there is no such chance: the machine's key comes with the code. (Whoever controls the relay can
+also replace the web client, which is the larger exposure, and is said above.)
+
+The digits prove the device to the machine, not the machine to the device. The device checks what it is
+sent (the voucher is for itself, and the machine's ID is the hash of the key the handshake was with and
+of the key the voucher is signed with), but anything that answers its handshake can say "paired". So
+the page keeps nothing until the person has said that their machine says so too. A pairing with a code
+that fails is followed by "scan again", never by an offer to pair without one.
+
+Anyone who reaches the address while this is open can ask, and shows other digits; the machine says only
+how many devices are asking. They can also use up the eight connections, which ends that opening and no
+more. At the relay, a machine opens pairing for itself only, for ten minutes and sixteen connections at
+most whatever it asks; with two machines open the relay doesn't choose, and tells the device so.
 
 ## Sessions
 
@@ -208,7 +245,8 @@ Workers scripts, in one account.
   without them can use a relay and can't deploy one.
 - **Deploying** finds the account's workers.dev address, uploads the web client as static assets with its
   headers, uploads the relay with its Durable Object (declared once) and its bindings, serves it at
-  `https://solo-relay-<random>.<account>.workers.dev` with preview addresses off and no logs, and waits
+  `https://solo.<account>.workers.dev` (a longer name only if the account has another Worker called
+  solo) with preview addresses off and no logs, and waits
   for it to answer.
 - **A second machine** finds the relay by its marker binding and adds its key to `HOST_KEYS`, reading the
   list back in case another machine wrote at the same moment. It replaces the code and the web client
@@ -243,6 +281,7 @@ with the Cloudflare account can change.
 | `/v1/machine` | the machine's relay key, its ID, the time and a nonce, signed by that key for this relay's origin | by the Worker, which keeps nothing: the key is in `HOST_KEYS`, the signature is good, the time is within two minutes |
 | `/v1/device` | a voucher: the machine's signature, for this relay's origin, over its ID and the device's | by the Worker: the signing key is in `HOST_KEYS` |
 | `/v1/pair` | the machine's ID and a ticket derived from the pairing code's secret | by the Durable Object against the ticket's hash, which the machine registered. The relay never has the secret |
+| `/v1/pair` | one byte, for a device with no code | by the Durable Object: exactly one connected machine has pairing open to such devices, and its window has connections left |
 
 A voucher is a pass to the relay, not to the machine. `/v1/device` and `/v1/pair` also require the page's
 own origin, and `/v1/machine` refuses a request that has one: a page is no machine.
@@ -258,9 +297,9 @@ themselves. A machine's one socket carries every device's, so its frames start w
 | Type | Direction | Body |
 |---|---|---|
 | 1 data | both | connection (8 bytes), then a sealed record |
-| 2 open | to the machine | connection, kind (1 device, 2 pairing), the device's ID |
+| 2 open | to the machine | connection, kind (1 device, 2 pairing with a code, 3 pairing without), the device's ID |
 | 3 close | both | connection |
-| 4 ticket | from the machine | add or remove, the ticket's hash, expiry, uses |
+| 4 ticket | from the machine | add or remove a ticket (its hash, expiry, uses), or open or close pairing without a code (expiry, uses) |
 | 5 usage | to the machine | the day's counts, as JSON |
 
 The relay stamps the connection from the socket a frame arrived on. Lying about it only makes a handshake
@@ -429,6 +468,11 @@ fixed, each with a test:
   exit when its text was searched for.
 - The name a device gave itself was shown beside the box for its digits.
 - The release workflow ran actions by tag in a job that could write to the repository.
+
+Pairing without a code was added afterwards and reviewed on its own. The commitment held; what was found
+around it was fixed before it shipped: a device took "paired" from whoever answered it, any listed
+machine could draw every such pairing to itself, a connection could hold its digits unseen for as long as
+pairing was open, and it shared its limits with pairing by code.
 
 Left as they are, and listed under "What is and is not protected" where they matter: a relay's list of
 machines never shrinks, vouchers don't expire, a long diff is built whole before it is cut, and the web

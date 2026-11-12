@@ -75,7 +75,7 @@ func TestRealCloudflare(t *testing.T) {
 		c, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 		if err := first.RemoveRelay(c); err != nil {
-			t.Errorf("REMOVE THE RELAY BY HAND in the Cloudflare dashboard (a Worker named solo-relay-…): %v", err)
+			t.Errorf("REMOVE THE RELAY BY HAND in the Cloudflare dashboard (a Worker named solo): %v", err)
 		} else {
 			t.Log("the relay was removed")
 		}
@@ -136,7 +136,7 @@ func TestRealCloudflare(t *testing.T) {
 	dial := relaytest.Dialer(address)
 	origin := device.Origin(strings.TrimPrefix(address, "https://"))
 	pair := func() (*device.Pairing, error) {
-		p, err := first.StartPairing()
+		p, err := first.StartPairing(false)
 		if err != nil {
 			return nil, err
 		}

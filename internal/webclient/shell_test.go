@@ -58,7 +58,7 @@ func newMachine(t *testing.T) *machine {
 // offer makes a pairing code and returns its link's fragment, once the relay knows its ticket.
 func (m *machine) offer(t *testing.T) string {
 	t.Helper()
-	p, err := m.remote.StartPairing()
+	p, err := m.remote.StartPairing(false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,6 +175,7 @@ func TestOfflineAndRemoved(t *testing.T) {
 	u.WaitFor("the question", func() bool { return u.Has("pair") })
 	u.Click("pair")
 	u.WaitFor("the digits", func() bool { return u.Has("digits") })
+	u.WaitFor("the request at the machine", func() bool { return len(m.remote.State().Requests) == 1 })
 	if _, err := m.remote.Approve(u.Get("digits").Text(), false); err != nil {
 		t.Fatal(err)
 	}
@@ -255,6 +256,7 @@ func TestShots(t *testing.T) {
 	u.Click("pair")
 	u.WaitFor("the digits", func() bool { return u.Has("digits") })
 	save(u, "web-digits")
+	u.WaitFor("the request at the machine", func() bool { return len(m.remote.State().Requests) == 1 })
 	m.remote.Approve(u.Get("digits").Text(), false)
 	u.WaitFor("the machine's UI", func() bool { return u.Has("open-drawer") })
 	save(u, "web-main")
@@ -269,4 +271,85 @@ func TestShots(t *testing.T) {
 	m.remote.SetEnabled(false)
 	u.WaitFor("the offline line", func() bool { return u.Has("link-bar") })
 	save(u, "web-offline")
+}
+
+// A browser on another computer, opened at the relay's address with no code: it pairs from the page,
+// showing digits that are typed at the machine. With no pairing open at the machine, it says what to do.
+func TestPairFromTheBareAddress(t *testing.T) {
+	m := newMachine(t)
+	st := &storage{m: map[string]string{}}
+	_, u := m.page(t, st, "")
+	u.WaitFor("the welcome", func() bool { return u.Has("pair-open") })
+	u.Click("pair-open")
+	u.WaitFor("the question", func() bool { return u.Has("pair") })
+	u.Click("pair")
+	u.WaitFor("being told nothing is waiting", func() bool { return hasText(u, "No machine is waiting to pair a browser") })
+	if len(m.remote.State().Requests) != 0 {
+		t.Error("the machine was asked while it had no pairing open")
+	}
+
+	openPairing := func() {
+		if _, err := m.remote.StartPairing(true); err != nil {
+			t.Fatal(err)
+		}
+		deadline := time.Now().Add(5 * time.Second)
+		for !m.relay.Open() {
+			if time.Now().After(deadline) {
+				t.Fatal("the relay never opened pairing")
+			}
+			time.Sleep(2 * time.Millisecond)
+		}
+	}
+	ask := func() {
+		u.Click("pair-open")
+		u.WaitFor("the question", func() bool { return u.Has("pair") })
+		u.Click("pair")
+		u.WaitFor("the digits", func() bool { return u.Has("digits") })
+		u.WaitFor("the request at the machine", func() bool { return len(m.remote.State().Requests) == 1 })
+	}
+	// Approved at the machine, the page still asks whether the machine says so: it had nothing of the
+	// machine's beforehand. Saying no keeps nothing.
+	openPairing()
+	ask()
+	if _, err := m.remote.Approve(u.Get("digits").Text(), false); err != nil {
+		t.Fatal(err)
+	}
+	u.WaitFor("the question whether the machine says paired", func() bool { return u.Has("paired-no") })
+	if st.load(storeMachines) != "" {
+		t.Error("the machine was kept before the person said so")
+	}
+	u.Click("paired-no")
+	u.WaitFor("the welcome again", func() bool { return hasText(u, "Nothing was kept") })
+	if st.load(storeMachines) != "" {
+		t.Error("the machine was kept after the person said no")
+	}
+
+	openPairing()
+	ask()
+	if d, err := m.remote.Approve(u.Get("digits").Text(), false); err != nil {
+		t.Fatal(err)
+	} else if d.Name != "Test phone" {
+		t.Errorf("the machine was told %q", d.Name)
+	}
+	u.WaitFor("the question whether the machine says paired", func() bool { return u.Has("paired-yes") })
+	u.Click("paired-yes")
+	u.WaitFor("the machine's UI", func() bool { return u.Has("open-drawer") })
+	if st.load(storeMachines) == "" {
+		t.Error("the machine wasn't kept")
+	}
+}
+
+// After a pairing with a code fails, the page says to scan again and doesn't offer pairing without a
+// code: whoever made the first fail shouldn't thereby move the person to the weaker kind.
+func TestFailedCodeDoesNotOfferOpenPairing(t *testing.T) {
+	m := newMachine(t)
+	frag := m.offer(t)
+	m.remote.CancelPairing()
+	_, u := m.page(t, &storage{m: map[string]string{}}, frag)
+	u.WaitFor("the question", func() bool { return u.Has("pair") })
+	u.Click("pair")
+	u.WaitFor("the failure", func() bool { return hasText(u, "Pairing didn't finish") })
+	if u.Has("pair-open") {
+		t.Error("pairing without a code is offered right after a code failed")
+	}
 }

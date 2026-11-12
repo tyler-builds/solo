@@ -111,7 +111,7 @@ func (a *App) remotePage(ctx *ui.Context) ui.Element {
 	}
 	addressRow := settingBlock(ctx, "Relay address", "Where a relay and its web app are already served from.",
 		ui.Div().Row().Gap(space2).Align(ui.Center).
-			Child(ui.TextInput(address).Placeholder("https://solo-relay-….your-account.workers.dev").Label("Relay address").
+			Child(ui.TextInput(address).Placeholder("https://solo.your-account.workers.dev").Label("Relay address").
 				Small().Grow(1).Key("remote-relay").OnSubmit(func(string) { saveAddress() })).
 			Child(ui.Button("Save").Secondary().Small().Disabled(strings.TrimSpace(address.Get()) == st.Relay).OnClick(saveAddress)))
 	// The Cloudflare token: asked for once, kept in the keyring, never shown again.
@@ -282,7 +282,7 @@ func (a *App) remotePage(ctx *ui.Context) ui.Element {
 	add := ui.Button("Add a device").Icon(icons.Plus).Secondary().Small().Disabled(!canPair || st.Pairing != nil).
 		OnClick(func() {
 			go func() {
-				_, err := rm.StartPairing()
+				_, err := rm.StartPairing(false)
 				fail("Couldn't start pairing", err)
 			}()
 		})
@@ -309,7 +309,7 @@ func (a *App) pairingCard(ctx *ui.Context, st api.RemoteState) ui.Element {
 	showLink := ui.Local(ctx, "remote-showlink", false)
 	// The code is drawn once for each link.
 	shown := ui.Local(ctx, "remote-qr", qrShown{})
-	if shown.Peek().link != p.Link {
+	if !p.Open && shown.Peek().link != p.Link {
 		src, _ := qrImage(p.Link, 4)
 		shown.Set(qrShown{link: p.Link, src: src})
 	}
@@ -341,7 +341,11 @@ func (a *App) pairingCard(ctx *ui.Context, st api.RemoteState) ui.Element {
 	}
 	// A device that asks is not named until it is approved: its name is its own choice of words, and
 	// would stand right above the box for the digits.
-	var waiting ui.Element = caption(ctx, "Waiting for a device to scan the code…")
+	idle := "Waiting for a device to scan the code…"
+	if p.Open {
+		idle = "Waiting for a device to ask…"
+	}
+	var waiting ui.Element = caption(ctx, idle)
 	if n := len(st.Requests); n > 0 {
 		text := "A device is asking to pair. Type the digits it shows."
 		if n > 1 {
@@ -351,6 +355,44 @@ func (a *App) pairingCard(ctx *ui.Context, st api.RemoteState) ui.Element {
 			Child(ui.Icon(icons.Smartphone).Size(14).Color(t.Text)).
 			Child(ui.Text(text).FontSize(13).TextColor(t.Text))
 	}
+	start := func(open bool) {
+		go func() {
+			if _, err := rm.StartPairing(open); err != nil {
+				a.notify(ui.ToastError, "Couldn't start pairing", err.Error())
+			}
+		}()
+	}
+	entry := ui.Div().Column().Gap(space3).
+		Child(waiting).
+		Child(ui.Div().Row().Gap(space2).Align(ui.Center).
+			Child(ui.TextInput(digits).Placeholder("000 000").Label("Digits shown on the device").Width(ui.Px(120)).
+				Key("remote-digits").OnSubmit(func(string) { approve() })).
+			Child(ui.Button("Pair").Primary().Disabled(len(st.Requests) == 0 || countDigits(digits.Get()) != 6).OnClick(approve)).
+			Child(ui.Button("Cancel").Ghost().OnClick(func() { go rm.CancelPairing() }))).
+		Child(ui.Checkbox("It can only look, not change anything", readOnly))
+	address := strings.TrimPrefix(strings.TrimPrefix(st.Relay, "https://"), "http://")
+
+	if p.Open {
+		// Without a code: for a browser on another computer, which has no camera and can't be handed a
+		// link. It asks at the relay's address, and the digits it shows are typed here.
+		body := ui.Div().Column().Gap(space4).Padding(space4).
+			Child(ui.Div().Column().Gap(space2).
+				Child(subhead("1. On the device, open this address and choose Pair this device")).
+				Child(ui.Div().Row().Gap(space2).Align(ui.Center).
+					Child(ui.Text(address).FontSize(15).Medium().TextColor(t.Text).Truncate().Grow(1).Key("remote-address")).
+					Child(ui.Button("Copy").Icon(icons.Copy).Secondary().Small().Key("remote-copy-address").
+						OnClick(func() { a.copyText("Address", st.Relay) }))).
+				Child(caption(ctx, "Pairing stays open for "+mins+", to one device."))).
+			Child(ui.Div().Column().Gap(space1).
+				Child(subhead("2. Type the six digits the device shows")).
+				Child(caption(ctx, "They are all that ties that device to this machine, so type the ones on its screen. Anyone who opens the address meanwhile can ask too, and shows other digits."))).
+			Child(entry)
+		// The other way to pair is at the top of the card, where it is in view however tall the card.
+		other := ui.Button("Show a code to scan instead").Icon(icons.QrCode).Secondary().Small().Key("remote-pair-code").
+			OnClick(func() { start(false) })
+		return settingsSection(ctx, "Add a device", "", other, body)
+	}
+
 	var code ui.Element = caption(ctx, "The code couldn't be drawn. Use the link instead.")
 	if src := shown.Get().src; src != nil {
 		code = ui.Div().Padding(space2).Radius(radiusM).Background(ui.RGB(255, 255, 255)).Shrink(0).
@@ -363,13 +405,7 @@ func (a *App) pairingCard(ctx *ui.Context, st api.RemoteState) ui.Element {
 		Child(ui.Div().Column().Gap(space1).
 			Child(subhead("2. Type the six digits the device shows")).
 			Child(caption(ctx, "They prove the device in your hand is the one asking."))).
-		Child(waiting).
-		Child(ui.Div().Row().Gap(space2).Align(ui.Center).
-			Child(ui.TextInput(digits).Placeholder("000 000").Label("Digits shown on the device").Width(ui.Px(120)).
-				Key("remote-digits").OnSubmit(func(string) { approve() })).
-			Child(ui.Button("Pair").Primary().Disabled(len(st.Requests) == 0 || countDigits(digits.Get()) != 6).OnClick(approve)).
-			Child(ui.Button("Cancel").Ghost().OnClick(func() { go rm.CancelPairing() }))).
-		Child(ui.Checkbox("It can only look, not change anything", readOnly))
+		Child(entry)
 	link := ui.Collapsible("Can't scan? Use a link instead", showLink,
 		ui.Div().Column().Gap(space2).PaddingTop(space2).
 			Child(caption(ctx, "Open this on the device. Anyone who has the link can ask to pair until it expires, so don't send it where others can read it.")).
@@ -379,7 +415,10 @@ func (a *App) pairingCard(ctx *ui.Context, st api.RemoteState) ui.Element {
 	body := ui.Div().Column().Gap(space4).Padding(space4).
 		Child(ui.Div().Row().Wrap().Gap(space5).Align(ui.Start).Child(code).Child(steps)).
 		Child(link)
-	return settingsSection(ctx, "Add a device", "", nil, body)
+	other := ui.Button("No camera? Pair a computer's browser").Icon(icons.Laptop).Secondary().Small().Key("remote-pair-open").
+		Tooltip("For a browser on another computer: it opens " + address + " and shows digits to type here").
+		OnClick(func() { start(true) })
+	return settingsSection(ctx, "Add a device", "", other, body)
 }
 
 type qrShown struct {

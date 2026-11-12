@@ -39,9 +39,13 @@ const (
 	bindingObject = "RELAY"
 	objectClass   = "Relay"
 	markerValue   = "1"
-	// ScriptPrefix starts the name of every relay Solo deploys; the rest is random, so the address
-	// can't be guessed from the account's name.
-	ScriptPrefix = "solo-relay-"
+	// RelayName is the name Solo gives its relay, so that its address is short enough to type:
+	// https://solo.<account>.workers.dev. The address is no secret: nothing is protected by it being
+	// hard to guess, only the day's free requests, which whoever finds it can use up. When the account
+	// has another Worker of that name, the relay is called solo-relay, or solo-relay- and a few
+	// random letters. Relays that earlier versions deployed have such longer names too.
+	RelayName   = "solo"
+	legacyNames = "solo-relay"
 	// compatibilityDate is the Workers runtime behavior the relay was written and tested against.
 	compatibilityDate = "2026-10-01"
 )
@@ -388,8 +392,8 @@ func (c *Client) Settings(ctx context.Context, account, script string) (Relay, b
 	return r, marked, nil
 }
 
-// Find looks for Solo's relay in the account: a script with Solo's name and its marker. With several,
-// it is the one that sorts first, so every machine picks the same one.
+// Find looks for Solo's relay in the account: a script with one of the names Solo gives a relay, and
+// its marker. With several, it is the one that sorts first, so every machine picks the same one.
 func (c *Client) Find(ctx context.Context, account string) (*Relay, error) {
 	var scripts []struct {
 		ID string `json:"id"`
@@ -399,7 +403,7 @@ func (c *Client) Find(ctx context.Context, account string) (*Relay, error) {
 	}
 	var names []string
 	for _, s := range scripts {
-		if strings.HasPrefix(s.ID, ScriptPrefix) {
+		if s.ID == RelayName || strings.HasPrefix(s.ID, legacyNames) {
 			names = append(names, s.ID)
 		}
 	}
@@ -414,6 +418,31 @@ func (c *Client) Find(ctx context.Context, account string) (*Relay, error) {
 		}
 	}
 	return nil, nil
+}
+
+// FreeName returns a name for a new relay: RelayName, unless the account has a Worker of that name.
+// random makes the last resort's letters.
+func (c *Client) FreeName(ctx context.Context, account string, random io.Reader) (string, error) {
+	var scripts []struct {
+		ID string `json:"id"`
+	}
+	if err := c.call(ctx, "GET", "/accounts/"+account+"/workers/scripts", "", nil, "", &scripts); err != nil {
+		return "", err
+	}
+	taken := map[string]bool{}
+	for _, s := range scripts {
+		taken[s.ID] = true
+	}
+	for _, name := range []string{RelayName, legacyNames} {
+		if !taken[name] {
+			return name, nil
+		}
+	}
+	var rnd [5]byte
+	if _, err := io.ReadFull(random, rnd[:]); err != nil {
+		return "", err
+	}
+	return legacyNames + "-" + hex.EncodeToString(rnd[:]), nil
 }
 
 // Version is one upload of a script.

@@ -297,7 +297,7 @@ func TestDeployAndJoin(t *testing.T) {
 	}
 	waitFor(t, "the first machine to connect", func() bool { return first.State().Connection == Online })
 	st := first.State()
-	if !strings.HasPrefix(st.Relay, "https://solo-relay-") || !strings.HasSuffix(st.Relay, ".sub.workers.dev") || !st.Cloud.Deployed || st.Cloud.Busy != "" {
+	if st.Relay != "https://solo.sub.workers.dev" || !st.Cloud.Deployed || st.Cloud.Busy != "" {
 		t.Fatalf("after deploying: %+v", st)
 	}
 	f.mu.Lock()
@@ -464,4 +464,53 @@ func TestDeployAndJoin(t *testing.T) {
 	if err := first.ForgetCloudToken(); err != nil || first.State().Cloud.HasToken {
 		t.Errorf("after forgetting the token: %v %+v", err, first.State().Cloud)
 	}
+}
+
+// The relay gets the short name unless the account has another Worker of that name; a relay an earlier
+// version deployed under a longer name is still found and joined.
+func TestRelayName(t *testing.T) {
+	ctx := context.Background()
+	t.Run("the name is taken", func(t *testing.T) {
+		f := newFakeCloudflare(t)
+		f.scripts["solo"] = &fakeScript{} // somebody's own Worker: no marker
+		r, _ := f.machine(t, "desk", 5)
+		r.SetCloudToken(ctx, goodToken)
+		if err := r.DeployRelay(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if got := r.State().Relay; got != "https://solo-relay.sub.workers.dev" {
+			t.Errorf("the relay is at %s", got)
+		}
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if len(f.scripts["solo"].bindings) != 0 || f.scripts["solo"].worker != "" {
+			t.Error("another Worker was written over")
+		}
+	})
+	t.Run("an earlier version's relay", func(t *testing.T) {
+		f := newFakeCloudflare(t)
+		old, _ := f.machine(t, "desk", 5)
+		old.SetCloudToken(ctx, goodToken)
+		if err := old.DeployRelay(ctx); err != nil {
+			t.Fatal(err)
+		}
+		// As an earlier version named it.
+		f.mu.Lock()
+		f.scripts["solo-relay-0a1b2c3d4e"] = f.scripts["solo"]
+		delete(f.scripts, "solo")
+		f.mu.Unlock()
+		joiner, _ := f.machine(t, "laptop", 5)
+		joiner.SetCloudToken(ctx, goodToken)
+		if err := joiner.DeployRelay(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if got := joiner.State().Relay; got != "https://solo-relay-0a1b2c3d4e.sub.workers.dev" {
+			t.Errorf("the second machine is at %s", got)
+		}
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if len(f.scripts) != 1 {
+			t.Errorf("%d scripts: a second relay was deployed", len(f.scripts))
+		}
+	})
 }

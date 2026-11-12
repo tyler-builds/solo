@@ -294,3 +294,18 @@ export async function removeTicket(machine: Machine, ticket: Uint8Array): Promis
 }
 
 export const hex = toHex;
+
+// openPairing opens a machine's pairing to devices that hold no code, and closePairing closes it.
+export async function openPairing(machine: Machine, uses = 8, expires = Date.now() / 1000 + 300): Promise<void> {
+	machine.socket.send(ticketFrame(TICKET.open, new Uint8Array(32), expires, uses));
+	await handled(machine);
+}
+
+// closePairing closes the window that ends at a time, or whatever window is open.
+export async function closePairing(machine: Machine, expires = 0): Promise<void> {
+	machine.socket.send(ticketFrame(TICKET.close, new Uint8Array(32), expires));
+	await handled(machine);
+}
+
+// The token of a pairing socket that holds no code.
+export const openPairToken = new Uint8Array([2]);

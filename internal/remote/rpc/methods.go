@@ -3,6 +3,7 @@ package rpc
 import (
 	"context"
 	"encoding/json"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -389,6 +390,7 @@ func init() {
 			for name := range a.Patch {
 				names = append(names, name)
 			}
+			sort.Strings(names) // the audit log names them in one order
 			var applyErr error
 			err = c.h.b.UpdateSettings(func(s *core.Settings) { applyErr = a.Patch.Apply(s) })
 			if err == nil {

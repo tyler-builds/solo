@@ -144,6 +144,27 @@ func (l *Link) Receive() ([]byte, error) {
 	return inflate(msg)
 }
 
+// ReceiveSmall returns the next message, which must be one record of at most max bytes, not
+// compressed. It is for what arrives before the other end is known to be anyone: such a message can't
+// make this end wait for more records, hold a megabyte, or inflate anything.
+func (l *Link) ReceiveSmall(max int) ([]byte, error) {
+	sealed, err := l.conn.Read()
+	if err != nil {
+		return nil, err
+	}
+	rec, err := l.ch.Open(sealed)
+	if err != nil {
+		return nil, err
+	}
+	if len(rec) < 1 || rec[0] != flagFinal {
+		return nil, ErrMalformed
+	}
+	if len(rec)-1 > max {
+		return nil, ErrTooLarge
+	}
+	return rec[1:], nil
+}
+
 // Close closes the connection underneath.
 func (l *Link) Close() error { return l.conn.Close() }
 

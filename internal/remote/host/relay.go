@@ -182,7 +182,13 @@ func (r *Remote) connect(stop chan struct{}, address string, skew *time.Duration
 		r.mu.Unlock()
 		rc.close()
 	}()
-	if p != nil {
+	switch {
+	case p == nil:
+		// Nothing is open here: a window the relay still has from before this machine restarted is shut.
+		rc.openPairing(time.Time{}, false)
+	case p.open:
+		rc.openPairing(p.code.Expires, true)
+	default:
 		rc.ticket(p.code, true) // the relay forgot the code if it lost its memory meanwhile
 	}
 	r.setConn(Online, "")
@@ -308,6 +314,28 @@ func (rc *relayConn) ticket(code secure.PairingCode, add bool) {
 	rc.send(frame)
 }
 
+// openPairing tells the relay to let in, until a time, devices that hold no pairing code, or to stop.
+func (rc *relayConn) openPairing(until time.Time, open bool) {
+	frame := make([]byte, 0, 43)
+	op := byte(4)
+	if open {
+		op = 3
+	}
+	frame = append(frame, frameTicket, op)
+	frame = append(frame, make([]byte, 32)...)
+	var at uint64 // zero, on closing, shuts whatever window is open
+	if !until.IsZero() {
+		at = uint64(until.Unix())
+	}
+	var exp [8]byte
+	for i := 0; i < 8; i++ {
+		exp[7-i] = byte(at >> (8 * i))
+	}
+	frame = append(frame, exp[:]...)
+	frame = append(frame, maxHandshakes)
+	rc.send(frame)
+}
+
 // frame takes one frame from the relay. What the relay says is not trusted: a frame that makes no
 // sense is dropped, and a connection it invents fails its handshake.
 func (rc *relayConn) frame(frame []byte) {
@@ -345,6 +373,8 @@ func (rc *relayConn) frame(frame []byte) {
 			go rc.r.serveDevice(rc, c, secure.ID(body[9:]))
 		case 2:
 			go rc.r.servePairing(rc, c)
+		case 3:
+			go rc.r.serveOpenPairing(rc, c)
 		default:
 			c.Close()
 		}

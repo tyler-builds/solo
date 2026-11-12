@@ -5,7 +5,6 @@ package host
 import (
 	"context"
 	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
@@ -233,11 +232,9 @@ func (r *Remote) DeployRelay(ctx context.Context) error {
 		if bundleErr != nil {
 			return bundleErr
 		}
-		var rnd [5]byte
-		if _, err := rand.Read(rnd[:]); err != nil {
+		if script, err = cf.FreeName(ctx, account, rand.Reader); err != nil {
 			return err
 		}
-		script = cloudflare.ScriptPrefix + hex.EncodeToString(rnd[:])
 		r.busy("Uploading the relay and the web app…")
 		if err := cf.Put(ctx, r.upload(account, script, sub, b, []string{key}, true)); err != nil {
 			return err
