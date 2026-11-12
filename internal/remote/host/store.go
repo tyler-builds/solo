@@ -137,6 +137,7 @@ type saved struct {
 	Relay   string        `json:"relay,omitempty"` // the relay's address, such as "https://solo-x.name.workers.dev"
 	Enabled bool          `json:"enabled,omitempty"`
 	Devices []savedDevice `json:"devices,omitempty"`
+	Cloud   savedCloud    `json:"cloud,omitzero"`
 }
 
 type savedDevice struct {

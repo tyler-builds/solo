@@ -46,13 +46,31 @@ func newMachine(t *testing.T) *machine {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(5 * time.Second)
-	for r.State().Connection != host.Online {
+	for r.State().Connection != host.Online || m.relay.Machines() == 0 {
 		if time.Now().After(deadline) {
 			t.Fatal("the machine didn't reach its relay")
 		}
 		time.Sleep(2 * time.Millisecond)
 	}
 	return m
+}
+
+// offer makes a pairing code and returns its link's fragment, once the relay knows its ticket.
+func (m *machine) offer(t *testing.T) string {
+	t.Helper()
+	p, err := m.remote.StartPairing()
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for m.relay.Tickets() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the relay never got the ticket")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	_, frag, _ := strings.Cut(p.Link, "#")
+	return frag
 }
 
 // storage is a device's storage, which outlives a page.
@@ -109,11 +127,7 @@ func hasText(u *uitest.UI, text string) bool {
 func TestPairThenUse(t *testing.T) {
 	m := newMachine(t)
 	st := &storage{m: map[string]string{}}
-	p, err := m.remote.StartPairing()
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, frag, _ := strings.Cut(p.Link, "#")
+	frag := m.offer(t)
 	s, u := m.page(t, st, frag)
 	u.WaitFor("the question", func() bool { return hasText(u, "Pair this device?") })
 	if got := u.Get("device-name").Value(); got != "Test phone" {
@@ -157,8 +171,7 @@ func TestPairThenUse(t *testing.T) {
 func TestOfflineAndRemoved(t *testing.T) {
 	m := newMachine(t)
 	st := &storage{m: map[string]string{}}
-	p, _ := m.remote.StartPairing()
-	_, frag, _ := strings.Cut(p.Link, "#")
+	frag := m.offer(t)
 	_, u := m.page(t, st, frag)
 	u.WaitFor("the question", func() bool { return u.Has("pair") })
 	u.Click("pair")
@@ -198,8 +211,7 @@ func TestWelcomeAndBadLinks(t *testing.T) {
 	u2.WaitFor("the problem", func() bool { return hasText(u2, "isn't complete") })
 
 	// A code for a machine that isn't there: the relay turns the device away, and the page says what to do.
-	p, _ := m.remote.StartPairing()
-	_, frag, _ := strings.Cut(p.Link, "#")
+	frag := m.offer(t)
 	m.remote.CancelPairing()
 	_, u3 := m.page(t, &storage{m: map[string]string{}}, frag)
 	u3.WaitFor("the question", func() bool { return u3.Has("pair") })
@@ -237,8 +249,7 @@ func TestShots(t *testing.T) {
 	save(u, "web-welcome")
 
 	st := &storage{m: map[string]string{}}
-	p, _ := m.remote.StartPairing()
-	_, frag, _ := strings.Cut(p.Link, "#")
+	frag := m.offer(t)
 	_, u = m.page(t, st, frag)
 	u.WaitFor("the question", func() bool { return u.Has("pair") })
 	save(u, "web-confirm")

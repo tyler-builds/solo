@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/tyler-builds/solo/internal/api"
+	"github.com/tyler-builds/solo/internal/remote/bundle"
 	"github.com/tyler-builds/solo/internal/remote/device"
 	"github.com/tyler-builds/solo/internal/remote/rpc"
 	"github.com/tyler-builds/solo/internal/remote/secure"
@@ -42,8 +43,13 @@ type Config struct {
 	Log  *slog.Logger
 	// Notify tells the person at the machine that something happened, such as a device being paired.
 	Notify func(title, body string)
-	// HTTP reaches the relay; nil uses http.DefaultClient. Tests set it to trust a local certificate.
+	// HTTP reaches the relay and Cloudflare; nil uses http.DefaultClient. Tests set it to trust a local
+	// certificate.
 	HTTP *http.Client
+	// CloudflareAPI is Cloudflare's API ("" for the real one), and Bundle what is deployed there (nil
+	// for what is built into the app); tests set both.
+	CloudflareAPI string
+	Bundle        func() (*bundle.Bundle, error)
 	// Timing, for tests; zero values use the defaults.
 	PairingFor time.Duration // how long a pairing code lasts (5 minutes)
 	FlushEvery time.Duration // rpc.Options.FlushEvery
@@ -90,6 +96,10 @@ type Remote struct {
 	nextSub  int
 	lastSave time.Time
 	closed   bool
+	done     chan struct{} // closed by Close
+
+	hasToken  bool   // a Cloudflare token is kept, or set in the environment
+	cloudBusy string // what a deploy is doing now
 }
 
 // New loads the machine's remote access, and connects to its relay if it is set up and on.
@@ -114,7 +124,7 @@ func New(cfg Config) (*Remote, error) {
 		cfg.HTTP = http.DefaultClient
 	}
 	r := &Remote{cfg: cfg, log: cfg.Log, path: filepath.Join(cfg.Dir, "remote.json"), secrets: cfg.Secrets,
-		conn: Off, subs: map[int]func(){}, random: rand.Read}
+		conn: Off, subs: map[int]func(){}, random: rand.Read, done: make(chan struct{})}
 	var err error
 	if r.saved, err = loadSaved(r.path); err != nil {
 		return nil, err
@@ -152,8 +162,20 @@ func New(cfg Config) (*Remote, error) {
 		},
 		Audit: func(d rpc.Device, method, detail string, err error) { r.audit.request(d, method, detail, err) },
 	})
-	if r.saved.Enabled && r.saved.Relay != "" {
+	// Whether a Cloudflare token is kept is only looked up once remote access is in use: reading the
+	// keyring can ask the user to unlock it, and most starts of Solo have no need.
+	if r.saved.Relay != "" || r.saved.Cloud.Account != "" {
+		if t, err := r.token(); err == nil {
+			r.hasToken = t != ""
+		}
+	} else {
+		r.hasToken = strings.TrimSpace(os.Getenv(tokenEnv)) != ""
+	}
+	if r.saved.Enabled && r.saved.Relay != "" && !r.saved.Cloud.Paused {
 		r.start()
+	}
+	if r.saved.Cloud.Script != "" {
+		go r.watchRelay()
 	}
 	return r, nil
 }
@@ -161,6 +183,9 @@ func New(cfg Config) (*Remote, error) {
 // Close ends remote access for this run.
 func (r *Remote) Close() {
 	r.mu.Lock()
+	if !r.closed {
+		close(r.done)
+	}
 	r.closed = true
 	r.stopLocked()
 	r.mu.Unlock()
@@ -228,7 +253,8 @@ func (r *Remote) State() State {
 	online := r.rpc.Sessions()
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	st := State{Relay: r.saved.Relay, Enabled: r.saved.Enabled, Connection: r.conn, Problem: r.problem, Name: r.cfg.Name}
+	st := State{Relay: r.saved.Relay, Enabled: r.saved.Enabled, Connection: r.conn, Problem: r.problem, Name: r.cfg.Name,
+		Cloud: r.cloudStateLocked()}
 	if r.machine != nil {
 		st.MachineID = r.machine.ID.String()
 	}
@@ -298,7 +324,7 @@ func (r *Remote) SetEnabled(on bool) error {
 	r.stopLocked()
 	r.saved.Enabled = on
 	err := r.saved.write(r.path)
-	if err == nil && on {
+	if err == nil && on && !r.saved.Cloud.Paused {
 		r.start()
 	}
 	r.mu.Unlock()

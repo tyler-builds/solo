@@ -1,0 +1,3 @@
+This folder holds what Solo deploys to Cloudflare: the relay's module (worker.js), the web client (web/)
+and their version (version). scripts/bundle.sh builds them and puts them here; they are not kept in git.
+A build of Solo made without them can use a relay that is already deployed, and can't deploy one.

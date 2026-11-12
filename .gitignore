@@ -2,3 +2,7 @@ bin/
 node_modules/
 dist/
 cmd/solo/winbuild/
+
+# What scripts/bundle.sh builds for the app to embed.
+internal/remote/bundle/files/*
+!internal/remote/bundle/files/README

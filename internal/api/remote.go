@@ -1,6 +1,9 @@
 package api
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 // Remote is a machine's remote access, as its Settings page drives it. The desktop app has one
 // (internal/remote/host); a web page has none.
@@ -19,6 +22,29 @@ type Remote interface {
 	Revoke(deviceID string) error
 	RevokeAll() error
 	SetReadOnly(deviceID string, readOnly bool) error
+
+	// The relay lives in the user's own Cloudflare account. SetCloudToken keeps an API token for it,
+	// DeployRelay puts the relay and the web client there (or joins the relay already there) and
+	// connects to it, and RemoveRelay deletes it. AcceptRelay resumes remote access after a change to
+	// the relay from elsewhere paused it (RemoteCloud.Paused).
+	SetCloudToken(ctx context.Context, token string) error
+	ForgetCloudToken() error
+	DeployRelay(ctx context.Context) error
+	RemoveRelay(ctx context.Context) error
+	AcceptRelay(ctx context.Context) error
+}
+
+// RemoteCloud is where remote access stands with the Cloudflare account.
+type RemoteCloud struct {
+	HasToken bool   // an API token is kept on this machine
+	Account  string // the account's name, once a token was checked
+	Deployed bool   // this machine set up, or joined, a relay there
+	// CanDeploy: this build of Solo has the relay and the web client in it.
+	CanDeploy bool
+	Busy      string // what a deploy is doing now, or ""
+	// Paused: the relay was changed from elsewhere, and remote access waits for the user. Alert says so.
+	Paused bool
+	Alert  string
 }
 
 // RemoteConnection is where the machine stands with its relay.
@@ -47,6 +73,7 @@ type RemoteState struct {
 	Requests []RemoteRequest
 	// SecretsInFiles: there is no OS keyring, so the machine's key is in a file only the user can read.
 	SecretsInFiles bool
+	Cloud          RemoteCloud
 }
 
 // RemoteDevice is a paired device.

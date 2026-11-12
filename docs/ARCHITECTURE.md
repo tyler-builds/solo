@@ -296,6 +296,7 @@ cmd/solo-web/        the web client's main, and its page (TinyGo; scripts/web.sh
 internal/api/        the interface between the UI and the engine; the settings patch
 internal/remote/     remote access: secure (keys, handshakes), wire (records), rpc (requests and
                      state), host (the machine's side), device (a device's side), relaytest
+internal/cloudflare/ deploys the relay and the web client to the user's Cloudflare account
 internal/webclient/  the web client's shell: pairing and connecting, around the app's UI
 internal/webhost/    the browser, as the web client reaches it through its host script
 cmd/solo-localrelay/ the relay and the web client on this machine, for development

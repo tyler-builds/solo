@@ -36,7 +36,12 @@ jobs:
       - name: Test
         run: |
           (cd sidecar && bun install --frozen-lockfile && bun test)
+          (cd relay && bun install --frozen-lockfile && bun run test)
           go test ./...
+
+      # What Solo deploys for remote access, the relay and the web client, built into the app.
+      - name: Relay and web client
+        run: go mod download && ./scripts/bundle.sh
 
       - name: Linux AppImage
         run: VERSION=${{ steps.version.outputs.version }} ./scripts/appimage.sh
