@@ -114,11 +114,16 @@ Raw `SDKMessage`s are also appended to a per-session JSONL file for debugging an
   `allow` tool policy: Bash runs any command (compound commands, `cd`, builds, scripts, git writes).
   Edit and Write aren't offered. By process, not permission, code changes to repositories go to worker
   threads so they get a branch, diff and review.
-- **MCP tools:** `list_repos`, `list_threads`, `get_thread(id)` (status, last summary, files changed,
-  pending question), `read_thread(id, tail)`, `spawn_thread(repo, title, prompt, model?, base?)`,
-  `message_thread(id, text)`, `interrupt_thread(id)`, `get_diff(id)`,
-  `propose_merge(id, summary)` (renders a Merge card; only you can press it), `answer_question(id,
-  answer)`.
+- **MCP tools:** `list_repos`, `list_threads(include_closed?, limit?, days?, repo?)` (open threads,
+  never capped; with `include_closed`, closed ones (merged, discarded, marked done) newest first,
+  capped at the 20 newest from the last 30 days unless `limit` (max 100) or `days` asks for more, with a
+  line counting those left out), `get_thread(id)` (status, last summary, files changed,
+  pending question; for a done thread, what reopening it brings back), `read_thread(id, tail)`,
+  `spawn_thread(repo, title, prompt, model?, base?)`, `message_thread(id, text)`,
+  `interrupt_thread(id)`, `get_diff(id)`, `propose_merge(id, summary)` (renders a Merge card; only
+  you can press it), `answer_question(id, answer)`, `reopen_thread(id)` (Restore from History when
+  the user asks: its kept branch, or a new one from the base branch's head when its work landed, it
+  had none, or it was discarded).
 - **Proactive updates:** when a worker finishes, fails, or asks a question, Go queues a synthetic
   `[thread update]` message. Updates are batched while the orchestrator is busy and delivered when
   it's idle, so it reports without being asked. These render as small status chips, not user bubbles.

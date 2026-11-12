@@ -5,12 +5,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/tyler-builds/solo/internal/forge"
+	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/tyler-builds/solo/internal/agent"
 	"github.com/tyler-builds/solo/internal/core"
+	"github.com/tyler-builds/solo/internal/git"
 	"github.com/tyler-builds/solo/internal/store"
 )
 
@@ -32,10 +35,14 @@ var toolSpecs = []agent.ToolSpec{
 			"folder":{"type":"string","description":"The folder's name or path, as list_repos shows it."}},"required":["folder"]}`),
 	},
 	{
-		Name:        "list_threads",
-		Description: "List worker threads with their short ID, title, repository, status and a one-line summary. By default lists open threads (not merged or discarded).",
+		Name: "list_threads",
+		Description: "List worker threads with their short ID, title, repository, status and a one-line summary. By default lists open threads: not merged, discarded or marked done. " +
+			"With include_closed it adds closed ones, newest first: merged, discarded, and those the user marked done (in Settings › History, which reopen_thread brings back). " +
+			"Closed threads are capped at the 20 newest from the last 30 days unless limit or days ask for more.",
 		InputSchema: schema(`{"type":"object","properties":{
-			"include_closed":{"type":"boolean","description":"Also list merged and discarded threads."},
+			"include_closed":{"type":"boolean","description":"Also list closed threads: merged, discarded and marked done."},
+			"limit":{"type":"integer","description":"With include_closed: at most this many closed threads (default 20, max 100)."},
+			"days":{"type":"integer","description":"With include_closed: closed threads from this many days back (default 30)."},
 			"repo":{"type":"string","description":"Only threads in this repository (name or path)."}}}`),
 		ReadOnly: true,
 	},
@@ -97,6 +104,14 @@ var toolSpecs = []agent.ToolSpec{
 		InputSchema: schema(`{"type":"object","properties":{
 			"id":{"type":"string","description":"Thread ID or short ID."},
 			"answers":{"type":"object","additionalProperties":{"type":"string"}}},"required":["id","answers"]}`),
+	},
+	{
+		Name: "reopen_thread",
+		Description: "Bring a thread the user marked done back to their list, as Settings › History's Restore does: its worktree is recreated and its Claude session resumes, idle. " +
+			"Only when the user asks to bring a done thread back. Its branch comes back with its work if it was kept (work that hadn't landed); " +
+			"one whose work landed, that had none, or that was discarded starts a new branch of the same name from its base branch's current head. " +
+			"Find it with list_threads include_closed.",
+		InputSchema: schema(`{"type":"object","properties":{"id":{"type":"string","description":"Thread ID or short ID."}},"required":["id"]}`),
 	},
 	{
 		Name:        "propose_merge",
@@ -192,6 +207,7 @@ func (o *Orchestrator) handleTool(ctx context.Context, threadID, name string, ra
 		Limit         int               `json:"limit"`
 		MaxChars      int               `json:"max_chars"`
 		IncludeClosed bool              `json:"include_closed"`
+		Days          int               `json:"days"`
 		Answers       map[string]string `json:"answers"`
 		Images        []string          `json:"images"`
 		Repos         []string          `json:"repos"`
@@ -235,7 +251,7 @@ func (o *Orchestrator) handleTool(ctx context.Context, threadID, name string, ra
 			out = fmt.Sprintf("%s is a git repository now, on branch main with a first commit of its files. Threads can work in it as %q.", dir, filepath.Base(dir))
 		}
 	case "list_threads":
-		out, err = o.listThreads(a.Repo, a.IncludeClosed)
+		out, err = o.listThreads(a.Repo, a.IncludeClosed, a.Limit, a.Days)
 	case "get_thread":
 		var v core.ThreadView
 		if v, err = worker(); err == nil {
@@ -305,6 +321,11 @@ func (o *Orchestrator) handleTool(ctx context.Context, threadID, name string, ra
 			} else if err = o.c.AnswerFromOrchestrator(v.ID, qs[0].ToolUseID, a.Answers); err == nil {
 				out = fmt.Sprintf("Answered %s's question.", short(v.ID))
 			}
+		}
+	case "reopen_thread":
+		var v core.ThreadView
+		if v, err = worker(); err == nil {
+			out, err = o.reopen(ctx, v)
 		}
 	case "propose_merge":
 		var v core.ThreadView
@@ -419,7 +440,15 @@ func plainList(dirs []string) string {
 	return b.String()
 }
 
-func (o *Orchestrator) listThreads(repo string, includeClosed bool) (string, error) {
+// Closed threads in list_threads: the newest closedLimit from the last closedDays days, unless the
+// model asks for more, up to maxClosedLimit. Open threads are never capped.
+const (
+	closedLimit    = 20
+	maxClosedLimit = 100
+	closedDays     = 30
+)
+
+func (o *Orchestrator) listThreads(repo string, includeClosed bool, limit, days int) (string, error) {
 	var repoPath string
 	if repo != "" {
 		p, err := o.c.ResolveRepo(repo)
@@ -432,13 +461,25 @@ func (o *Orchestrator) listThreads(repo string, includeClosed bool) (string, err
 		}
 		repoPath = p
 	}
-	var b strings.Builder
-	n := 0
+	var open, closed []core.ThreadView
 	for _, t := range o.c.Threads() {
-		if t.Kind != store.KindWorker || (repoPath != "" && t.RepoPath != repoPath) || (!includeClosed && (core.Finished(t.Status) || !t.DoneAt.IsZero())) {
+		if t.Kind != store.KindWorker || (repoPath != "" && t.RepoPath != repoPath) {
 			continue
 		}
-		n++
+		if isClosed(t) {
+			closed = append(closed, t)
+		} else {
+			open = append(open, t)
+		}
+	}
+	omitted := 0
+	if includeClosed {
+		closed, omitted = recentClosed(closed, limit, days, time.Now())
+	} else {
+		closed = nil
+	}
+	var b strings.Builder
+	for _, t := range append(open, closed...) {
 		fmt.Fprintf(&b, "- %s %q in %s: %s", short(t.ID), t.Title, filepath.Base(t.RepoPath), statusText(t))
 		if t.Summary != "" && (t.Status == core.StatusIdle || t.Status == core.StatusBackground) {
 			fmt.Fprintf(&b, " — %s", clip(oneLine(t.Summary), 160))
@@ -448,10 +489,48 @@ func (o *Orchestrator) listThreads(repo string, includeClosed bool) (string, err
 		}
 		b.WriteByte('\n')
 	}
-	if n == 0 {
-		return "No threads.", nil
+	if len(open)+len(closed) == 0 {
+		b.WriteString("No threads.\n")
+	}
+	if omitted > 0 {
+		fmt.Fprintf(&b, "%d older closed thread(s) not shown; pass a larger limit (up to %d) or days to see them.\n", omitted, maxClosedLimit)
 	}
 	return b.String(), nil
+}
+
+// isClosed reports whether a worker is out of the user's list or finished for good: merged, discarded,
+// or marked done.
+func isClosed(t core.ThreadView) bool { return core.Finished(t.Status) || !t.DoneAt.IsZero() }
+
+// closedAt is when a closed thread closed: when it was marked done, else its last update.
+func closedAt(t core.ThreadView) time.Time {
+	if !t.DoneAt.IsZero() {
+		return t.DoneAt
+	}
+	return t.UpdatedAt
+}
+
+// recentClosed keeps the newest closed threads, newest first: at most limit (closedLimit when not
+// positive, maxClosedLimit at most), closed within days of now (closedDays when not positive). It
+// returns how many it left out.
+func recentClosed(closed []core.ThreadView, limit, days int, now time.Time) ([]core.ThreadView, int) {
+	if limit <= 0 {
+		limit = closedLimit
+	}
+	limit = min(limit, maxClosedLimit)
+	if days <= 0 {
+		days = closedDays
+	}
+	since := now.AddDate(0, 0, -days)
+	closed = slices.Clone(closed)
+	slices.SortStableFunc(closed, func(x, y core.ThreadView) int { return closedAt(y).Compare(closedAt(x)) })
+	n := len(closed)
+	for i, t := range closed {
+		if i == limit || closedAt(t).Before(since) {
+			return closed[:i], n - i
+		}
+	}
+	return closed, 0
 }
 
 func statusText(t core.ThreadView) string {
@@ -474,8 +553,8 @@ func statusText(t core.ThreadView) string {
 	if t.InPlace {
 		s += " (works directly in a folder outside git: its edits are already in the user's files; nothing to review or merge)"
 	}
-	if !t.DoneAt.IsZero() {
-		s += " (the user marked it done)"
+	if !t.DoneAt.IsZero() && t.Status != core.StatusDiscarded {
+		s += " (the user marked it done: it's out of their list, in Settings › History)"
 	}
 	return s + ", updated " + ago(t.UpdatedAt)
 }
@@ -506,6 +585,10 @@ func (o *Orchestrator) describe(ctx context.Context, v core.ThreadView) string {
 	}
 	if v.Error != "" {
 		fmt.Fprintf(&b, "\nError: %s\n", v.Error)
+	}
+	if !v.DoneAt.IsZero() {
+		fmt.Fprintf(&b, "\nClosed %s, so it has no worktree. If the user asks, reopen_thread brings it back: %s\n",
+			ago(v.DoneAt), branchNotes(ctx, v, false))
 	}
 	for _, p := range v.Parts {
 		where := ""
@@ -645,6 +728,81 @@ func (o *Orchestrator) transcript(ctx context.Context, threadID string, limit in
 		return "(empty)\n", nil
 	}
 	return b.String(), nil
+}
+
+// reopen brings a thread the user marked done back to their list, as Settings › History's Restore does,
+// and says what it came back with.
+func (o *Orchestrator) reopen(ctx context.Context, v core.ThreadView) (string, error) {
+	if v.DoneAt.IsZero() {
+		return "", fmt.Errorf("%q isn't done: it's still in the user's list (%s), so there is nothing to reopen", v.Title, v.Status)
+	}
+	for _, p := range v.Parts {
+		if _, err := os.Stat(p.Repo); err != nil {
+			return "", fmt.Errorf("can't reopen %q: its folder %s is gone", v.Title, p.Repo)
+		}
+	}
+	notes := branchNotes(ctx, v, true) // before Restore makes the branches it lacked
+	o.mu.Lock()
+	o.reopening[v.ID] = true // Solo knows; onChange needn't tell it
+	o.mu.Unlock()
+	err := o.c.Restore(ctx, v.ID)
+	o.mu.Lock()
+	delete(o.reopening, v.ID)
+	o.mu.Unlock()
+	if err != nil {
+		return "", fmt.Errorf("couldn't reopen %q: %w", v.Title, err)
+	}
+	return fmt.Sprintf("Reopened %s %q: it's back in the user's list, idle, with its worktree and Claude session. %s "+
+		"It does nothing until you message_thread it.", short(v.ID), v.Title, notes), nil
+}
+
+// branchNotes says what each of a done thread's repositories comes back with when it reopens: the
+// branch it kept, with its work, or a new branch from its base branch's current head when Done or
+// Discard deleted it. reopened words it for after the fact.
+func branchNotes(ctx context.Context, v core.ThreadView, reopened bool) string {
+	var notes []string
+	for _, p := range v.Parts {
+		where := ""
+		if v.MultiRepo() {
+			where = p.Name + ": "
+		}
+		var n string
+		switch {
+		case p.InPlace:
+			n = fmt.Sprintf("it works directly in %s, which isn't in git, as before.", p.Repo)
+		case p.Branch == "":
+			n = "it gets a new worktree from " + p.BaseBranch + "."
+		case localBranch(ctx, p.Repo, p.Branch):
+			n = fmt.Sprintf("its branch %s was kept with its work, so it picks up where it left off.", p.Branch)
+			if reopened {
+				n = fmt.Sprintf("it is on its kept branch %s, with its work, and picks up where it left off.", p.Branch)
+			}
+		default:
+			why := "it had no work left to land when it was marked done"
+			switch v.Status {
+			case core.StatusMerged:
+				why = "its work had landed"
+			case core.StatusDiscarded:
+				why = "it was discarded, which deleted its work"
+			}
+			n = fmt.Sprintf("its branch %s is gone (%s), so it starts a new branch %s from %s's current head.", p.Branch, why, p.Branch, p.BaseBranch)
+			if reopened {
+				n = fmt.Sprintf("its branch %s was gone (%s), so it is on a new branch %s from %s's current head, without its earlier changes.", p.Branch, why, p.Branch, p.BaseBranch)
+			}
+		}
+		notes = append(notes, where+n)
+	}
+	if len(notes) == 0 {
+		return ""
+	}
+	notes[0] = strings.ToUpper(notes[0][:1]) + notes[0][1:]
+	return strings.Join(notes, " ")
+}
+
+// localBranch reports whether the repository has the branch locally, which is what Restore checks out.
+func localBranch(ctx context.Context, repo, branch string) bool {
+	_, err := git.Run(ctx, repo, "rev-parse", "--verify", "-q", "refs/heads/"+branch)
+	return err == nil
 }
 
 func ago(t time.Time) string {
