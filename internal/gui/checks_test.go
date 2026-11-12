@@ -76,7 +76,7 @@ func setChecks(a *App, f *fakeBackend, u *uitest.UI, id string, counts forge.Che
 		}
 	}
 	f.mu.Unlock()
-	a.threads.Set(f.Threads())
+	a.setThreads(f.Threads())
 	u.Settle()
 }
 
@@ -187,11 +187,15 @@ func TestThreadHeaderChecksWhenNone(t *testing.T) {
 	f.mu.Lock()
 	for i := range f.threads {
 		if f.threads[i].ID == checksPassedID {
-			f.threads[i].PR.Checks = forge.ChecksNone
+			pr := *f.threads[i].PR // a new value, as core gives each snapshot its own
+			pr.Checks = forge.ChecksNone
+			f.threads[i].PR = &pr
+			f.threads[i].Parts = slices.Clone(f.threads[i].Parts)
+			f.threads[i].Parts[0].PR = &pr
 		}
 	}
 	f.mu.Unlock()
-	a.threads.Set(f.Threads())
+	a.setThreads(f.Threads())
 	u.Settle()
 	if u.Has("thread-checks-" + checksPassedID) {
 		t.Error("a pull request without checks shows checks in the header")
