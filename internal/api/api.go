@@ -60,6 +60,11 @@ type Backend interface {
 	MergeRepo(ctx context.Context, threadID, repo string) (string, error)
 	SetThreadModel(ctx context.Context, threadID, model, effort string) error
 	SearchMessages(ctx context.Context, query string, limit int) ([]core.SearchHit, error)
+	// Skills lists the skills and commands a conversation can invoke with "/"; with threadID "", the
+	// skills Settings offers for pull request text (see core.Core.Skills).
+	Skills(ctx context.Context, threadID string) ([]core.Skill, error)
+	// SearchPaths finds files and folders in a thread's working folder, for an "@" mention.
+	SearchPaths(ctx context.Context, threadID, query string, limit int) ([]core.PathHit, error)
 	Discard(ctx context.Context, threadID string) error
 	Done(ctx context.Context, threadID string) error
 	Restore(ctx context.Context, threadID string) error

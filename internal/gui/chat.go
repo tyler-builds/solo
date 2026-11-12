@@ -1566,6 +1566,7 @@ func (a *App) composer(ctx *ui.Context, v core.ThreadView, key, scope, placehold
 			draft = a.orchDraft // the pinned question folds while the user writes to Solo
 			images = a.orchImages
 		}
+		var kit mentionKit // the "/" and "@" lists, made below
 		submit := func() {
 			text, imgs, qs := strings.TrimSpace(draft.Peek()), images.Peek(), quotes.Peek()
 			if text == "" && len(imgs) == 0 && len(qs) == 0 {
@@ -1573,6 +1574,7 @@ func (a *App) composer(ctx *ui.Context, v core.ThreadView, key, scope, placehold
 			}
 			text = quoteMessage(qs, text)
 			draft.Set("")
+			kit.sent()
 			images.Set(nil)
 			quotes.Set(nil)
 			a.listHandle(scope).ScrollToEnd()
@@ -1686,6 +1688,22 @@ func (a *App) composer(ctx *ui.Context, v core.ThreadView, key, scope, placehold
 						})
 				}))
 		actions = actions.Child(sendBtn)
+		// The "/" and "@" lists open over the box, by the caret. Their place is worked out from about how
+		// wide the box and its text are.
+		boxW := min(a.chatWidth(ctx)-2*gutter(ctx), chatMaxWidth)
+		if key != "orch-draft" {
+			boxW = a.panelWidth(ctx) - 2*space4
+		}
+		areaW, below := boxW-space3-space2-2, float32(space2+space1+1)
+		if under {
+			below += 26 + space1 // the buttons' row, under the text
+		} else {
+			areaW -= space2 + 2*28 + space1 // the attach and send buttons
+			if v.IsWorker && !core.Finished(v.Status) {
+				areaW -= 150 // the model picker
+			}
+		}
+		kit = a.mentions(ctx, v, key, draft, focus, areaW, boxW, below)
 		// Markdown shows formatted as it is typed; its syntax shows where the caret is.
 		marks := markdown.EditMarks(markdown.EditStyle{
 			Syntax: ui.Highlight{Color: t.TextSubtle},
@@ -1703,7 +1721,11 @@ func (a *App) composer(ctx *ui.Context, v core.ThreadView, key, scope, placehold
 					return []string{p}, nil
 				})
 			}).
+			OnChange(kit.onChange).
 			OnKeyDown(func(e *ui.KeyEvent) {
+				if kit.onKey(e) {
+					return
+				}
 				// A phone's keyboard has no Shift+Enter, so Enter makes a new line there, and the
 				// button sends.
 				if e.Key == input.KeyEnter && e.Mods&input.ModShift == 0 && !a.Touch {
@@ -1714,7 +1736,24 @@ func (a *App) composer(ctx *ui.Context, v core.ThreadView, key, scope, placehold
 		box := ui.Div().Column().Justify(ui.Center).PaddingLeft(space3).PaddingRight(space2).PaddingY(space2).
 			MinHeight(ui.Px(52)).Radius(radiusXL).Border(1, t.BorderStrong).Background(t.Surface).
 			FocusWithin(ui.Style{BorderColor: t.TextSubtle}).
-			OnDrop(ui.Drop(func(f ui.Files, _ *ui.DropEvent) { importFiles(f) })).
+			OnDrop(ui.Drop(func(f ui.Files, _ *ui.DropEvent) {
+				// Images are attached; other files and folders are mentioned, as "@path".
+				var imgs, mentions []string
+				for _, p := range f {
+					if isImageFile(p) {
+						imgs = append(imgs, p)
+					} else {
+						mentions = append(mentions, dropMention(v, p))
+					}
+				}
+				if len(imgs) > 0 {
+					importFiles(imgs)
+				}
+				if len(mentions) > 0 {
+					kit.insert(strings.Join(mentions, " ") + " ")
+				}
+			})).
+			OnClickOutside(kit.close).
 			Child(a.quoteStrip(ctx, key, id, quotes.Get()))
 		// The quotes and thumbnails go above the text, so the rows are keyed: unkeyed, the text's row
 		// would take a new identity when they appear, and the text area would be rebuilt without focus.
@@ -1729,14 +1768,17 @@ func (a *App) composer(ctx *ui.Context, v core.ThreadView, key, scope, placehold
 			}
 			box = box.Child(strip)
 		}
+		// A press in the text moves its caret, which the lists then no longer know.
 		if under {
-			return box.Child(ui.Div().Key(key + "-row").Column().Gap(space1).
-				Child(ui.Div().Column().MinWidth(ui.Px(0)).PaddingY(space1).Child(area)).
+			box = box.Child(ui.Div().Key(key + "-row").Column().Gap(space1).
+				Child(ui.Div().Column().MinWidth(ui.Px(0)).PaddingY(space1).OnMouseDown(kit.onPress).Child(area)).
+				Child(actions))
+		} else {
+			box = box.Child(ui.Div().Key(key + "-row").Row().Align(ui.End).Gap(space2).
+				Child(ui.Div().Column().Grow(1).MinWidth(ui.Px(0)).PaddingY(space1).OnMouseDown(kit.onPress).Child(area)).
 				Child(actions))
 		}
-		return box.Child(ui.Div().Key(key + "-row").Row().Align(ui.End).Gap(space2).
-			Child(ui.Div().Column().Grow(1).MinWidth(ui.Px(0)).PaddingY(space1).Child(area)).
-			Child(actions))
+		return box.Child(kit.popup)
 	})
 }
 

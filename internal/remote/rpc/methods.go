@@ -75,6 +75,11 @@ type (
 		Query string `json:"query"`
 		Limit int    `json:"limit"`
 	}
+	pathParams struct {
+		Thread string `json:"thread"`
+		Query  string `json:"query"`
+		Limit  int    `json:"limit"`
+	}
 	diffResult struct {
 		Diff      string `json:"diff"`
 		Truncated bool   `json:"truncated,omitempty"`
@@ -367,6 +372,37 @@ func init() {
 			hits, err := c.h.b.SearchMessages(ctx, a.Query, min(max(a.Limit, 1), maxHits))
 			if hits == nil {
 				hits = []core.SearchHit{}
+			}
+			return hits, nil, "", err
+		}},
+		"skills": {run: func(ctx context.Context, c *conn, p json.RawMessage, _ []byte) (any, []byte, string, error) {
+			a, err := decode[threadParams](p)
+			if err == nil && a.Thread != "" {
+				err = checkID("thread", a.Thread)
+			}
+			if err != nil {
+				return nil, nil, "", err
+			}
+			skills, err := c.h.b.Skills(ctx, a.Thread)
+			if skills == nil {
+				skills = []core.Skill{}
+			}
+			return skills, nil, "", err
+		}},
+		"searchPaths": {run: func(ctx context.Context, c *conn, p json.RawMessage, _ []byte) (any, []byte, string, error) {
+			a, err := decode[pathParams](p)
+			if err == nil {
+				err = checkID("thread", a.Thread)
+			}
+			if err != nil {
+				return nil, nil, "", err
+			}
+			if len(a.Query) > maxQuery {
+				return nil, nil, "", invalid("the search is too long")
+			}
+			hits, err := c.h.b.SearchPaths(ctx, a.Thread, a.Query, min(max(a.Limit, 1), core.MaxPathHits))
+			if hits == nil {
+				hits = []core.PathHit{}
 			}
 			return hits, nil, "", err
 		}},

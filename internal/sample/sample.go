@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -347,6 +348,33 @@ func (b *Backend) SetThreadModel(context.Context, string, string, string) error 
 func (b *Backend) SearchMessages(context.Context, string, int) ([]core.SearchHit, error) {
 	return nil, nil
 }
+
+// sampleSkills are the skills and commands the sample offers after "/".
+var sampleSkills = []core.Skill{
+	{Name: "review", Description: "Review the current branch for bugs and missing tests.", Source: "Personal"},
+	{Name: "release-notes", Description: "Write release notes from the merged pull requests.", Command: true, Source: "Project"},
+	{Name: "frontend:design", Description: "Build distinctive, production-grade interfaces.", Source: "Plugin frontend"},
+}
+
+func (b *Backend) Skills(context.Context, string) ([]core.Skill, error) {
+	return slices.Clone(sampleSkills), nil
+}
+
+// samplePaths are the files a sample thread's folder holds, for "@".
+var samplePaths = []core.PathHit{{Path: "cmd", Dir: true}, {Path: "cmd/api/main.go"}, {Path: "internal", Dir: true},
+	{Path: "internal/auth", Dir: true}, {Path: "internal/auth/token.go"}, {Path: "internal/auth/token_test.go"},
+	{Path: "README.md"}, {Path: "go.mod"}}
+
+func (b *Backend) SearchPaths(_ context.Context, _ string, query string, limit int) ([]core.PathHit, error) {
+	var out []core.PathHit
+	for _, p := range samplePaths {
+		if _, ok := core.MatchScore(query, p.Path); ok && len(out) < limit && (query != "" || !strings.Contains(p.Path, "/")) {
+			out = append(out, p)
+		}
+	}
+	return out, nil
+}
+
 func (b *Backend) Discard(context.Context, string) error { return errSample }
 func (b *Backend) Done(context.Context, string) error    { return errSample }
 func (b *Backend) Restore(context.Context, string) error { return errSample }

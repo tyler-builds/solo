@@ -8,6 +8,7 @@ package core
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -314,6 +315,9 @@ type Settings struct {
 	PRTitleRules       string `json:"prTitleRules,omitempty"`
 	PRDescriptionRules string `json:"prDescriptionRules,omitempty"`
 	SkipPRDescription  bool   `json:"skipPRDescription,omitempty"`
+	// PRSkills name Claude Code skills (see Skill) whose instructions the PR text model follows too,
+	// with the rules above. None by default.
+	PRSkills []string `json:"prSkills,omitempty"`
 	// PRRules are the rules for titles and descriptions together, from before they were split. They
 	// are only read: normalize moves them to both PRTitleRules and PRDescriptionRules.
 	PRRules string `json:"prRules,omitempty"`
@@ -360,6 +364,18 @@ func (s *Settings) normalize() {
 		s.PRTitleRules, s.PRDescriptionRules = r, r
 	}
 	s.PRRules = ""
+	s.PRSkills = cleanSkillNames(s.PRSkills)
+}
+
+// cleanSkillNames trims names of skills and drops empty and repeated ones.
+func cleanSkillNames(names []string) []string {
+	var out []string
+	for _, n := range names {
+		if n = strings.TrimSpace(n); n != "" && !slices.Contains(out, n) {
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
 // BranchRulesFor returns the branch naming rules for a repository.

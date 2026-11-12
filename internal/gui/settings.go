@@ -375,6 +375,7 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 		prTitleRules := ui.Local(ctx, "pr-title-rules", initial.PRTitleRules)
 		prDescRules := ui.Local(ctx, "pr-desc-rules", initial.PRDescriptionRules)
 		prDescribe := ui.Local(ctx, "pr-describe", !initial.SkipPRDescription)
+		prSkills := ui.Local(ctx, "pr-skills", slices.Clone(initial.PRSkills))
 		editorCmd := ui.Local(ctx, "editor-cmd", initial.EditorCommand)
 		terminalCmd := ui.Local(ctx, "terminal-cmd", initial.TerminalCommand)
 		notifications := ui.Local(ctx, "notifications", !initial.NoNotifications)
@@ -399,6 +400,10 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 			s.AutoMerge, s.MergeMethod, s.OnChecksFail = autoMerge.Get(), mergeMethod.Get(), onFail.Get()
 			s.PRModel, s.PREffort, s.SkipPRDescription = prModel.Get(), prEffort.Get(), !prDescribe.Get()
 			s.PRTitleRules, s.PRDescriptionRules = strings.TrimSpace(prTitleRules.Get()), strings.TrimSpace(prDescRules.Get())
+			s.PRSkills = slices.Clone(prSkills.Get())
+			if len(s.PRSkills) == 0 {
+				s.PRSkills = nil
+			}
 		}
 		saver := ui.Local(ctx, "saver", &settingsSaver{last: initial}).Peek()
 		want := initial
@@ -438,6 +443,7 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 				s.AutoMerge, s.MergeMethod, s.OnChecksFail = snap.AutoMerge, snap.MergeMethod, snap.OnChecksFail
 				s.PRModel, s.PREffort, s.SkipPRDescription = snap.PRModel, snap.PREffort, snap.SkipPRDescription
 				s.PRTitleRules, s.PRDescriptionRules = snap.PRTitleRules, snap.PRDescriptionRules
+				s.PRSkills = snap.PRSkills
 			}
 			if saver.timer != nil {
 				saver.timer.Stop()
@@ -661,6 +667,8 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 					ui.TextArea(prTitleRules).Placeholder("For example: Conventional Commit style with the ticket, like feat(auth): OW-123 refresh tokens before they expire. Under 70 characters.").
 						Label("Pull request title rules").MinRows(1).MaxHeight(ui.Px(140)).Width(ui.Full).Key("pr-title-rules")),
 				prDescBlock,
+				settingBlock(ctx, "Skills to follow", "Claude Code skills whose instructions the model follows too, with the rules above. It can't run tools, so a skill's scripts and other files aren't used.",
+					ui.Component(func(ctx *ui.Context) ui.Element { return a.prSkillsPicker(ctx, prSkills) }).Key("pr-skills")),
 				settingRow(ctx, "Model", "Applies the rules to the thread's commits, changes and summary.", helperPickers("Pull request text", prModel, prEffort))),
 			settingsSection(ctx, "Merging", "", nil,
 				settingRow(ctx, "Auto-merge", "Merge once required checks and reviews pass, with the forge's auto-merge.", ui.Switch("Auto-merge", autoMerge)),
