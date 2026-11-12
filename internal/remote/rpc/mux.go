@@ -113,6 +113,11 @@ type session struct {
 	closing sync.Once
 
 	heard atomic.Int64 // when a message last arrived, in Unix nanoseconds
+
+	// pace is the wait after each part of a large envelope; zero sends as fast as the other end
+	// acknowledges. A device sets it: the relay ends a device's connection that sends frames faster
+	// than it allows (50 a second after a burst of 200), and a large image is a few hundred of them.
+	pace time.Duration
 }
 
 type inbound struct {
@@ -195,6 +200,13 @@ func (s *session) send(e Envelope) error {
 			return err
 		}
 		data = data[n:]
+		if s.pace > 0 && len(data) > 0 {
+			select {
+			case <-time.After(s.pace):
+			case <-s.done:
+				return s.failure()
+			}
+		}
 	}
 	return nil
 }

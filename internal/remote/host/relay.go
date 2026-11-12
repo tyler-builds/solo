@@ -135,7 +135,7 @@ func (r *Remote) connect(stop chan struct{}, address string, skew *time.Duration
 		}
 	}()
 	dialCtx, dialDone := context.WithTimeout(ctx, 20*time.Second)
-	ws, resp, err := websocket.Dial(dialCtx, target, &websocket.DialOptions{
+	ws, resp, err := websocket.Dial(dialCtx, target, &websocket.DialOptions{HTTPClient: r.cfg.HTTP,
 		Subprotocols: []string{device.Subprotocol, base64.RawURLEncoding.EncodeToString(token)}})
 	dialDone()
 	if err != nil {
@@ -144,7 +144,7 @@ func (r *Remote) connect(stop chan struct{}, address string, skew *time.Duration
 			case http.StatusUnauthorized:
 				// The token's time was off by more than the relay allows: ask the relay the time, once.
 				if *skew == 0 {
-					if d, ok := relayClock(ctx, address); ok && (d > 30*time.Second || d < -30*time.Second) {
+					if d, ok := relayClock(ctx, r.cfg.HTTP, address); ok && (d > 30*time.Second || d < -30*time.Second) {
 						*skew = d
 						return "", false, true
 					}
@@ -195,14 +195,14 @@ func (r *Remote) connect(stop chan struct{}, address string, skew *time.Duration
 }
 
 // relayClock asks the relay the time, and returns its clock minus this machine's.
-func relayClock(ctx context.Context, address string) (time.Duration, bool) {
+func relayClock(ctx context.Context, client *http.Client, address string) (time.Duration, bool) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, address+"/v1/info", nil)
 	if err != nil {
 		return 0, false
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return 0, false
 	}

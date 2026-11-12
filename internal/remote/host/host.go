@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -41,6 +42,8 @@ type Config struct {
 	Log  *slog.Logger
 	// Notify tells the person at the machine that something happened, such as a device being paired.
 	Notify func(title, body string)
+	// HTTP reaches the relay; nil uses http.DefaultClient. Tests set it to trust a local certificate.
+	HTTP *http.Client
 	// Timing, for tests; zero values use the defaults.
 	PairingFor time.Duration // how long a pairing code lasts (5 minutes)
 	FlushEvery time.Duration // rpc.Options.FlushEvery
@@ -106,6 +109,9 @@ func New(cfg Config) (*Remote, error) {
 	}
 	if cfg.Retry <= 0 {
 		cfg.Retry = time.Second
+	}
+	if cfg.HTTP == nil {
+		cfg.HTTP = http.DefaultClient
 	}
 	r := &Remote{cfg: cfg, log: cfg.Log, path: filepath.Join(cfg.Dir, "remote.json"), secrets: cfg.Secrets,
 		conn: Off, subs: map[int]func(){}, random: rand.Read}
