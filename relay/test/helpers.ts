@@ -19,11 +19,17 @@ export interface Signer {
 	public: Uint8Array;
 }
 
-// The key HOST_KEYS allows. One key signs for every machine of the tests: the relay does not tie a
-// machine's ID to its key.
+// A key HOST_KEYS allows. It signs for every machine of the tests unless a test says otherwise: a
+// machine is known to the relay by its key and its ID together, so one key may have many.
 export const listed: Signer = {
 	key: await crypto.subtle.importKey("pkcs8", fromBase64Url(env.TEST_KEY)!, "Ed25519", false, ["sign"]),
 	public: parseHostKeys(env.HOST_KEYS)[1]!,
+};
+
+// Another key HOST_KEYS allows: another machine of the same user.
+export const otherListed: Signer = {
+	key: await crypto.subtle.importKey("pkcs8", fromBase64Url(env.TEST_KEY_2)!, "Ed25519", false, ["sign"]),
+	public: parseHostKeys(env.HOST_KEYS)[2]!,
 };
 
 // unlisted makes a key that HOST_KEYS does not have.
@@ -194,7 +200,7 @@ afterEach(async () => {
 	throw new Error("sockets were left open in the relay");
 });
 
-async function accepted(response: Response): Promise<Socket> {
+export async function accepted(response: Response): Promise<Socket> {
 	expect(response.status).toBe(101);
 	expect(response.headers.get("Sec-WebSocket-Protocol")).toBe(SUBPROTOCOL);
 	return new Socket(response.webSocket!);
@@ -203,17 +209,19 @@ async function accepted(response: Response): Promise<Socket> {
 // Machine is a machine's socket and its ID.
 export interface Machine {
 	id: Uint8Array;
+	// The key it connected under.
+	signer: Signer;
 	socket: Socket;
 	// The usage frame the relay sent when the machine connected.
 	usage: { day: string; frames: number };
 }
 
 // connectMachine connects a machine, with a new ID unless one is given.
-export async function connectMachine(id: Uint8Array = random(16)): Promise<Machine> {
-	const socket = await accepted(await upgrade("/v1/machine", await machineAuth(id)));
+export async function connectMachine(id: Uint8Array = random(16), signer: Signer = listed): Promise<Machine> {
+	const socket = await accepted(await upgrade("/v1/machine", await machineAuth(id, { signer })));
 	const first = await socket.frame();
 	expect(first[0]).toBe(FRAME.usage);
-	return { id, socket, usage: JSON.parse(new TextDecoder().decode(first.subarray(1))) };
+	return { id, signer, socket, usage: JSON.parse(new TextDecoder().decode(first.subarray(1))) };
 }
 
 export async function connectDevice(machineId: Uint8Array, deviceId: Uint8Array = random(16)): Promise<Socket> {
@@ -258,7 +266,7 @@ function ticketFrame(op: number, hash: Uint8Array, expires = 0, uses = 0): Uint8
 export async function handled(machine: Machine): Promise<void> {
 	const marker = toHex(random(32));
 	await runInDurableObject(relay(), (_, state) => {
-		state.storage.sql.exec("INSERT INTO tickets (hash, machine, expires, uses) VALUES (?, ?, ?, 1)", marker, toHex(machine.id), Date.now());
+		state.storage.sql.exec("INSERT INTO tickets (hash, machine, expires, uses) VALUES (?, ?, ?, 1)", marker, `${toHex(machine.signer.public)}:${toHex(machine.id)}`, Date.now());
 	});
 	machine.socket.send(ticketFrame(TICKET.remove, fromHex(marker, 32)!));
 	for (let i = 0; i < 300; i++) {

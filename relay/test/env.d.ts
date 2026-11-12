@@ -7,6 +7,8 @@ declare global {
 		interface Env extends RelayEnv {
 			// The private half, as PKCS #8 in base64url, of the second key that HOST_KEYS allows.
 			TEST_KEY: string;
+			// And of the third.
+			TEST_KEY_2: string;
 		}
 		interface GlobalProps {
 			mainModule: typeof import("../src/index");

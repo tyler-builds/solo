@@ -140,11 +140,10 @@ func TestPairThenUse(t *testing.T) {
 		t.Fatalf("digits shown: %q", digits)
 	}
 	u.WaitFor("the request at the machine", func() bool { return len(m.remote.State().Requests) == 1 })
-	if name := m.remote.State().Requests[0].Name; name != "Test phone" {
-		t.Errorf("the machine was told %q", name)
-	}
-	if _, err := m.remote.Approve(digits, false); err != nil {
+	if d, err := m.remote.Approve(digits, false); err != nil {
 		t.Fatal(err)
+	} else if d.Name != "Test phone" {
+		t.Errorf("the machine was told %q", d.Name)
 	}
 	u.WaitFor("the machine's UI", func() bool { return u.Has("open-drawer") })
 	u.Click("open-drawer")

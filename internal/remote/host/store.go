@@ -100,7 +100,19 @@ func (m MemSecrets) InFiles() bool                   { return false }
 // writePrivate writes a file only the user can read, whole or not at all.
 func writePrivate(path string, data []byte) error {
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+	os.Remove(tmp) // one left by a crash may have another mode
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err = f.Write(data); err == nil {
+		err = f.Sync() // a removed device must stay removed over a power cut
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		os.Remove(tmp)
 		return err
 	}
 	return os.Rename(tmp, path)

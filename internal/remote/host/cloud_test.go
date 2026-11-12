@@ -38,6 +38,7 @@ type fakeCloudflare struct {
 	mu       sync.Mutex
 	scripts  map[string]*fakeScript
 	requests []string
+	refuse   bool // every request is refused, as with a token that was revoked
 }
 
 type fakeScript struct {
@@ -48,6 +49,7 @@ type fakeScript struct {
 	migrated  int
 	published bool
 	versions  []string
+	active    string // the version served; "" for the newest
 }
 
 func newFakeCloudflare(t *testing.T) *fakeCloudflare {
@@ -109,7 +111,7 @@ func (f *fakeCloudflare) serve(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.requests = append(f.requests, r.Method+" "+r.URL.Path)
-	if auth != goodToken && !(strings.HasPrefix(auth, "session-") && p == "/assets/upload") {
+	if f.refuse || auth != goodToken && !(strings.HasPrefix(auth, "session-") && p == "/assets/upload") {
 		answer(403, nil, "Authentication error")
 		return
 	}
@@ -193,6 +195,12 @@ func (f *fakeCloudflare) serve(w http.ResponseWriter, r *http.Request) {
 			s.versions = append(s.versions, fmt.Sprintf("v%d-%s", len(s.versions)+1, name))
 			f.apply(s)
 			answer(200, nil, "")
+		case rest == "deployments":
+			active := s.active
+			if active == "" && len(s.versions) > 0 {
+				active = s.versions[len(s.versions)-1]
+			}
+			answer(200, map[string]any{"deployments": []map[string]any{{"versions": []map[string]any{{"version_id": active, "percentage": 100}}}}}, "")
 		case rest == "subdomain":
 			s.published = true
 			answer(200, nil, "")
@@ -361,16 +369,57 @@ func TestDeployAndJoin(t *testing.T) {
 	if err := first.CheckRelay(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if st := first.State(); !st.Cloud.Paused || st.Connection != Off || st.Cloud.Alert == "" {
+	if st := first.State(); !st.Cloud.Paused || st.Connection != Off || st.Cloud.Alert == "" || len(st.Cloud.Changes) != 1 {
 		t.Fatalf("after a change from elsewhere: %+v", st)
 	}
-	if err := first.AcceptRelay(ctx); err != nil {
+	// While it is paused nothing gets it going again but the user's answer: not turning it on, not
+	// entering the relay's address again, not setting it up again, not a restart.
+	address := first.State().Relay
+	first.SetEnabled(true)
+	first.SetRelay(address)
+	if err := first.DeployRelay(ctx); err == nil {
+		t.Error("setting up again got round the pause")
+	}
+	time.Sleep(30 * time.Millisecond)
+	if st := first.State(); !st.Cloud.Paused || st.Connection != Off {
+		t.Fatalf("the pause was got round: %+v", st)
+	}
+	if err := first.AcceptRelay(ctx, false); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, "the first machine to resume", func() bool { return first.State().Connection == Online })
 	if err := first.CheckRelay(ctx); err != nil || first.State().Cloud.Paused {
 		t.Errorf("a check after accepting paused again: %v", err)
 	}
+
+	// A relay switched back to an earlier upload, with no new one, is a change too.
+	f.mu.Lock()
+	s.active = s.versions[0]
+	f.mu.Unlock()
+	if err := first.CheckRelay(ctx); err != nil || !first.State().Cloud.Paused {
+		t.Errorf("a rollback wasn't noticed: %v", err)
+	}
+	f.mu.Lock()
+	s.active = ""
+	f.mu.Unlock()
+	// Resuming with the devices removed leaves none.
+	if err := first.AcceptRelay(ctx, true); err != nil || len(first.State().Devices) != 0 {
+		t.Fatalf("resuming without the devices: %v", err)
+	}
+	// A token Cloudflare no longer takes leaves the relay unchecked, which pauses it as well.
+	f.mu.Lock()
+	f.refuse = true
+	f.mu.Unlock()
+	if err := first.CheckRelay(ctx); err != nil || !first.State().Cloud.Paused {
+		t.Errorf("a refused token didn't pause: %v", err)
+	}
+	f.mu.Lock()
+	f.refuse = false
+	f.mu.Unlock()
+	if err := first.AcceptRelay(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the first machine to resume again", func() bool { return first.State().Connection == Online })
 
 	// A third machine with a newer bundle replaces the code and the web client, and keeps the keys.
 	third, _ := f.machine(t, "tower", 9)
@@ -407,7 +456,7 @@ func TestDeployAndJoin(t *testing.T) {
 	if err := first.CheckRelay(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if st := first.State(); st.Relay != "" || st.Cloud.Deployed {
+	if st := first.State(); st.Relay != "" || st.Cloud.Deployed || st.Cloud.Alert == "" || st.Cloud.Paused {
 		t.Errorf("the first machine after the relay was removed elsewhere: %+v", st)
 	}
 

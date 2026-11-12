@@ -34,12 +34,25 @@ const (
 	maxSessionLimit = 10_000_000
 )
 
-// desktopOnly are the settings that name programs Solo runs. Changing one remotely would run a program
-// of the sender's choosing on the machine, so they are set at the machine only.
-var desktopOnly = map[string]bool{"claudePath": true, "editorCommand": true, "terminalCommand": true}
+// remote says, for every setting by its JSON name, whether a remote device may change it. The ones it
+// may not are the settings that name programs Solo runs: changing one remotely would run a program of
+// the sender's choosing on the machine, so they are set at the machine only. A setting that is not
+// listed here can't be changed remotely either, and a test fails until it is: a new setting is never
+// remote by default.
+var remote = map[string]bool{
+	"claudePath":      false,
+	"editorCommand":   false,
+	"terminalCommand": false,
+
+	"folders": true, "scanDepth": true, "orchestratorModel": true, "workerModel": true, "showCosts": true,
+	"noNotifications": true, "noResumeAfterRestart": true, "soloSessionTokens": true, "orchestratorEffort": true,
+	"workerEffort": true, "namingModel": true, "namingEffort": true, "branchRules": true, "repoBranchRules": true,
+	"prModel": true, "prEffort": true, "prRules": true, "skipPRDescription": true, "autoMerge": true,
+	"mergeMethod": true, "onChecksFail": true,
+}
 
 // DesktopOnly reports whether the setting with this JSON name can be changed at the machine only.
-func DesktopOnly(name string) bool { return desktopOnly[name] }
+func DesktopOnly(name string) bool { return !remote[name] }
 
 // settingFields maps each setting's JSON name to its field's index.
 var settingFields = func() map[string]int {
@@ -133,7 +146,7 @@ func (p SettingsPatch) CheckRemote(isDir func(path string) bool) error {
 	size := 0
 	for name, raw := range p {
 		size += len(name) + len(raw)
-		if desktopOnly[name] {
+		if _, known := settingFields[name]; known && !remote[name] {
 			return fmt.Errorf("%q can be changed at the machine only", name)
 		}
 	}

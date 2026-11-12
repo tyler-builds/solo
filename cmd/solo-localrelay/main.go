@@ -60,6 +60,10 @@ func run(addr, web string, demo, stream bool) error {
 	}
 	defer relay.Close()
 	relay.AllowAny = true
+	// Only its own address: a page of another site whose name was pointed here is refused.
+	own := strings.TrimPrefix(relay.URL(), "http://")
+	_, port, _ := net.SplitHostPort(own)
+	relay.Hosts = []string{own, "localhost:" + port, "127.0.0.1:" + port}
 	files := http.FileServer(http.Dir(web))
 	headers := webheaders.For(strings.TrimPrefix(relay.URL(), "http://"), false)
 	relay.Static = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

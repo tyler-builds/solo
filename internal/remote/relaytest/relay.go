@@ -16,6 +16,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -40,6 +41,9 @@ type Relay struct {
 	srv *httptest.Server
 	// Static, when set, serves everything that isn't the relay's own: the web client.
 	Static http.Handler
+	// Hosts, when set, are the only addresses the relay answers to (the request's Host): a page of
+	// another site that was pointed at this machine's address is refused.
+	Hosts []string
 	// AllowAny lets every machine in whose token is its own key's: for a relay that listens on this
 	// machine only, where the list of machines is whoever can reach it.
 	AllowAny bool
@@ -49,9 +53,16 @@ type Relay struct {
 
 	mu       sync.Mutex
 	keys     [][]byte
-	machines map[secure.ID]*machine
+	machines map[owner]*machine
 	tickets  map[[32]byte]*ticket
 	offset   time.Duration // added to the clock, for tests of a machine whose clock is off
+}
+
+// owner is how the relay knows a machine: the relay key that vouches for it, and its ID. A machine
+// can't take another's place by claiming its ID: under its own key that is another machine.
+type owner struct {
+	key [32]byte
+	id  secure.ID
 }
 
 type machine struct {
@@ -61,21 +72,21 @@ type machine struct {
 }
 
 type ticket struct {
-	machine secure.ID
+	machine owner
 	expires time.Time
 	uses    int
 }
 
 // New starts a relay that lets no machine in until Allow names its key.
 func New() *Relay {
-	r := &Relay{machines: map[secure.ID]*machine{}, tickets: map[[32]byte]*ticket{}}
+	r := &Relay{machines: map[owner]*machine{}, tickets: map[[32]byte]*ticket{}}
 	r.srv = httptest.NewServer(http.HandlerFunc(r.serve))
 	return r
 }
 
 // NewAt is New on an address, such as "127.0.0.1:8787".
 func NewAt(addr string) (*Relay, error) {
-	r := &Relay{machines: map[secure.ID]*machine{}, tickets: map[[32]byte]*ticket{}}
+	r := &Relay{machines: map[owner]*machine{}, tickets: map[[32]byte]*ticket{}}
 	srv := &http.Server{Addr: addr, Handler: http.HandlerFunc(r.serve)}
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -119,6 +130,15 @@ func (r *Relay) Machines() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return len(r.machines)
+}
+
+// Refill gives a ticket uses again, as a relay would that let in whoever asked.
+func (r *Relay) Refill(hash [32]byte, uses int) {
+	r.mu.Lock()
+	if t := r.tickets[hash]; t != nil {
+		t.uses = uses
+	}
+	r.mu.Unlock()
 }
 
 // SetClockOffset moves the relay's clock.
@@ -168,6 +188,10 @@ func (r *Relay) allowed(key []byte) bool {
 }
 
 func (r *Relay) serve(w http.ResponseWriter, req *http.Request) {
+	if len(r.Hosts) > 0 && !slices.Contains(r.Hosts, req.Host) {
+		http.Error(w, "not this relay's address", http.StatusMisdirectedRequest)
+		return
+	}
 	switch req.URL.Path {
 	case "/v1/info":
 		w.Header().Set("Content-Type", "application/json")
@@ -222,12 +246,13 @@ func (r *Relay) upgrade(w http.ResponseWriter, req *http.Request) {
 			http.Error(w, "bad token", http.StatusUnauthorized)
 			return
 		}
-		if !r.allowed(key) {
+		// A machine is a program and sends no Origin: one that does is a page, which is no machine.
+		if !r.allowed(key) || req.Header.Get("Origin") != "" {
 			http.Error(w, "this machine isn't allowed", http.StatusForbidden)
 			return
 		}
 		if ws := accept(); ws != nil {
-			r.machine(req.Context(), id, ws)
+			r.machine(req.Context(), owner{[32]byte(key), id}, ws)
 		}
 	case device.PathDevice:
 		key, mid, did, err := secure.VerifyVoucher(origin, token)
@@ -240,7 +265,7 @@ func (r *Relay) upgrade(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 		if ws := accept(); ws != nil {
-			r.device(req.Context(), mid, 1, did, ws)
+			r.device(req.Context(), owner{[32]byte(key), mid}, 1, did, ws)
 		}
 	case device.PathPair:
 		if len(token) != 49 || token[0] != 1 {
@@ -256,9 +281,11 @@ func (r *Relay) upgrade(w http.ResponseWriter, req *http.Request) {
 		hash := sha256.Sum256(token[17:])
 		r.mu.Lock()
 		t := r.tickets[hash]
-		ok := t != nil && t.machine == mid && t.uses > 0 && time.Now().Add(r.offset).Before(t.expires)
+		ok := t != nil && t.machine.id == mid && t.uses > 0 && time.Now().Add(r.offset).Before(t.expires)
+		var to owner
 		if ok {
 			t.uses--
+			to = t.machine // the machine that registered the ticket, under its own key
 		}
 		r.mu.Unlock()
 		if !ok {
@@ -266,13 +293,13 @@ func (r *Relay) upgrade(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 		if ws := accept(); ws != nil {
-			r.device(req.Context(), mid, 2, secure.ID{}, ws)
+			r.device(req.Context(), to, 2, secure.ID{}, ws)
 		}
 	}
 }
 
 // machine serves a machine's socket until it closes.
-func (r *Relay) machine(ctx context.Context, id secure.ID, ws *websocket.Conn) {
+func (r *Relay) machine(ctx context.Context, id owner, ws *websocket.Conn) {
 	m := &machine{ws: ws, conns: map[[8]byte]*websocket.Conn{}}
 	r.mu.Lock()
 	old := r.machines[id]
@@ -373,7 +400,7 @@ func (m *machine) conn(id [8]byte) *websocket.Conn {
 }
 
 // device serves a device's or a pairing socket until it closes.
-func (r *Relay) device(ctx context.Context, mid secure.ID, kind byte, did secure.ID, ws *websocket.Conn) {
+func (r *Relay) device(ctx context.Context, mid owner, kind byte, did secure.ID, ws *websocket.Conn) {
 	r.mu.Lock()
 	m := r.machines[mid]
 	r.mu.Unlock()

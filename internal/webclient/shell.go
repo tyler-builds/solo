@@ -4,6 +4,7 @@
 package webclient
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -316,6 +317,17 @@ func (s *Shell) cancelPairing() {
 // paired keeps a machine this device was just paired with, and opens it. UI thread.
 func (s *Shell) paired(m device.Machine) {
 	s.code = nil
+	// A machine this device knows, under another key, is not that machine: a code made to look like
+	// it must not take its place in the list.
+	for _, known := range s.machines {
+		if known.ID == m.ID && !bytes.Equal(known.Key, m.Key) {
+			s.state.screen.Set(screen{kind: s.home(), err: "That code is not from the machine it claims to be: this device already knows that machine by another key. Nothing was changed. If the machine was set up anew, forget it here first."})
+			if s.home() == screenMain && s.current == nil {
+				s.open(s.pick())
+			}
+			return
+		}
+	}
 	s.machines = append(slices.DeleteFunc(s.machines, func(x device.Machine) bool { return x.ID == m.ID }), m)
 	s.saveMachines()
 	s.state.machines.Set(slices.Clone(s.machines))

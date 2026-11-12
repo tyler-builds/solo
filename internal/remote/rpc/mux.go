@@ -114,6 +114,11 @@ type session struct {
 
 	heard atomic.Int64 // when a message last arrived, in Unix nanoseconds
 
+	// streamsIn is how many envelopes in parts the other end may be sending at once. A machine sets it
+	// to zero for a device until the device has said hello, and for one that may only look: nothing
+	// such a device has to say is large.
+	streamsIn atomic.Int32
+
 	// pace is the wait after each part of a large envelope; zero sends as fast as the other end
 	// acknowledges. A device sets it: the relay ends a device's connection that sends frames faster
 	// than it allows (50 a second after a burst of 200), and a large image is a few hundred of them.
@@ -121,14 +126,20 @@ type session struct {
 }
 
 type inbound struct {
-	data []byte
-	seq  uint32
+	data  []byte
+	seq   uint32
+	began time.Time
 }
+
+// streamFor is how long an envelope in parts may take to arrive. One that is begun and never finished
+// would otherwise hold its bytes for as long as the session lasts.
+const streamFor = 2 * time.Minute
 
 func newSession(link Link, maxIn int) *session {
 	s := &session{link: link, maxIn: maxIn, out: map[uint32]chan uint32{}, in: map[uint32]*inbound{},
 		done: make(chan struct{})}
 	s.heard.Store(time.Now().UnixNano())
+	s.streamsIn.Store(maxStreams)
 	return s
 }
 
@@ -253,6 +264,12 @@ func (s *session) frame(frame []byte, handle func(Envelope) error) error {
 	if len(frame) == 0 {
 		return errProtocol
 	}
+	// A stream that was begun and left: whatever arrives next, a ping included, ends the session.
+	for _, in := range s.in {
+		if time.Since(in.began) > streamFor {
+			return errors.New("rpc: a large message took too long to arrive")
+		}
+	}
 	switch body := frame[1:]; frame[0] {
 	case frameWhole:
 		if len(body) > partSize || len(body) > s.maxIn {
@@ -273,11 +290,14 @@ func (s *session) frame(frame []byte, handle func(Envelope) error) error {
 		}
 		in := s.in[id]
 		if in == nil {
-			if seq != 1 || len(s.in) >= maxStreams {
+			if seq != 1 || len(s.in) >= int(s.streamsIn.Load()) {
 				return errProtocol
 			}
-			in = &inbound{}
+			in = &inbound{began: time.Now()}
 			s.in[id] = in
+		}
+		if time.Since(in.began) > streamFor {
+			return errors.New("rpc: a large message took too long to arrive")
 		}
 		if seq != in.seq+1 {
 			return errProtocol

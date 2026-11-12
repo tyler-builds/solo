@@ -100,12 +100,12 @@ func (c *Core) saveImageData(data []byte, name string) (string, error) {
 		return "", fmt.Errorf("%s has too many pixels to scale down", name)
 	}
 	if len(data) > maxImageBytes || cfg.Width > maxImageSide || cfg.Height > maxImageSide {
-		img, _, err := image.Decode(bytes.NewReader(data))
+		err := decodeImage(data, func(img image.Image) (err error) {
+			data, ext, err = encodeImage(img)
+			return err
+		})
 		if err != nil {
 			return "", fmt.Errorf("%s: %w", name, err)
-		}
-		if data, ext, err = encodeImage(img); err != nil {
-			return "", err
 		}
 	}
 	return c.writeAttachment(data, ext)
@@ -114,7 +114,9 @@ func (c *Core) saveImageData(data []byte, name string) (string, error) {
 // isAttachment reports whether path names a file directly in the attachments folder. Images reach
 // Claude and the UI by path, and only these paths are read: a message can't name another file.
 func (c *Core) isAttachment(path string) bool {
-	return filepath.IsAbs(path) && filepath.Dir(filepath.Clean(path)) == filepath.Clean(c.attachmentsDir())
+	// In its plain spelling only: an attachment is found again by its path (a thread's are removed
+	// with it, unless another message has the same), and two spellings of one file would be two files.
+	return filepath.IsAbs(path) && path == filepath.Clean(path) && filepath.Dir(path) == filepath.Clean(c.attachmentsDir())
 }
 
 // ReadImage returns the contents of an attachment, by the path SaveImage, SaveImageData or
@@ -145,14 +147,36 @@ func (c *Core) ReadImage(_ context.Context, path string, maxSide int) ([]byte, e
 	if cfg.Width <= 0 || cfg.Height <= 0 || cfg.Width > maxImagePixels/cfg.Height {
 		return nil, errors.New("the image has too many pixels to scale down")
 	}
-	img, _, err := image.Decode(bytes.NewReader(data))
+	var out []byte
+	err = decodeImage(data, func(img image.Image) (err error) {
+		out, err = encodePreview(scaleTo(img, maxSide))
+		return err
+	})
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", filepath.Base(path), err)
 	}
-	return encodePreview(scaleTo(img, maxSide))
+	return out, nil
 }
 
-// scaleTo returns img scaled so that its longer side is at most side.
+// imageWork lets one image be decoded and scaled at a time. A decoded image is four bytes a pixel, up
+// to 200 MB, and scaling needs more: several at once, as a device could ask for, would take the
+// machine's memory.
+var imageWork = make(chan struct{}, 1)
+
+// decodeImage decodes data, one image at a time across Solo, and gives it to f while it holds the turn.
+func decodeImage(data []byte, f func(image.Image) error) error {
+	imageWork <- struct{}{}
+	defer func() { <-imageWork }()
+	img, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	return f(img)
+}
+
+// scaleTo returns img scaled so that its longer side is at most side. A small image is scaled with the
+// better filter; a large one with the cheaper one, whose working memory doesn't grow with the source
+// (the better filter's is 32 bytes for each pixel of the result's width times the source's height).
 func scaleTo(img image.Image, side int) image.Image {
 	b := img.Bounds()
 	w, h := b.Dx(), b.Dy()
@@ -161,7 +185,11 @@ func scaleTo(img image.Image, side int) image.Image {
 	}
 	scale := float64(side) / float64(max(w, h))
 	dst := image.NewRGBA(image.Rect(0, 0, max(1, int(float64(w)*scale)), max(1, int(float64(h)*scale))))
-	draw.CatmullRom.Scale(dst, dst.Bounds(), img, b, draw.Src, nil)
+	if int64(dst.Bounds().Dx())*int64(h) <= 2_000_000 {
+		draw.CatmullRom.Scale(dst, dst.Bounds(), img, b, draw.Src, nil)
+	} else {
+		draw.ApproxBiLinear.Scale(dst, dst.Bounds(), img, b, draw.Src, nil)
+	}
 	return dst
 }
 

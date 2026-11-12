@@ -44,7 +44,7 @@ export async function verifyMachineAuth(
 	token: Uint8Array,
 	now: number,
 	hostKeys: readonly Uint8Array[],
-): Promise<Verdict<{ machineId: Uint8Array }>> {
+): Promise<Verdict<{ machineId: Uint8Array; key: Uint8Array }>> {
 	if (token.length !== MACHINE_AUTH_SIZE || token[0] !== VERSION) {
 		return bad;
 	}
@@ -62,7 +62,7 @@ export async function verifyMachineAuth(
 	if (!(await signedBy(key, "machine", origin, body, token.subarray(body.length)))) {
 		return bad;
 	}
-	return { ok: true, machineId: body.slice(1 + KEY_SIZE, 1 + KEY_SIZE + ID_SIZE) };
+	return { ok: true, machineId: body.slice(1 + KEY_SIZE, 1 + KEY_SIZE + ID_SIZE), key: key.slice() };
 }
 
 // verifyVoucher checks the token a paired device connects with: its machine's word, for the relay at
@@ -72,7 +72,7 @@ export async function verifyVoucher(
 	origin: string,
 	token: Uint8Array,
 	hostKeys: readonly Uint8Array[],
-): Promise<Verdict<{ machineId: Uint8Array; deviceId: Uint8Array }>> {
+): Promise<Verdict<{ machineId: Uint8Array; deviceId: Uint8Array; key: Uint8Array }>> {
 	if (token.length !== VOUCHER_SIZE || token[0] !== VERSION) {
 		return bad;
 	}
@@ -89,6 +89,7 @@ export async function verifyVoucher(
 		ok: true,
 		machineId: body.slice(ids, ids + ID_SIZE),
 		deviceId: body.slice(ids + ID_SIZE, ids + 2 * ID_SIZE),
+		key: key.slice(),
 	};
 }
 

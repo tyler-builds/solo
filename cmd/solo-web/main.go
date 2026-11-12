@@ -4,7 +4,8 @@
 // scripts/web.sh), over a machine that runs Solo. The relay that serves the page carries its
 // connection, which is encrypted from this page to the machine (docs/REMOTE.md).
 //
-// With ?sample=1 it runs over generated data instead, for measuring the UI; the query then sizes it:
+// Served from this machine, with ?sample=1 it runs over generated data instead, for measuring the UI;
+// the query then sizes it:
 //
 //	?sample=1&threads=60&items=400&stream=1
 package main
@@ -34,7 +35,8 @@ func main() {
 	}
 	var root func(*ui.Context) ui.Element
 	switch {
-	case num("sample") > 0:
+	case num("sample") > 0 && local():
+		// On a developer's machine only: a deployed relay's address shows nothing but the real thing.
 		g := gui.New(sample.New(sample.Options{Threads: num("threads"), Items: num("items"), Stream: num("stream") > 0}))
 		// Fingers, when the device's main pointer is coarse: a phone or a tablet.
 		if mm := js.Global().Get("matchMedia"); mm.Type() == js.TypeFunction {
@@ -77,4 +79,10 @@ func main() {
 		Bindings:   gui.Bindings(),
 		Chrome:     app.ChromeCustom,
 	})
+}
+
+// local reports whether the page is served from this machine.
+func local() bool {
+	h := js.Global().Get("location").Get("hostname").String()
+	return h == "127.0.0.1" || h == "localhost"
 }

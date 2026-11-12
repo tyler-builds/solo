@@ -58,8 +58,14 @@ const fail = (msg) => { throw new Error(msg); };
     console.log("load to first screen:", Date.now() - t0, "ms");
     if (page.url().includes("#")) fail("the pairing code stayed in the address: " + page.url());
     await shot("1-confirm");
-    await tap(61, 563); // Pair
-    await page.waitForFunction(() => soloHost.shown.digits.length === 6, null, { timeout: 30000 });
+    // Pair. The button sits under text whose height depends on the fonts, so it is looked for down
+    // the column it is in; nothing else there answers a tap.
+    for (let y = 560; y <= 660; y += 10) {
+      await tap(61, y);
+      if (await page.evaluate(() => soloHost.shown.screen !== "confirm")) break;
+    }
+    await page.waitForFunction(() => soloHost.shown.digits.length === 6, null, { timeout: 30000 })
+      .catch(() => fail("the digits never showed"));
     const digits = await page.evaluate(() => soloHost.shown.digits);
     await shot("2-digits");
     say(digits);

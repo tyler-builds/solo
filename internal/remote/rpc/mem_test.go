@@ -81,6 +81,8 @@ type mem struct {
 	merges   int
 	images   map[string][]byte
 	onMerge  func() (string, error)
+
+	claudeChecks atomic.Int32
 }
 
 func newMem() *mem {
@@ -272,6 +274,8 @@ func (m *mem) ReadImage(_ context.Context, ref string, _ int) ([]byte, error) {
 }
 
 func (m *mem) CheckClaude(_ context.Context, override string) core.ClaudeStatus {
+	m.claudeChecks.Add(1)
+	time.Sleep(5 * time.Millisecond)
 	return core.ClaudeStatus{Path: "checked:" + override}
 }
 

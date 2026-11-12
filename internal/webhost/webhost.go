@@ -30,8 +30,7 @@ const bufSize = 64 * 1024
 var (
 	inBuf, outBuf [bufSize]byte
 	host          js.Value
-	conn          *Conn  // the page's one connection
-	partial       []byte // the pieces so far of the message arriving
+	conn          *Conn // the page's one connection
 	pageEvents    = make(chan struct{}, 1)
 	probes        = make(chan bool, 1)
 )
@@ -75,7 +74,7 @@ func Dial(ctx context.Context, path string, token []byte) (wire.Conn, error) {
 		scheme = "wss://"
 	}
 	c := &Conn{in: make(chan []byte, 256), state: make(chan int, 4), closed: make(chan struct{})}
-	conn, partial = c, nil
+	conn = c
 	host.Call("open", scheme+Host()+path, device.Subprotocol, base64.RawURLEncoding.EncodeToString(token))
 	select {
 	case code := <-c.state:
@@ -168,16 +167,16 @@ func delivered(n int, final bool) {
 	if conn == nil || n < 0 || n > bufSize {
 		return
 	}
-	partial = append(partial, inBuf[:n]...)
 	if !final {
-		return
+		return // the script sends a message whole, or not at all
 	}
-	m := partial
-	partial = nil
+	m := append([]byte(nil), inBuf[:n]...)
 	select {
 	case conn.in <- m:
 	default:
-		host.Call("close")
+		// The reader is too far behind. The script closes the socket and reports it, which ends the
+		// connection here; connecting again catches up.
+		host.Call("dropped")
 	}
 }
 

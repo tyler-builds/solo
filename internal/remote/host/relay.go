@@ -39,15 +39,23 @@ const (
 	sessionFor     = time.Hour        // how long a session lasts before the device must handshake again
 	relayPingEvery = 30 * time.Second
 	relayPongFor   = 20 * time.Second
-	// queued is how many frames may wait for a session to read them. The relay limits how fast a device
-	// sends; a session that falls this far behind is ended.
-	queued = 256
+	// queued is how many frames may wait for a session to read them, about 4 MiB. The relay limits how
+	// fast a device sends; a session that falls this far behind is ended.
+	queued = 64
+	// maxFrame is the largest frame the relay sends: a type, a connection, and the most a device's
+	// frame may hold.
+	maxFrame = 1 + 8 + 65536
+	// maxDeviceConns is how many connections one device may have at a time: its session, the one that
+	// replaces it as it reconnects, and one to spare.
+	maxDeviceConns = 3
+	// maxSkew is the furthest a machine's clock is taken to be from the relay's.
+	maxSkew = 12 * time.Hour
 )
 
 // start connects to the relay and keeps the connection up. Call with r.mu held.
 func (r *Remote) start() {
-	if r.stop != nil || r.closed {
-		return
+	if r.stop != nil || r.closed || r.saved.Cloud.Paused {
+		return // paused: the relay was changed from elsewhere, and the user hasn't said what to do
 	}
 	r.stop = make(chan struct{})
 	r.conn = Connecting
@@ -143,12 +151,15 @@ func (r *Remote) connect(stop chan struct{}, address string, skew *time.Duration
 			switch resp.StatusCode {
 			case http.StatusUnauthorized:
 				// The token's time was off by more than the relay allows: ask the relay the time, once.
+				// The relay's word on the time is taken once, and only within reason: a relay that says
+				// it is next year would otherwise be handed a token good for then.
 				if *skew == 0 {
-					if d, ok := relayClock(ctx, r.cfg.HTTP, address); ok && (d > 30*time.Second || d < -30*time.Second) {
+					if d, ok := relayClock(ctx, r.cfg.HTTP, address); ok && (d > 30*time.Second || d < -30*time.Second) && d < maxSkew && d > -maxSkew {
 						*skew = d
 						return "", false, true
 					}
 				}
+				*skew = 0
 				return "The relay didn't accept this machine's key.", true, false
 			case http.StatusForbidden:
 				return "The relay doesn't list this machine. Set remote access up again from Settings.", true, false
@@ -156,7 +167,7 @@ func (r *Remote) connect(stop chan struct{}, address string, skew *time.Duration
 		}
 		return "The relay can't be reached.", false, false
 	}
-	ws.SetReadLimit(1 << 17)
+	ws.SetReadLimit(maxFrame)
 	rc := &relayConn{r: r, ws: ws, origin: origin, machine: m, conns: map[[8]byte]*muxConn{}, ctx: ctx}
 	rc.pong.Store(time.Now().UnixNano())
 	r.mu.Lock()
@@ -425,12 +436,31 @@ func (c *muxConn) shut() {
 // requests, until the connection ends.
 func (r *Remote) serveDevice(rc *relayConn, c *muxConn, id secure.ID) {
 	defer c.Close()
+	// The connection is on the device's list from here, so that removing the device ends it whatever
+	// it is doing: in its handshake, or waiting to say hello.
 	r.mu.Lock()
 	d, ok := r.deviceLocked(id)
+	if ok && len(r.live[d.ID]) >= maxDeviceConns {
+		ok = false
+	}
+	if ok {
+		if r.live[d.ID] == nil {
+			r.live[d.ID] = map[*muxConn]struct{}{}
+		}
+		r.live[d.ID][c] = struct{}{}
+	}
 	r.mu.Unlock()
 	if !ok {
-		return // revoked, or never paired: its voucher still opens the relay, and nothing here
+		return // revoked, never paired, or too many at once: its voucher opens the relay, and nothing here
 	}
+	defer func() {
+		r.mu.Lock()
+		delete(r.live[d.ID], c)
+		if len(r.live[d.ID]) == 0 {
+			delete(r.live, d.ID)
+		}
+		r.mu.Unlock()
+	}()
 	first, err := c.Read()
 	if err != nil {
 		return
@@ -445,16 +475,24 @@ func (r *Remote) serveDevice(rc *relayConn, c *muxConn, id secure.ID) {
 	if !constantEqual(ch.Peer(), d.Key) {
 		return
 	}
+	// The device's record as it is now: it may have been removed, limited to looking, or paired anew
+	// while this connection waited for its first message.
+	r.mu.Lock()
+	now, still := r.deviceLocked(id)
+	r.mu.Unlock()
+	if !still || !constantEqual(now.PSK, d.PSK) || !constantEqual(now.Key, d.Key) {
+		return
+	}
+	d = now
 	if err := c.Write(answer); err != nil {
 		return
 	}
 	link := wire.NewLink(c, ch)
 	link.Compress = true
-	c.timeout.Store(0) // from here the session's own silence limit applies
+	c.timeout.Store(0) // from here the session's own limits apply: hello soon, then no long silence
 	// A session is keyed afresh every hour: the device connects again and resumes.
 	expire := time.AfterFunc(sessionFor, func() { c.Close() })
 	defer expire.Stop()
-	r.seen(d.ID)
 	r.rpc.Serve(link, rpc.Device{ID: d.ID, Name: d.Name, ReadOnly: d.ReadOnly})
 	r.changed()
 }

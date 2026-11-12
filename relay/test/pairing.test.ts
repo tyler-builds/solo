@@ -45,7 +45,7 @@ describe("pairing", () => {
 		const machine = await connectMachine();
 		const ticket = random(32);
 		await addTicket(machine, ticket);
-		expect(await ticketRow(ticket)).toEqual({ machine: hex(machine.id), uses: 1 });
+		expect(await ticketRow(ticket)).toEqual({ machine: `${hex(machine.signer.public)}:${hex(machine.id)}`, uses: 1 });
 
 		const pair = await connectPair(machine.id, ticket);
 		const open = await opened(machine);
@@ -120,7 +120,7 @@ describe("pairing", () => {
 		await addTicket(other, ticket);
 		expect(await refused(machine.id, ticket)).toBe(true);
 		await addTicket(machine, ticket, 5);
-		expect(await ticketRow(ticket)).toEqual({ machine: hex(other.id), uses: 1 });
+		expect(await ticketRow(ticket)).toEqual({ machine: `${hex(other.signer.public)}:${hex(other.id)}`, uses: 1 });
 		expect(await refused(machine.id, ticket)).toBe(true);
 		await connectPair(other.id, ticket);
 	});
@@ -142,7 +142,7 @@ describe("pairing", () => {
 		expect((await opened(back)).kind).toBe(KIND.pair);
 	});
 
-	test("after too many wrong tickets, a machine's pairing is refused until the window has passed", async () => {
+	test("after too many wrong tickets the wrong ones stop being counted, and the right one still works", async () => {
 		const machine = await connectMachine();
 		const bystander = await connectMachine();
 		const ticket = random(32);
@@ -156,10 +156,11 @@ describe("pairing", () => {
 		// One short of the limit, the right ticket still works.
 		await connectPair(machine.id, ticket);
 		expect(await refused(machine.id, random(32))).toBe(true);
-		// At the limit it does not, and nor does anything else for this machine.
-		expect(await refused(machine.id, ticket)).toBe(true);
+		// At the limit wrong tickets are still refused, and the right one is still let in: someone who
+		// only knows the machine's ID can't keep its owner from pairing.
 		expect(await refused(machine.id, random(32))).toBe(true);
-		expect(await ticketRow(ticket)).toMatchObject({ uses: 2 });
+		await connectPair(machine.id, ticket);
+		expect(await ticketRow(ticket)).toMatchObject({ uses: 1 });
 		// Another machine's pairing is not affected.
 		await connectPair(bystander.id, other);
 
@@ -228,7 +229,7 @@ describe("pairing", () => {
 		await addTicket(machine, ticket, 3);
 		const stale = [await connectPair(machine.id, ticket), await connectPair(machine.id, ticket)];
 		await runInDurableObject(relay(), (_, state) => {
-			for (const ws of state.getWebSockets(`p:${hex(machine.id)}`)) {
+			for (const ws of state.getWebSockets(`p:${hex(machine.signer.public)}:${hex(machine.id)}`)) {
 				const peer = ws.deserializeAttachment();
 				ws.serializeAttachment({ ...peer, at: peer.at - LIMIT.pairLifetimeMs - 1 });
 			}

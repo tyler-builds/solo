@@ -9,6 +9,7 @@ set -eu
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
+rm -rf "$root/dist/web" # only what this build makes is published
 scripts/web.sh "$root/dist/web"
 scripts/relay.sh
 

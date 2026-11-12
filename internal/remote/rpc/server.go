@@ -32,6 +32,9 @@ type Options struct {
 	// IsDir reports whether a path is a folder on the machine, for folders a device adds to the
 	// settings. Nil refuses them all.
 	IsDir func(path string) bool
+	// OnHello is called when a device's session begins: when its first message has opened on the
+	// channel, which only the device itself can make. It must not block.
+	OnHello func(d Device)
 	// Audit records a request that changes something, and how it ended. It must not block.
 	Audit func(d Device, method, detail string, err error)
 	// FlushEvery is the shortest time between two messages of state to a device (default 300 ms):
@@ -41,7 +44,9 @@ type Options struct {
 	Lease time.Duration
 	// Idle is how long a silent session is kept (default IdleTimeout).
 	Idle time.Duration
-	Log  *slog.Logger
+	// HelloFor is how long a device has to say hello once its handshake is done (default 10 s).
+	HelloFor time.Duration
+	Log      *slog.Logger
 }
 
 // Host serves paired devices over a backend. One Host lasts for the machine's run: it numbers the
@@ -58,6 +63,14 @@ type Host struct {
 	items    map[string]uint64 // and each transcript
 	conns    map[*conn]struct{}
 	answered map[string]*answer // answers to requests, kept so that one sent twice runs once
+	order    []string           // the keys of answered, oldest first
+	kept     int                // the bytes of the answers kept
+	running  map[string]int     // requests under way, by device
+
+	// The last check of Claude Code, which every device shares: each check starts Claude.
+	claudeMu sync.Mutex
+	claudeAt time.Time
+	claude   core.ClaudeStatus
 }
 
 // answer is a request's outcome, or one still being worked out.
@@ -65,13 +78,23 @@ type answer struct {
 	done chan struct{}
 	res  Envelope
 	at   time.Time
+	size int
 }
 
 const (
-	answersKept = 1024
-	answersFor  = 10 * time.Minute
-	// maxRequests is how many requests of one device run at a time.
+	answersKept  = 1024
+	answersBytes = 16 << 20
+	answersFor   = 10 * time.Minute
+	// maxRequests is how many requests of one device run at a time, over all its connections and
+	// counting those that outlive the connection they came on.
 	maxRequests = 16
+	// helloFor is how long a device has, once its handshake is done, to say hello. A connection that
+	// has not is not yet a session: it is not told of changes, and is not ended by Drop.
+	helloFor = 10 * time.Second
+	// maxPlain is the most a request other than an image upload may hold.
+	maxPlain = 1 << 20
+	// claudeFor is how long a check of Claude Code is good for.
+	claudeFor = 30 * time.Second
 	// maxChanges is how many announcements wait for a device that has stopped reading before its
 	// session is ended; it resumes from its revision when it connects again.
 	maxChanges = 4096
@@ -88,6 +111,9 @@ func NewHost(b api.Backend, opts Options) *Host {
 	if opts.Idle <= 0 {
 		opts.Idle = IdleTimeout
 	}
+	if opts.HelloFor <= 0 {
+		opts.HelloFor = helloFor
+	}
 	if opts.Log == nil {
 		opts.Log = slog.New(slog.DiscardHandler)
 	}
@@ -97,7 +123,7 @@ func NewHost(b api.Backend, opts Options) *Host {
 	}
 	// Revisions start at 1: 0 is a device that holds nothing.
 	h := &Host{b: b, opts: opts, epoch: hex.EncodeToString(id[:]), rev: 1, threads: map[string]uint64{},
-		items: map[string]uint64{}, conns: map[*conn]struct{}{}, answered: map[string]*answer{}}
+		items: map[string]uint64{}, conns: map[*conn]struct{}{}, answered: map[string]*answer{}, running: map[string]int{}}
 	h.unsub = b.Subscribe(h.onChange)
 	return h
 }
@@ -174,18 +200,17 @@ type conn struct {
 	cancel context.CancelFunc
 	wake   chan struct{}
 
-	mu       sync.Mutex
-	threads  map[string]bool // threads to send
-	items    map[string]bool // watched transcripts that changed
-	live     map[string]bool // watched threads whose streaming text changed
-	misc     bool            // the settings, todos, repositories, limits or questions may have changed
-	changes  []core.Change
-	stalled  bool
-	watch    map[string]*watched
-	limit    int
-	lease    time.Time
-	requests int
-	greeted  bool
+	mu      sync.Mutex
+	threads map[string]bool // threads to send
+	items   map[string]bool // watched transcripts that changed
+	live    map[string]bool // watched threads whose streaming text changed
+	misc    bool            // the settings, todos, repositories, limits or questions may have changed
+	changes []core.Change
+	stalled bool
+	watch   map[string]*watched
+	limit   int
+	lease   time.Time
+	greeted bool
 
 	// What was last sent, for sending only what differs. Used by the flusher alone.
 	sent map[string]uint64
@@ -211,12 +236,22 @@ func (h *Host) Serve(link Link, dev Device) error {
 	c := &conn{h: h, s: newSession(link, maxFromDevice), dev: dev, ctx: ctx, cancel: cancel,
 		wake: make(chan struct{}, 1), threads: map[string]bool{}, items: map[string]bool{}, live: map[string]bool{},
 		watch: map[string]*watched{}, limit: 1, sent: map[string]uint64{}}
+	c.s.streamsIn.Store(0) // nothing large before hello
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		c.flusher()
 	}()
+	hello := time.AfterFunc(h.opts.HelloFor, func() {
+		c.mu.Lock()
+		greeted := c.greeted
+		c.mu.Unlock()
+		if !greeted {
+			c.s.close(errors.New("rpc: the device didn't say hello"))
+		}
+	})
+	defer hello.Stop()
 	go func() { // a session that falls silent is over: the device, or the path to it, is gone
 		t := time.NewTicker(h.opts.Idle / 3)
 		defer t.Stop()
@@ -243,6 +278,10 @@ func (h *Host) Serve(link Link, dev Device) error {
 
 // bye tells the device why the session ends, then ends it.
 func (c *conn) bye(code, msg string) {
+	// The session ends in a moment whether or not the goodbye gets through: a device that has
+	// stopped reading must not keep its session by that.
+	end := time.AfterFunc(2*time.Second, func() { c.s.close(errors.New("rpc: " + msg)) })
+	defer end.Stop()
 	p, _ := json.Marshal(Bye{Code: code, Message: msg})
 	c.s.send(Envelope{T: kindBye, P: p})
 	c.s.close(errors.New("rpc: " + msg))
@@ -299,19 +338,27 @@ func (c *conn) handle(e Envelope) error {
 	if !validID(e.ID) || len(e.M) > 64 {
 		return errProtocol
 	}
-	c.mu.Lock()
-	if c.requests >= maxRequests {
-		c.mu.Unlock()
+	// Only an image upload is large; nothing else carries bytes after its JSON.
+	if e.M != "saveImage" && (len(e.Blob) > 0 || len(e.P) > maxPlain) {
+		go c.s.send(Envelope{T: kindRes, ID: e.ID, E: invalid("the request is too large")})
+		return nil
+	}
+	h := c.h
+	h.mu.Lock()
+	if h.running[c.dev.ID] >= maxRequests {
+		h.mu.Unlock()
 		go c.s.send(Envelope{T: kindRes, ID: e.ID, E: &Error{Code: CodeBusy, Message: "Too many requests at once."}})
 		return nil
 	}
-	c.requests++
-	c.mu.Unlock()
+	h.running[c.dev.ID]++
+	h.mu.Unlock()
 	go func() {
 		defer func() {
-			c.mu.Lock()
-			c.requests--
-			c.mu.Unlock()
+			h.mu.Lock()
+			if h.running[c.dev.ID]--; h.running[c.dev.ID] <= 0 {
+				delete(h.running, c.dev.ID)
+			}
+			h.mu.Unlock()
 		}()
 		c.serve(e)
 	}()
@@ -358,6 +405,12 @@ func (c *conn) hello(e Envelope) error {
 	h.conns[c] = struct{}{}
 	h.mu.Unlock()
 
+	if !c.dev.ReadOnly {
+		c.s.streamsIn.Store(2) // an image, and a long message beside it
+	}
+	if h.opts.OnHello != nil {
+		h.opts.OnHello(c.dev)
+	}
 	p, _ := json.Marshal(w)
 	if err := c.s.send(Envelope{T: kindWelcome, P: p}); err != nil {
 		return err
@@ -712,15 +765,21 @@ func (c *conn) serve(e Envelope) {
 	if mine {
 		a = &answer{done: make(chan struct{}), at: time.Now()}
 		h.answered[key] = a
+		h.order = append(h.order, key)
 		h.forgetAnswersLocked()
 	}
 	h.mu.Unlock()
 	if mine {
 		// It runs to its end even if the device goes: a merge half done helps nobody.
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-		a.res = c.run(ctx, m, e)
+		res := c.run(ctx, m, e)
 		cancel()
+		h.mu.Lock()
+		a.res, a.size = res, len(res.P)+len(res.Blob)
+		h.kept += a.size
 		close(a.done)
+		h.forgetAnswersLocked()
+		h.mu.Unlock()
 	}
 	select {
 	case <-a.done:
@@ -729,25 +788,26 @@ func (c *conn) serve(e Envelope) {
 	}
 }
 
-// forgetAnswersLocked drops old answers. Call with h.mu held.
+// forgetAnswersLocked drops answers, oldest first: those past their time, and then as many as it takes
+// to be within the count and the bytes kept. An answer still being worked out stays. Call with h.mu
+// held.
 func (h *Host) forgetAnswersLocked() {
-	if len(h.answered) <= answersKept {
-		cutoff := time.Now().Add(-answersFor)
-		for k, a := range h.answered {
-			if a.at.Before(cutoff) && isDone(a) {
-				delete(h.answered, k)
-			}
+	cutoff := time.Now().Add(-answersFor)
+	kept := h.order[:0]
+	over := func() bool { return len(h.answered) > answersKept || h.kept > answersBytes }
+	for _, key := range h.order {
+		a := h.answered[key]
+		if a == nil {
+			continue
 		}
-		return
-	}
-	for k, a := range h.answered {
-		if isDone(a) {
-			delete(h.answered, k)
-			if len(h.answered) <= answersKept*3/4 {
-				return
-			}
+		if isDone(a) && (a.at.Before(cutoff) || over()) {
+			delete(h.answered, key)
+			h.kept -= a.size
+			continue
 		}
+		kept = append(kept, key)
 	}
+	h.order = kept
 }
 
 func isDone(a *answer) bool {

@@ -36,8 +36,15 @@ type savedCloud struct {
 	// Versions are the uploads of the relay this machine made or its user accepted. One that isn't
 	// here was made elsewhere.
 	Versions []string `json:"versions,omitempty"`
-	// Paused: an upload this machine doesn't know appeared, and remote access waits for the user.
-	Paused bool `json:"paused,omitempty"`
+	// Active is the version that was being served when the versions were last recorded: a relay rolled
+	// back to an older upload is a change too.
+	Active string `json:"active,omitempty"`
+	// Paused: the relay was changed from elsewhere, or can't be checked, and remote access waits for the
+	// user. Why says what was found, for the user to judge.
+	Paused bool     `json:"paused,omitempty"`
+	Why    []string `json:"why,omitempty"`
+	// Gone: the relay was deleted from elsewhere. The devices were removed with it.
+	Gone bool `json:"gone,omitempty"`
 }
 
 // token returns the Cloudflare token, from the secrets or else the environment.
@@ -73,9 +80,14 @@ func (r *Remote) busy(what string) {
 // cloudState is the Cloudflare part of State. Call with r.mu held.
 func (r *Remote) cloudStateLocked() api.RemoteCloud {
 	c := api.RemoteCloud{HasToken: r.hasToken, Account: r.saved.Cloud.AccountName, Deployed: r.saved.Cloud.Script != "",
-		Busy: r.cloudBusy, Paused: r.saved.Cloud.Paused}
-	if c.Paused {
-		c.Alert = "The relay in your Cloudflare account was changed by something other than this copy of Solo: another of your machines, the Cloudflare dashboard, or someone with access to the account. Remote access is paused. If the change was yours, resume it; if not, remove the relay and set it up again."
+		Busy: r.cloudBusy, Paused: r.saved.Cloud.Paused, Changes: slices.Clone(r.saved.Cloud.Why), CheckProblem: r.checkProblem}
+	switch {
+	case c.Paused:
+		c.Alert = "Remote access is paused: the relay in your Cloudflare account is not as this copy of Solo left it. " +
+			"Another of your machines may have joined or updated it; so may anyone with access to the account, and a relay they changed can take over the devices that open it. " +
+			"If the change wasn't yours: secure the Cloudflare account, make a new API token, and remove the relay, which also removes every device."
+	case r.saved.Cloud.Gone:
+		c.Alert = "The relay was deleted from your Cloudflare account, from another machine or the Cloudflare dashboard. Every device was removed here with it; set remote access up again to pair them anew."
 	}
 	_, err := r.loadBundle()
 	c.CanDeploy = err == nil
@@ -119,11 +131,16 @@ func (r *Remote) SetCloudToken(ctx context.Context, token string) error {
 		return err
 	}
 	r.mu.Lock()
-	if r.saved.Cloud.Account != accounts[0].ID {
+	if r.saved.Cloud.Account != "" && r.saved.Cloud.Account != accounts[0].ID {
+		// Another account: the relay this machine used is not this token's to check, so it is left,
+		// rather than kept on with nothing checking it.
+		r.stopLocked()
 		r.saved.Cloud = savedCloud{}
+		r.saved.Relay, r.saved.Enabled = "", false
 	}
 	r.saved.Cloud.Account, r.saved.Cloud.AccountName = accounts[0].ID, accounts[0].Name
 	r.hasToken = true
+	r.checkProblem = ""
 	err = r.saved.write(r.path)
 	r.mu.Unlock()
 	r.audit.event("cloudflare-token-set", "", "")
@@ -166,11 +183,16 @@ func (r *Remote) DeployRelay(ctx context.Context) error {
 	}
 	cf := r.cloudflare(token)
 	r.mu.Lock()
-	account := r.saved.Cloud.Account
-	m, err := r.identityLocked()
+	account, paused := r.saved.Cloud.Account, r.saved.Cloud.Paused
+	_, err = r.identityLocked()
 	r.mu.Unlock()
 	if err != nil {
 		return err
+	}
+	if paused {
+		// Setting up again would take what is deployed as this machine's own, which is the very
+		// thing the pause asks the user about.
+		return errors.New("Remote access is paused. Say first whether the change to the relay was yours, or remove the relay.")
 	}
 	if account == "" {
 		accounts, err := cf.Accounts(ctx)
@@ -192,11 +214,13 @@ func (r *Remote) DeployRelay(ctx context.Context) error {
 	if sub == "" {
 		return errors.New("This Cloudflare account has no workers.dev address yet. Open Workers & Pages once in the Cloudflare dashboard, which makes it, then try again.")
 	}
+	if !cloudflare.ValidHost(sub) {
+		return errors.New("Cloudflare gave an address for this account that Solo can't use.")
+	}
 	key, err := r.RelayKey()
 	if err != nil {
 		return err
 	}
-	_ = m
 	found, err := cf.Find(ctx, account)
 	if err != nil {
 		return err
@@ -218,9 +242,6 @@ func (r *Remote) DeployRelay(ctx context.Context) error {
 		if err := cf.Put(ctx, r.upload(account, script, sub, b, []string{key}, true)); err != nil {
 			return err
 		}
-		if err := cf.Publish(ctx, account, script); err != nil {
-			return err
-		}
 	default:
 		script = found.Script
 		keys := found.Keys
@@ -235,7 +256,7 @@ func (r *Remote) DeployRelay(ctx context.Context) error {
 			}
 		} else if !slices.Equal(keys, sortedCopy(found.Keys)) {
 			r.busy("Adding this machine to the relay…")
-			if err := cf.SetKeys(ctx, account, script, keys, found.Bundle); err != nil {
+			if err := cf.SetKeys(ctx, account, script, keys); err != nil {
 				return err
 			}
 		}
@@ -254,32 +275,41 @@ func (r *Remote) DeployRelay(ctx context.Context) error {
 			}
 			merged := append(slices.Clone(now.Keys), key)
 			sort.Strings(merged)
-			if err := cf.SetKeys(ctx, account, script, merged, now.Bundle); err != nil {
+			if err := cf.SetKeys(ctx, account, script, merged); err != nil {
 				return err
 			}
 		}
 	}
 
-	address := "https://" + script + "." + sub + ".workers.dev"
-	r.busy("Waiting for the relay to answer…")
-	if err := r.waitForRelay(ctx, address); err != nil {
+	// Served at its address, with no preview addresses, every time: a first try that stopped half way
+	// is finished by the next.
+	if err := cf.Publish(ctx, account, script); err != nil {
 		return err
 	}
-	// What is deployed now is what this machine accepts as its relay.
+	// What is deployed at this moment, right after this machine's own change, is what it takes as its
+	// relay. Anything uploaded later is a change from elsewhere.
 	versions, err := cf.Versions(ctx, account, script)
 	if err != nil {
 		return err
 	}
+	active, _ := cf.ActiveVersion(ctx, account, script)
 	r.mu.Lock()
 	r.saved.Cloud.Script = script
-	r.saved.Cloud.Versions = versionIDs(versions)
-	r.saved.Cloud.Paused = false
+	r.saved.Cloud.Versions, r.saved.Cloud.Active = versionIDs(versions), active
+	r.saved.Cloud.Paused, r.saved.Cloud.Why, r.saved.Cloud.Gone = false, nil, false
+	r.checkProblem = ""
 	err = r.saved.write(r.path)
 	r.mu.Unlock()
 	if err != nil {
 		return err
 	}
+	address := "https://" + script + "." + sub + ".workers.dev"
+	r.busy("Waiting for the relay to answer…")
+	if err := r.waitForRelay(ctx, address); err != nil {
+		return err
+	}
 	r.audit.event("relay-deployed", "", script)
+	r.watching.Do(func() { go r.watchRelay() })
 	return r.SetRelay(address)
 }
 
@@ -354,51 +384,91 @@ func (r *Remote) RemoveRelay(ctx context.Context) error {
 		return err
 	}
 	r.mu.Lock()
-	r.saved.Cloud.Script, r.saved.Cloud.Versions, r.saved.Cloud.Paused = "", nil, false
+	r.saved.Cloud.Script, r.saved.Cloud.Versions, r.saved.Cloud.Active = "", nil, ""
+	r.saved.Cloud.Paused, r.saved.Cloud.Why, r.saved.Cloud.Gone = false, nil, false
 	r.mu.Unlock()
 	r.audit.event("relay-removed", "", script)
+	// The devices go with the relay. They could not come back through another relay anyway without
+	// pairing again; and if the relay was removed because it was tampered with, their keys may be in
+	// someone else's hands.
+	if err := r.RevokeAll(); err != nil {
+		return err
+	}
 	return r.SetRelay("")
 }
 
-// CheckRelay looks at what is deployed and pauses remote access if the relay was uploaded by anything
-// this machine doesn't know of. Whoever controls the Cloudflare account can replace the web client,
-// and a replaced web client could use a paired device's keys: this is the check for that. It needs the
-// token, and does nothing without it.
+// CheckRelay looks at what is deployed and pauses remote access if the relay is not as this machine
+// left it: an upload it doesn't know, a version being served that isn't the one it last saw served, or
+// a token Cloudflare no longer takes, which leaves the relay unchecked. Whoever controls the Cloudflare
+// account can replace the web client, and a replaced web client could use a paired device's keys: this
+// is the check for that, after the fact. It needs the token, and does nothing without it.
 func (r *Remote) CheckRelay(ctx context.Context) error {
 	token, err := r.token()
 	if err != nil || token == "" {
 		return err
 	}
 	r.mu.Lock()
-	account, script, known := r.saved.Cloud.Account, r.saved.Cloud.Script, slices.Clone(r.saved.Cloud.Versions)
+	account, script := r.saved.Cloud.Account, r.saved.Cloud.Script
+	known, wasActive := slices.Clone(r.saved.Cloud.Versions), r.saved.Cloud.Active
 	r.mu.Unlock()
 	if account == "" || script == "" {
 		return nil
 	}
-	versions, err := r.cloudflare(token).Versions(ctx, account, script)
-	if err != nil {
-		var e *cloudflare.Error
-		if errors.As(err, &e) && e.Status == http.StatusNotFound {
-			// The relay is gone: removed from another machine, or in the dashboard.
-			r.mu.Lock()
-			r.saved.Cloud.Script, r.saved.Cloud.Versions = "", nil
-			r.mu.Unlock()
-			return r.SetRelay("")
+	cf := r.cloudflare(token)
+	versions, err := cf.Versions(ctx, account, script)
+	var why []string
+	var e *cloudflare.Error
+	switch {
+	case errors.As(err, &e) && e.Status == http.StatusNotFound:
+		// The relay is gone: removed from another machine, or in the dashboard, or by someone else. A
+		// relay made again under its name would let the old devices' vouchers in, so they go too.
+		r.mu.Lock()
+		r.saved.Cloud.Script, r.saved.Cloud.Versions, r.saved.Cloud.Active = "", nil, ""
+		r.saved.Cloud.Paused, r.saved.Cloud.Why, r.saved.Cloud.Gone = false, nil, true
+		r.mu.Unlock()
+		r.audit.event("relay-gone", "", script)
+		if r.cfg.Notify != nil {
+			r.cfg.Notify("Remote access was removed", "The relay was deleted from your Cloudflare account. Open Settings, Remote.")
 		}
+		if err := r.RevokeAll(); err != nil {
+			return err
+		}
+		return r.SetRelay("")
+	case cloudflare.Unauthorized(err):
+		why = []string{"Cloudflare no longer accepts the API token kept here, so the relay can't be checked."}
+	case err != nil:
+		// The network, or Cloudflare, is having a bad moment. Said in Settings once it has lasted.
+		r.mu.Lock()
+		r.checkFails++
+		if r.checkFails >= 3 {
+			r.checkProblem = "The relay hasn't been checked lately: Cloudflare couldn't be reached."
+		}
+		r.mu.Unlock()
+		r.changed()
 		return err
-	}
-	strange := false
-	for _, v := range versions {
-		if !slices.Contains(known, v.ID) {
-			strange = true
+	default:
+		for _, v := range versions {
+			if !slices.Contains(known, v.ID) {
+				how := v.Source
+				if how == "" {
+					how = "unknown means"
+				}
+				why = append(why, fmt.Sprintf("A version was uploaded on %s, through %s.", v.Created.Local().Format("2 Jan 2006 at 15:04"), how))
+			}
 		}
-	}
-	if !strange {
-		return nil
+		if active, aerr := cf.ActiveVersion(ctx, account, script); aerr == nil && active != "" && wasActive != "" && active != wasActive && len(why) == 0 {
+			why = append(why, "The relay was switched to another of its earlier versions.")
+		}
 	}
 	r.mu.Lock()
+	r.checkFails, r.checkProblem = 0, ""
+	if len(why) == 0 {
+		r.mu.Unlock()
+		r.changed()
+		return nil
+	}
 	already := r.saved.Cloud.Paused
-	r.saved.Cloud.Paused = true
+	r.saved.Cloud.Paused, r.saved.Cloud.Why = true, why
 	r.stopLocked()
 	err = r.saved.write(r.path)
 	r.mu.Unlock()
@@ -413,8 +483,10 @@ func (r *Remote) CheckRelay(ctx context.Context) error {
 }
 
 // AcceptRelay records what is deployed as the user's own, and resumes remote access after CheckRelay
-// paused it.
-func (r *Remote) AcceptRelay(ctx context.Context) error {
+// paused it. With removeDevices, every paired device is removed first: the answer for a user who isn't
+// sure the change was theirs, since a relay changed by someone else may have taken the keys of any
+// device that opened it meanwhile.
+func (r *Remote) AcceptRelay(ctx context.Context, removeDevices bool) error {
 	token, err := r.token()
 	if err != nil {
 		return err
@@ -425,13 +497,23 @@ func (r *Remote) AcceptRelay(ctx context.Context) error {
 	r.mu.Lock()
 	account, script := r.saved.Cloud.Account, r.saved.Cloud.Script
 	r.mu.Unlock()
-	versions, err := r.cloudflare(token).Versions(ctx, account, script)
+	cf := r.cloudflare(token)
+	versions, err := cf.Versions(ctx, account, script)
 	if err != nil {
+		if cloudflare.Unauthorized(err) {
+			return errors.New("Cloudflare doesn't accept the API token kept here. Remove it and add a new one.")
+		}
 		return err
 	}
+	active, _ := cf.ActiveVersion(ctx, account, script)
+	if removeDevices {
+		if err := r.RevokeAll(); err != nil {
+			return err
+		}
+	}
 	r.mu.Lock()
-	r.saved.Cloud.Versions = versionIDs(versions)
-	r.saved.Cloud.Paused = false
+	r.saved.Cloud.Versions, r.saved.Cloud.Active = versionIDs(versions), active
+	r.saved.Cloud.Paused, r.saved.Cloud.Why = false, nil
 	err = r.saved.write(r.path)
 	if err == nil && r.saved.Enabled && r.saved.Relay != "" {
 		r.start()

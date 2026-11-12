@@ -50,7 +50,11 @@ func (c *Core) SearchMessages(ctx context.Context, query string, limit int) ([]S
 // snippet is about 120 characters of text around [at, at+n), on one line, with "…" where it was cut.
 func snippet(text string, at, n int) string {
 	const before, after = 40, 80
+	// at was found in the text's lowercase form, which is not always as long as the text (a few
+	// letters change size with their case), so it is kept within the text.
+	at = min(max(at, 0), len(text))
 	start, end := max(at-before, 0), min(at+n+after, len(text))
+	end = max(end, start)
 	for start > 0 && !utf8.RuneStart(text[start]) {
 		start--
 	}

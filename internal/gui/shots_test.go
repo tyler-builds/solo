@@ -70,7 +70,7 @@ func TestShots(t *testing.T) {
 		{"settings-remote-pairing", func(a *App, f *fakeBackend) {
 			rm := pairedRemote()
 			rm.StartPairing()
-			rm.st.Requests = []api.RemoteRequest{{Name: "Tyler's phone", At: time.Now()}}
+			rm.st.Requests = []api.RemoteRequest{{At: time.Now()}}
 			a.Remote = rm
 			a.settingsTab = "remote"
 			a.settings.Set(true)
