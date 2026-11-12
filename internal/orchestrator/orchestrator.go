@@ -77,6 +77,8 @@ type Orchestrator struct {
 	// recalls counts recall calls in the turn that began at recallTurn (takeRecall).
 	recallTurn time.Time
 	recalls    int
+	// reopening holds the threads reopen_thread is restoring, whose return Solo needn't hear about.
+	reopening map[string]bool
 }
 
 // New sets up the orchestrator on c: its session parameters, tools and thread updates. dataDir holds
@@ -85,7 +87,8 @@ func New(c *core.Core, dataDir string, log *slog.Logger) (*Orchestrator, error) 
 	if log == nil {
 		log = slog.Default()
 	}
-	o := &Orchestrator{c: c, log: log, workDir: filepath.Join(dataDir, "orchestrator"), update: c.SendSyntheticWithContext}
+	o := &Orchestrator{c: c, log: log, workDir: filepath.Join(dataDir, "orchestrator"), update: c.SendSyntheticWithContext,
+		reopening: map[string]bool{}}
 	if err := os.MkdirAll(o.workDir, 0o755); err != nil {
 		return nil, err
 	}
@@ -371,6 +374,17 @@ func (o *Orchestrator) onChange(ch core.Change) {
 		return
 	}
 	if ch.PrevStatus == ch.Status {
+		return
+	}
+	if ch.Status == core.StatusIdle && core.Finished(ch.PrevStatus) && v.DoneAt.IsZero() {
+		// Restored from History: no turn finished. Solo hears of it with its next message, unless it
+		// reopened the thread itself.
+		o.mu.Lock()
+		own := o.reopening[v.ID]
+		o.mu.Unlock()
+		if !own {
+			o.note(fmt.Sprintf("[Solo: the user restored %s from History; it's back in their list, idle.]", label(v)))
+		}
 		return
 	}
 	switch ch.Status {

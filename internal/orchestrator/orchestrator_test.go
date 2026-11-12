@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -633,4 +634,189 @@ func TestUndeliveredUpdatesAreKept(t *testing.T) {
 		c.State(pendingKey, &saved)
 		return strings.Contains(ms[len(ms)-1], `"Held" (web) finished its turn`) && len(saved) == 0
 	})
+}
+
+// reopen_thread brings a done thread back on its kept branch when its work hadn't landed, and on a new
+// branch from the base when it had none; list_threads and get_thread find done threads first.
+func TestReopenThread(t *testing.T) {
+	c, o := setup(t)
+	o.SetUpdates(false)
+	ctx := context.Background()
+	repo := filepath.Join(c.Settings().Folders[0], "web")
+	thread := func(id string) core.ThreadView { v, _ := c.Thread(id); return v }
+	settled := func(title, prompt string) core.ThreadView {
+		t.Helper()
+		out := call(t, o, "spawn_thread", map[string]any{"repo": "web", "title": title, "prompt": prompt})
+		var id string
+		for _, v := range c.Threads() {
+			if v.IsWorker && v.Title == title {
+				id = v.ID
+			}
+		}
+		if id == "" {
+			t.Fatalf("spawn: %s", out)
+		}
+		eventually(t, title+" settled", func() bool {
+			v := thread(id)
+			return v.Status == core.StatusIdle && !v.InTurn && v.Changed >= 0
+		})
+		return thread(id)
+	}
+
+	kept := settled("Unlanded", "write a.txt x")
+	if !kept.Unlanded {
+		t.Fatalf("not unlanded: %+v", kept)
+	}
+	if out, isErr := o.handleTool(ctx, core.OrchestratorID, "reopen_thread", []byte(`{"id":"`+kept.ID[:8]+`"}`)); !isErr || !strings.Contains(out, "isn't done") {
+		t.Fatalf("reopened a thread in the list: %v %s", isErr, out)
+	}
+	if err := c.Done(ctx, kept.ID); err != nil {
+		t.Fatal(err)
+	}
+	if out := call(t, o, "list_threads", map[string]any{}); strings.Contains(out, kept.ID[:8]) {
+		t.Fatalf("done thread listed as open:\n%s", out)
+	}
+	if out := call(t, o, "list_threads", map[string]any{"include_closed": true}); !strings.Contains(out, kept.ID[:8]) || !strings.Contains(out, "marked it done") {
+		t.Fatalf("done thread not listed with include_closed:\n%s", out)
+	}
+	if out := call(t, o, "get_thread", map[string]any{"id": kept.ID[:8]}); !strings.Contains(out, "reopen_thread brings it back: Its branch "+kept.Branch+" was kept") {
+		t.Fatalf("get_thread on a done thread:\n%s", out)
+	}
+	out := call(t, o, "reopen_thread", map[string]any{"id": kept.ID[:8]})
+	if !strings.Contains(out, "back in the user's list") || !strings.Contains(out, "kept branch "+kept.Branch) {
+		t.Fatalf("reopen kept: %s", out)
+	}
+	v := thread(kept.ID)
+	if v.Status != core.StatusIdle || !v.DoneAt.IsZero() || !v.HasWorktree {
+		t.Fatalf("reopened %+v", v)
+	}
+	if b, err := os.ReadFile(filepath.Join(v.WorktreePath, "a.txt")); err != nil || !strings.Contains(string(b), "x") {
+		t.Fatalf("reopened without its work: %q %v", b, err)
+	}
+
+	none := settled("Nothing", "just answer")
+	if none.Unlanded {
+		t.Fatalf("unlanded: %+v", none)
+	}
+	if err := c.Done(ctx, none.ID); err != nil {
+		t.Fatal(err)
+	}
+	if localBranch(ctx, repo, none.Branch) {
+		t.Fatal("done kept a branch with no work")
+	}
+	out = call(t, o, "reopen_thread", map[string]any{"id": none.ID})
+	if !strings.Contains(out, "was gone (it had no work left to land") || !strings.Contains(out, "new branch "+none.Branch+" from main") {
+		t.Fatalf("reopen without a branch: %s", out)
+	}
+	if v := thread(none.ID); v.Status != core.StatusIdle || !v.DoneAt.IsZero() || !localBranch(ctx, repo, none.Branch) {
+		t.Fatalf("reopened %+v", v)
+	}
+
+	// Solo knows what it reopened; the user restoring one from History is noted for it, as no turn
+	// finished.
+	var notes, pending []string
+	if c.State(notesKey, &notes); len(notes) != 0 {
+		t.Fatalf("notes after reopen_thread: %q", notes)
+	}
+	if err := c.Done(ctx, none.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Restore(ctx, none.ID); err != nil {
+		t.Fatal(err)
+	}
+	c.State(notesKey, &notes)
+	if len(notes) != 1 || !strings.Contains(notes[0], "the user restored Thread "+none.ID[:8]) {
+		t.Fatalf("notes after the user's restore: %q", notes)
+	}
+	c.State(pendingKey, &pending)
+	finished := 0 // its one real turn
+	for _, l := range pending {
+		if strings.Contains(l, "finished its turn") && strings.Contains(l, none.ID[:8]) {
+			finished++
+		}
+	}
+	if finished != 1 {
+		t.Fatalf("restores reported as finished turns: %q", pending)
+	}
+}
+
+// list_threads caps closed threads (newest first) but never open ones, and says how many it left out.
+func TestListThreadsCapsClosedThreads(t *testing.T) {
+	c, o := setup(t)
+	o.SetUpdates(false)
+	ctx := context.Background()
+	var ids []string
+	for _, title := range []string{"Old", "New", "Open"} {
+		call(t, o, "spawn_thread", map[string]any{"repo": "web", "title": title, "prompt": "just answer"})
+		eventually(t, title+" idle", func() bool {
+			for _, v := range c.Threads() {
+				if v.IsWorker && v.Title == title && v.Status == core.StatusIdle && !v.InTurn && v.Changed >= 0 {
+					ids = append(ids, v.ID)
+					return true
+				}
+			}
+			return false
+		})
+	}
+	for _, id := range ids[:2] {
+		if err := c.Done(ctx, id); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(10 * time.Millisecond) // "New" closes after "Old"
+	}
+	out := call(t, o, "list_threads", map[string]any{"include_closed": true, "limit": 1})
+	if !strings.Contains(out, ids[2][:8]) || !strings.Contains(out, ids[1][:8]) || strings.Contains(out, ids[0][:8]) {
+		t.Fatalf("limit 1:\n%s", out)
+	}
+	if !strings.HasSuffix(out, "1 older closed thread(s) not shown; pass a larger limit (up to 100) or days to see them.\n") {
+		t.Fatalf("no omitted line:\n%s", out)
+	}
+	if out := call(t, o, "list_threads", map[string]any{"include_closed": true}); !strings.Contains(out, ids[0][:8]) || strings.Contains(out, "not shown") {
+		t.Fatalf("default:\n%s", out)
+	}
+}
+
+func TestRecentClosed(t *testing.T) {
+	now := time.Date(2026, 11, 12, 12, 0, 0, 0, time.UTC)
+	var closed []core.ThreadView
+	for i := range 150 { // one an hour, newest first: i hours ago
+		v := core.ThreadView{}
+		v.ID = fmt.Sprintf("t%03d", i)
+		v.DoneAt = now.Add(-time.Duration(i) * time.Hour)
+		closed = append(closed, v)
+	}
+	old := core.ThreadView{}
+	old.ID, old.Status, old.UpdatedAt = "old", core.StatusMerged, now.AddDate(0, 0, -(closedDays + 1)) // merged, never marked done
+	closed = append(closed, old)
+	slices.Reverse(closed) // the order they come in doesn't matter
+
+	ids := func(vs []core.ThreadView) []string {
+		var out []string
+		for _, v := range vs {
+			out = append(out, v.ID)
+		}
+		return out
+	}
+	got, omitted := recentClosed(closed, 0, 0, now)
+	if len(got) != closedLimit || omitted != len(closed)-closedLimit || got[0].ID != "t000" || got[closedLimit-1].ID != fmt.Sprintf("t%03d", closedLimit-1) {
+		t.Fatalf("defaults: %v, %d omitted", ids(got), omitted)
+	}
+	if got, omitted = recentClosed(closed, 1000, 0, now); len(got) != maxClosedLimit || omitted != len(closed)-maxClosedLimit {
+		t.Fatalf("limit above the max: %d shown, %d omitted", len(got), omitted)
+	}
+	if got, omitted = recentClosed(closed, 5, 0, now); len(got) != 5 || got[4].ID != "t004" {
+		t.Fatalf("limit 5: %v", ids(got))
+	}
+	// One day back holds the 25 closed in the last 24 hours (0 through 24 hours ago).
+	if got, omitted = recentClosed(closed, maxClosedLimit, 1, now); len(got) != 25 || omitted != len(closed)-25 {
+		t.Fatalf("1 day: %d shown, %d omitted", len(got), omitted)
+	}
+	// The default 30 days leaves out the merged thread last updated 31 days ago, however high the limit.
+	short := append(slices.Clone(closed[:1]), closed[len(closed)-3:]...) // old, t002, t001, t000
+	if got, omitted = recentClosed(short, maxClosedLimit, 0, now); len(got) != 3 || omitted != 1 {
+		t.Fatalf("30 days: %v, %d omitted", ids(got), omitted)
+	}
+	if got, _ = recentClosed(short, maxClosedLimit, closedDays+2, now); len(got) != 4 || got[3].ID != "old" {
+		t.Fatalf("32 days: %v", ids(got))
+	}
 }
