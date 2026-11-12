@@ -265,9 +265,9 @@ A page cannot open an editor or a terminal (`launch.Available` is false there), 
 buttons out.
 
 `cmd/solo-web` is the web client's entry point, and `scripts/web.sh` builds it with TinyGo into
-`dist/web` (see [REMOTE.md](REMOTE.md) for what was measured). Until remote access lands it runs over
-`internal/sample`: generated threads and transcripts as large as a busy real database, one of them
-streaming, which is also what the UI is measured against.
+`dist/web` (see [REMOTE.md](REMOTE.md)). It runs `internal/webclient`, which pairs with a machine and
+shows its UI. With `?sample=1` it runs over `internal/sample` instead: generated threads and transcripts
+as large as a busy real database, one of them streaming, which is what the UI is measured against.
 
 Attachments work without a file system: a file picked in a page is stored by its contents
 (`SaveImageData`), and the UI reads every image through the backend (`ReadImage`), which reads only the
@@ -291,6 +291,11 @@ cmd/solo-web/        the web client's main, and its page (TinyGo; scripts/web.sh
 internal/api/        the interface between the UI and the engine; the settings patch
 internal/remote/     remote access: secure (keys, handshakes), wire (records), rpc (requests and
                      state), host (the machine's side), device (a device's side), relaytest
+internal/webclient/  the web client's shell: pairing and connecting, around the app's UI
+internal/webhost/    the browser, as the web client reaches it through its host script
+cmd/solo-localrelay/ the relay and the web client on this machine, for development
+relay/               the relay: a Cloudflare Worker and a Durable Object (TypeScript)
+e2e/                 remote access end to end in a real browser (scripts/e2e.sh)
 internal/core/       orchestrator, threads, notifications
 internal/store/      SQLite schema + queries
 internal/git/        repo scan, worktrees, diff, merge

@@ -20,13 +20,6 @@ import (
 	"github.com/tyler-builds/solo/internal/remote/wire"
 )
 
-// CloseError is a connection the relay closed, with its code.
-type CloseError struct{ Code int }
-
-func (e *CloseError) Error() string {
-	return fmt.Sprintf("the relay closed the connection (%d)", e.Code)
-}
-
 // RefusedError is a connection the relay did not let in.
 type RefusedError struct{ Status int }
 
@@ -78,7 +71,7 @@ func (c *wsConn) Read() ([]byte, error) {
 	typ, b, err := c.ws.Read(context.Background())
 	if err != nil {
 		if code := websocket.CloseStatus(err); code > 0 {
-			return nil, &CloseError{Code: int(code)}
+			return nil, &device.CloseError{Code: int(code)}
 		}
 		return nil, err
 	}

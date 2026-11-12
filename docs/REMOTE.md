@@ -140,6 +140,34 @@ tests. `internal/remote/relaytest` is the relay in Go, for tests and for running
 machine; the host's tests run over it with real WebSockets, including a relay that alters or drops
 frames.
 
+## The web client (`internal/webclient`, `cmd/solo-web`)
+
+The page a device opens is the app's own UI, built with TinyGo, inside a small shell that pairs and
+connects. `webclient.Shell` is that shell, and builds on every platform, so its tests run it against a
+real machine and relay; `cmd/solo-web` gives it the browser through `internal/webhost` and the page's host
+script, `solo.js`.
+
+- **What a device keeps** is in the browser's storage for the relay's origin: its key pair, and for each
+  machine the machine's public key, the device's session key and its voucher. A pairing code is never
+  kept, and is taken out of the address as the page opens.
+- **Screens.** Not paired: how to pair, which is done at the machine. A pairing link: a question first,
+  then the six digits to type at the machine. Paired: the machine's UI once it has been read in full,
+  which then stays up over a lost connection, under a line that says so. More than one machine: a list,
+  reached from the machine's name in the app.
+- **Connection health.** A dropped connection is tried again at once, then with waits that double up to
+  30 seconds, and immediately when the page is shown again or the network returns. The page tells apart
+  a machine that is offline (the relay says so), a relay that can't be reached, a device the machine
+  removed (it is told, and stops trying), and versions that differ.
+- **In the browser** messages cross between the script and the app as lengths over a shared buffer,
+  the way jamb's own input does, so that a stream of them makes the collector no work; and everything
+  the script does that can throw is caught there, since a panic ends a TinyGo app.
+- **Served with** a content security policy that allows the page's own scripts, its WebAssembly module
+  and connections to its own origin, and nothing else (`internal/remote/webheaders`).
+
+`go run ./cmd/solo-localrelay` serves the built web client and a relay on this machine, for using remote
+access without Cloudflare; with `-demo` it also runs a machine over sample data. `scripts/e2e.sh` drives
+that in a real browser at a phone's size: pairing, use, a lost machine, a reload, and removal.
+
 ## The relay
 
 A Cloudflare Worker and one Durable Object, with the web client as static assets. It holds no secret. Its

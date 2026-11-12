@@ -63,6 +63,7 @@
     status.remove();
     globalThis.soloInstance = result.instance; // for measuring
     jambHost.attach(result.instance);
+    soloHost.attach(result.instance);
     await go.run(result.instance);
   })().catch(stop);
 })();

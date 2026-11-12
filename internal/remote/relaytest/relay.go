@@ -40,6 +40,9 @@ type Relay struct {
 	srv *httptest.Server
 	// Static, when set, serves everything that isn't the relay's own: the web client.
 	Static http.Handler
+	// AllowAny lets every machine in whose token is its own key's: for a relay that listens on this
+	// machine only, where the list of machines is whoever can reach it.
+	AllowAny bool
 	// Tamper, when set, sees every sealed record the relay forwards and returns what to forward in
 	// its place (nil drops it): toDevice says which way it goes. It is how tests play a hostile relay.
 	Tamper func(toDevice bool, frame []byte) []byte
@@ -138,6 +141,9 @@ func (r *Relay) now() time.Time {
 func (r *Relay) allowed(key []byte) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.AllowAny {
+		return true
+	}
 	for _, k := range r.keys {
 		if string(k) == string(key) {
 			return true

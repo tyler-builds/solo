@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"strconv"
 	"strings"
 
 	"github.com/flynn/noise"
@@ -23,8 +24,17 @@ const (
 	Subprotocol = "solo.v1"
 )
 
+// CloseError is a connection that was closed, with the WebSocket's close code: one of the relay's
+// below, or CloseNormal when the machine hung up.
+type CloseError struct{ Code int }
+
+func (e *CloseError) Error() string {
+	return "the connection was closed (" + strconv.Itoa(e.Code) + ")"
+}
+
 // The relay's close codes.
 const (
+	CloseNormal       = 1000 // the machine closed the connection
 	CloseReplaced     = 4000 // another connection took this one's place
 	CloseOffline      = 4001 // the machine isn't connected
 	CloseUnauthorized = 4002
