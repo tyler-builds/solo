@@ -55,6 +55,7 @@ type Relay struct {
 	keys     [][]byte
 	machines map[owner]*machine
 	tickets  map[[32]byte]*ticket
+	open     []*ticket     // pairing opened to devices with no code, in the order it was opened
 	offset   time.Duration // added to the clock, for tests of a machine whose clock is off
 }
 
@@ -124,6 +125,22 @@ func (r *Relay) Tickets() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return len(r.tickets)
+}
+
+// Open reports whether a machine has pairing open to devices with no code.
+func (r *Relay) Open() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.open) > 0
+}
+
+// RefillOpen gives every open pairing uses again, as a relay would that let in whoever asked.
+func (r *Relay) RefillOpen(uses int) {
+	r.mu.Lock()
+	for _, t := range r.open {
+		t.uses = uses
+	}
+	r.mu.Unlock()
 }
 
 func (r *Relay) Machines() int {
@@ -268,6 +285,39 @@ func (r *Relay) upgrade(w http.ResponseWriter, req *http.Request) {
 			r.device(req.Context(), owner{[32]byte(key), mid}, 1, did, ws)
 		}
 	case device.PathPair:
+		if len(token) == 1 && token[0] == device.OpenPairToken {
+			// A device with no code, for whichever machine has pairing open: the one that opened it
+			// last, if several have.
+			if !browser() {
+				http.Error(w, "not allowed", http.StatusForbidden)
+				return
+			}
+			var open []*ticket
+			r.mu.Lock()
+			for _, t := range r.open {
+				if t.uses > 0 && time.Now().Add(r.offset).Before(t.expires) && r.machines[t.machine] != nil {
+					open = append(open, t)
+				}
+			}
+			if len(open) == 1 {
+				open[0].uses--
+			}
+			r.mu.Unlock()
+			switch {
+			case len(open) == 0:
+				http.Error(w, "no machine has pairing open", http.StatusUnauthorized)
+			case len(open) > 1:
+				// The relay doesn't choose which machine a device is paired with.
+				if ws := accept(); ws != nil {
+					ws.Close(device.CloseAmbiguous, "")
+				}
+			default:
+				if ws := accept(); ws != nil {
+					r.device(req.Context(), open[0].machine, 3, secure.ID{}, ws)
+				}
+			}
+			return
+		}
 		if len(token) != 49 || token[0] != 1 {
 			http.Error(w, "bad token", http.StatusBadRequest)
 			return
@@ -359,7 +409,20 @@ func (r *Relay) machine(ctx context.Context, id owner, ws *websocket.Conn) {
 			}
 			hash := [32]byte(body[1:33])
 			r.mu.Lock()
-			if body[0] == 1 {
+			if body[0] == 3 || body[0] == 4 { // pairing opened to devices with no code, or closed
+				at := int64(binary.BigEndian.Uint64(body[33:41]))
+				if body[0] == 3 {
+					// For a few minutes and a few connections at most, whatever the frame asks.
+					until := min(time.Unix(at, 0).Unix(), time.Now().Add(10*time.Minute).Unix())
+					r.open = slices.DeleteFunc(r.open, func(t *ticket) bool { return t.machine == id })
+					r.open = append(r.open, &ticket{machine: id, uses: min(int(body[41]), 16), expires: time.Unix(until, 0)})
+				} else {
+					// The window that ends at the frame's time; zero closes whatever is open.
+					r.open = slices.DeleteFunc(r.open, func(t *ticket) bool {
+						return t.machine == id && (at == 0 || t.expires.Unix() == at)
+					})
+				}
+			} else if body[0] == 1 {
 				r.tickets[hash] = &ticket{machine: id, uses: int(body[41]),
 					expires: time.Unix(int64(binary.BigEndian.Uint64(body[33:41])), 0)}
 			} else if t := r.tickets[hash]; t != nil && t.machine == id {

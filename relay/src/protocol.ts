@@ -26,16 +26,19 @@ export const HEADER = {
 	key: "X-Solo-Key",
 	device: "X-Solo-Device",
 	ticket: "X-Solo-Ticket",
+	// Set for a pairing socket that holds no code: it is for whichever machine has pairing open.
+	open: "X-Solo-Open",
 } as const;
 
 // The first byte of every frame on a machine's socket.
 export const FRAME = { data: 1, open: 2, close: 3, ticket: 4, usage: 5 } as const;
 
-// The kind in an open frame.
-export const KIND = { device: 1, pair: 2 } as const;
+// The kind in an open frame: a paired device, a pairing with a code, and a pairing without one.
+export const KIND = { device: 1, pair: 2, openPair: 3 } as const;
 
-// The operation in a ticket frame.
-export const TICKET = { add: 1, remove: 2 } as const;
+// The operation in a ticket frame. A machine opens pairing to devices that hold no code with `open`
+// (the frame's hash is unused, its expiry and uses are the window's) and closes it with `close`.
+export const TICKET = { add: 1, remove: 2, open: 3, close: 4 } as const;
 
 export const CLOSE = {
 	normal: 1000,
@@ -46,6 +49,9 @@ export const CLOSE = {
 	protocol: 4004,
 	// Reserved: nothing sends it yet.
 	reload: 4005,
+	// A device with no code asked to pair while more than one machine had pairing open: the relay
+	// won't choose which machine a device is paired with.
+	ambiguous: 4006,
 } as const;
 
 export const LIMIT = {
@@ -60,6 +66,10 @@ export const LIMIT = {
 	// Wrong tickets for one machine before pairing with it is refused for the rest of the window.
 	failures: 20,
 	failureWindowMs: 10 * 60 * 1000,
+	// Pairing opened to devices with no code lasts at most this long and lets in at most this many,
+	// whatever the machine asks for.
+	openPairSeconds: 10 * 60,
+	openPairUses: 16,
 	// How many forwarded frames go by between writes of the count, and between usage frames.
 	flushEvery: 1000,
 } as const;

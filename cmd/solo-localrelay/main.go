@@ -98,7 +98,7 @@ func run(addr, web string, demo, stream bool) error {
 		time.Sleep(20 * time.Millisecond)
 	}
 	offer := func() {
-		p, err := remote.StartPairing()
+		p, err := remote.StartPairing(false)
 		if err != nil {
 			fmt.Println("pairing:", err)
 			return
@@ -114,6 +114,13 @@ func run(addr, web string, demo, stream bool) error {
 		case line == "":
 		case line == "new":
 			offer()
+		case line == "open": // pairing without a code: a browser asks at the relay's address
+			if _, err := remote.StartPairing(true); err != nil {
+				fmt.Println("pairing:", err)
+				continue
+			}
+			fmt.Println("OPEN", relay.URL())
+			fmt.Println("Open that address in a browser, choose Pair this device, then type its six digits here.")
 		case line == "off":
 			remote.SetEnabled(false)
 			fmt.Println("OFF")

@@ -276,7 +276,7 @@ func (r *Remote) State() State {
 			LastSeen: d.LastSeen, Online: slices.Contains(online, d.ID)})
 	}
 	if p := r.pairing; p != nil && time.Now().Before(p.code.Expires) {
-		st.Pairing = &Pairing{Link: p.link, Expires: p.code.Expires}
+		st.Pairing = &Pairing{Open: p.open, Link: p.link, Expires: p.code.Expires}
 		for _, q := range p.requests {
 			st.Requests = append(st.Requests, Request{At: q.at})
 		}

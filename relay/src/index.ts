@@ -1,7 +1,15 @@
 // The relay's Worker: it answers /v1/info, checks the token of every socket, and hands the sockets it
 // admits to the one Durable Object that forwards their frames. It keeps nothing and logs nothing.
 
-import { parseHostKeys, parsePairToken, ticketHash, verifyMachineAuth, verifyVoucher, type Verdict } from "./auth";
+import {
+	isOpenPairToken,
+	parseHostKeys,
+	parsePairToken,
+	ticketHash,
+	verifyMachineAuth,
+	verifyVoucher,
+	type Verdict,
+} from "./auth";
 import { fromBase64Url, toHex } from "./bytes";
 import { HEADER, SUBPROTOCOL, type Env, type Role } from "./protocol";
 
@@ -82,6 +90,9 @@ async function verified(
 				: refused(v);
 		}
 		case "pair": {
+			if (isOpenPairToken(token)) {
+				return { [HEADER.open]: "1" };
+			}
 			const pair = parsePairToken(token);
 			if (pair === null) {
 				return status(401);

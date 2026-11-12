@@ -15,8 +15,10 @@ type Remote interface {
 	// on; "" forgets the relay.
 	SetRelay(address string) error
 	SetEnabled(on bool) error
-	// StartPairing offers a pairing code, and Approve pairs the device that shows the six digits.
-	StartPairing() (RemotePairing, error)
+	// StartPairing opens pairing, and Approve pairs the device that shows the six digits. Pairing is
+	// with a code, which the device scans or is handed as a link, or, with open set, without one: for
+	// a browser that was only given the relay's address. The two are never open together.
+	StartPairing(open bool) (RemotePairing, error)
 	CancelPairing()
 	Approve(digits string, readOnly bool) (RemoteDevice, error)
 	Revoke(deviceID string) error
@@ -91,8 +93,10 @@ type RemoteDevice struct {
 	Online   bool
 }
 
-// RemotePairing is a pairing code on offer.
+// RemotePairing is pairing as it stands open.
 type RemotePairing struct {
+	// Open: without a code. A device asks at the relay's address, and Link is empty.
+	Open bool
 	// Link opens the web client with the code; it is what the QR code holds. Anyone who has it can ask
 	// to pair until it expires, so it is shown, not sent.
 	Link    string

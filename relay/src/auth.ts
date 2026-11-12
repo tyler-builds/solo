@@ -102,6 +102,14 @@ export function parsePairToken(token: Uint8Array): { machineId: Uint8Array; tick
 	return { machineId: token.slice(1, 1 + ID_SIZE), ticket: token.slice(1 + ID_SIZE) };
 }
 
+// OPEN_PAIR_TOKEN is the token of a pairing socket that holds no code: one byte, which says so. It
+// proves nothing, and the relay lets it in only while a machine has pairing open.
+export const OPEN_PAIR_TOKEN = 2;
+
+export function isOpenPairToken(token: Uint8Array): boolean {
+	return token.length === 1 && token[0] === OPEN_PAIR_TOKEN;
+}
+
 // ticketHash is what the relay stores of a ticket, and all it ever knows of it.
 export async function ticketHash(ticket: Uint8Array): Promise<Uint8Array> {
 	return new Uint8Array(await crypto.subtle.digest("SHA-256", ticket));

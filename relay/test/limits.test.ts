@@ -184,7 +184,7 @@ describe("protocol errors", () => {
 		"a close frame with more than a connection": [FRAME.close, ...conn, 0],
 		"a ticket frame that is short": ticket.slice(0, -1),
 		"a ticket frame that is long": [...ticket, 0],
-		"a ticket frame with an unknown operation": [FRAME.ticket, 3, ...ticket.slice(2)],
+		"a ticket frame with an unknown operation": [FRAME.ticket, 9, ...ticket.slice(2)],
 	};
 	test.each(Object.entries(malformed))("%s closes a machine", async (_, bytes) => {
 		const machine = await connectMachine();

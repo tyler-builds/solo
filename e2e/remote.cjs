@@ -1,6 +1,7 @@
 "use strict";
 // End to end, in a real browser: a phone opens a pairing link served by the local relay, pairs with a
-// demo machine, uses it, loses and regains it, comes back after a reload, and is removed.
+// demo machine, uses it, loses and regains it, comes back after a reload, and is removed; then a second
+// browser pairs from the bare address, with no code.
 //
 // scripts/e2e.sh runs it. The page is one canvas, so the test reads what is on screen from
 // soloHost.shown and taps by position: the positions are a 390 by 844 phone's, at the app's touch size.
@@ -110,6 +111,44 @@ const fail = (msg) => { throw new Error(msg); };
     await shown({ link: "ended" }, "being removed");
     await page.waitForTimeout(500);
     await shot("10-removed");
+
+    // Another computer's browser, opened at the bare address: no code to scan, no link to paste. It
+    // pairs from the page, with digits typed at the machine.
+    say("open");
+    await line(/^OPEN /);
+    const other = await (await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, hasTouch: true, isMobile: true })).newPage();
+    other.on("pageerror", (e) => errors.push(String(e)));
+    const otherShows = (want, what) => other.waitForFunction(
+      (w) => { const s = globalThis.soloHost && soloHost.shown; return s && Object.keys(w).every((k) => s[k] === w[k]); },
+      want, { timeout: 30000 }).catch(() => fail("the second browser never showed " + what));
+    // press taps down the column a screen's button is in until the screen changes.
+    const press = async (from) => {
+      for (let y = 520; y <= 760; y += 10) {
+        await other.touchscreen.tap(80, y);
+        await other.waitForTimeout(400);
+        if (await other.evaluate((f) => soloHost.shown.screen !== f, from)) return;
+      }
+      fail("no button answered on the " + from + " screen");
+    };
+    await other.goto("http://127.0.0.1:" + port + "/");
+    await otherShows({ screen: "welcome" }, "the welcome");
+    await other.screenshot({ path: path.join(out, "11-bare-address.png") });
+    await press("welcome"); // Pair this device
+    await otherShows({ screen: "confirm" }, "the question");
+    await press("confirm"); // Pair
+    await other.waitForFunction(() => soloHost.shown.digits.length === 6, null, { timeout: 30000 })
+      .catch(() => fail("the second browser never showed digits"));
+    await other.screenshot({ path: path.join(out, "12-bare-digits.png") });
+    say(await other.evaluate(() => soloHost.shown.digits));
+    await line(/^PAIRED /);
+    // With no code, the page has only the answerer's word that it was paired: it asks the person
+    // whether the machine says so too.
+    await otherShows({ screen: "confirm-paired" }, "the question whether the machine says paired");
+    await other.screenshot({ path: path.join(out, "12b-bare-confirm.png") });
+    await press("confirm-paired"); // The machine says paired
+    await otherShows({ screen: "main", link: "ready" }, "the machine's UI");
+    await other.waitForTimeout(1000);
+    await other.screenshot({ path: path.join(out, "13-bare-paired.png") });
 
     const heap = await page.evaluate(() => globalThis.soloInstance ? soloInstance.exports.memory.buffer.byteLength : 0);
     console.log("wasm memory:", Math.round(heap / 1048576), "MB");

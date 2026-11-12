@@ -49,6 +49,8 @@ func (s *Shell) Root(ctx *ui.Context) ui.Element {
 		return s.digits(ctx, sc)
 	case screenMachines:
 		return s.machineList(ctx)
+	case screenConfirmPaired:
+		return s.confirmPairedScreen(ctx)
 	case screenMain:
 		if cur == nil {
 			return s.welcome(ctx, sc)
@@ -106,25 +108,56 @@ func (s *Shell) welcome(ctx *ui.Context, sc screen) ui.Element {
 				Child(ui.Text(n).FontSize(12).Medium().TextColor(t.TextMuted))).
 			Child(ui.Text(text).FontSize(14).TextColor(t.Text).Grow(1))
 	}
+	third := "Scan the code it shows with this device's camera. Or, with no camera at hand, choose its option for a computer's browser, then press the button below."
+	var open ui.Element = ui.Div().Row().Child(ui.Button("Pair this device").Primary().Key("pair-open").OnClick(s.startOpen))
+	if sc.scanAgain {
+		third = "Scan the code it shows with this device's camera."
+		open = nil
+	}
 	return page(ctx,
 		gui.BrandMark(40),
 		heading(ctx, "Use Solo from this device"),
 		problem(ctx, sc.err),
-		para(ctx, "This device isn't paired with a machine yet. Pairing is done at the machine, so only someone who is there can add a device."),
+		para(ctx, "This device isn't paired with a machine yet. Pairing is approved at the machine, so only someone who is there can add a device."),
 		ui.Div().Column().Gap(12).
 			Child(step("1", "On the computer that runs Solo, open Settings, then Remote.")).
 			Child(step("2", "Choose Add a device.")).
-			Child(step("3", "Scan the code it shows with this device's camera.")))
+			Child(step("3", third)),
+		open)
+}
+
+// confirmPairedScreen asks, after a pairing without a code, whether the machine says so too. This
+// device had nothing of the machine's beforehand, so until the person says yes, "paired" is only the
+// word of whoever answered it.
+func (s *Shell) confirmPairedScreen(ctx *ui.Context) ui.Element {
+	name := "the machine"
+	if s.answered != nil && s.answered.Name != "" {
+		name = "“" + s.answered.Name + "”"
+	}
+	return page(ctx,
+		gui.BrandMark(40),
+		heading(ctx, "Does your machine say it's paired?"),
+		para(ctx, "Solo on your machine should now say that a device was paired, and list it under Settings, Remote. Something answered this device as "+name+"; only your machine's own word makes it yours."),
+		para(ctx, "If your machine instead says no device shows those digits, choose No."),
+		ui.Div().Row().Gap(8).Wrap().
+			Child(ui.Button("Yes, it says paired").Primary().Key("paired-yes").OnClick(func() { s.confirmPaired(true) })).
+			Child(ui.Button("No").Secondary().Key("paired-no").OnClick(func() { s.confirmPaired(false) })))
 }
 
 // confirm asks before pairing: a link was opened, and the person should mean it.
 func (s *Shell) confirm(ctx *ui.Context) ui.Element {
 	go_ := func() { s.pair(s.state.name.Peek()) }
+	first := "It will be able to use Solo on the machine that showed this code, once you approve it there."
+	second := "Go on only if you just scanned the code on your own machine's screen. A link that someone sent you pairs this device with their machine, not yours."
+	if s.code == nil {
+		first = "It will ask the machine that is waiting for a computer's browser, under Settings, Remote, Add a device, and show six digits for you to type there."
+		second = "Go on only if you just opened that on your own machine."
+	}
 	return page(ctx,
 		gui.BrandMark(40),
 		heading(ctx, "Pair this device?"),
-		para(ctx, "It will be able to use Solo on the machine that showed this code, once you approve it there."),
-		para(ctx, "Go on only if you just scanned the code on your own machine's screen. A link that someone sent you pairs this device with their machine, not yours."),
+		para(ctx, first),
+		para(ctx, second),
 		ui.Div().Column().Gap(6).
 			Child(ui.Text("What the machine will call this device").FontSize(12).TextColor(ctx.Theme().TextMuted)).
 			Child(ui.TextInput(s.state.name).Label("This device's name").Placeholder("My phone").Width(ui.Full).
@@ -262,7 +295,9 @@ func (s *Shell) machineList(ctx *ui.Context) ui.Element {
 		gui.BrandMark(40),
 		heading(ctx, "Machines"),
 		list,
-		para(ctx, "To add another, open Settings, then Remote, on that machine and scan its code with this device. Forgetting a machine deletes its keys from this device; remove this device at the machine too."))
+		para(ctx, "To add another, open Settings, then Remote, on that machine and choose Add a device. Then scan its code with this device, or pair from here."),
+		ui.Div().Row().Child(ui.Button("Pair with another machine").Secondary().Key("pair-open").OnClick(s.startOpen)),
+		para(ctx, "Forgetting a machine deletes its keys from this device; remove this device at the machine too."))
 }
 
 // tell reports what is on screen to Platform.Shown, when it changed.
@@ -271,7 +306,7 @@ func (s *Shell) tell(sc screen, cur *session) {
 		return
 	}
 	name := [...]string{screenWelcome: "welcome", screenConfirm: "confirm", screenPairing: "pairing",
-		screenMachines: "machines", screenMain: "main"}[sc.kind]
+		screenMachines: "machines", screenMain: "main", screenConfirmPaired: "confirm-paired"}[sc.kind]
 	l := ""
 	if cur != nil {
 		l = [...]string{linkConnecting: "connecting", linkReady: "ready", linkOffline: "offline", linkLost: "lost",

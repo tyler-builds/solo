@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -20,6 +21,7 @@ import (
 	"github.com/tyler-builds/solo/internal/remote/relaytest"
 	"github.com/tyler-builds/solo/internal/remote/rpc"
 	"github.com/tyler-builds/solo/internal/remote/secure"
+	"github.com/tyler-builds/solo/internal/remote/wire"
 	"github.com/tyler-builds/solo/internal/sample"
 )
 
@@ -117,7 +119,7 @@ func (w *world) online() {
 // scan a code, a test no time at all.
 func (w *world) offer() Pairing {
 	w.t.Helper()
-	p, err := w.remote.StartPairing()
+	p, err := w.remote.StartPairing(false)
 	if err != nil {
 		w.t.Fatal(err)
 	}
@@ -127,6 +129,19 @@ func (w *world) offer() Pairing {
 		time.Sleep(150 * time.Millisecond)
 	}
 	return p
+}
+
+// open opens pairing without a code, and waits until the relay knows.
+func (w *world) open2() {
+	w.t.Helper()
+	if _, err := w.remote.StartPairing(true); err != nil {
+		w.t.Fatal(err)
+	}
+	if w.relay != nil {
+		w.wait("the relay to open pairing", w.relay.Open)
+	} else {
+		time.Sleep(150 * time.Millisecond)
+	}
 }
 
 func newKey(t *testing.T) noise.DHKey {
@@ -462,7 +477,7 @@ func TestClockAndRefusal(t *testing.T) {
 	if p := other.remote.State().Problem; !strings.Contains(p, "list") {
 		t.Errorf("the problem shown: %q", p)
 	}
-	if _, err := other.remote.StartPairing(); err == nil {
+	if _, err := other.remote.StartPairing(false); err == nil {
 		t.Error("a machine without its relay made a pairing code")
 	}
 }
@@ -678,5 +693,279 @@ func TestPairingCodeAnswersFewHandshakes(t *testing.T) {
 	}
 	if w.remote.State().Pairing != nil {
 		t.Error("the code lived on")
+	}
+}
+
+// A browser that was only given the relay's address pairs without a code: it asks, shows six digits,
+// and the person types them at the machine. It then connects as any paired device does.
+func TestPairWithoutACode(t *testing.T) {
+	w := newWorld(t)
+	ctx := context.Background()
+	key := newKey(t)
+	// Nobody is let in while pairing isn't open at the machine.
+	if _, err := device.PairOpen(ctx, w.dial, w.origin, key, "Desktop", rand.Reader); err == nil {
+		t.Fatal("a device paired with no code while no pairing was open")
+	}
+	// Nor while a code is on offer: the two kinds are never open together.
+	w.offer()
+	if _, err := device.PairOpen(ctx, w.dial, w.origin, key, "Desktop", rand.Reader); !errors.Is(err, device.ErrNotOpen) {
+		t.Fatalf("a device with no code while a code was on offer: %v", err)
+	}
+	w.open2()
+	if st := w.remote.State(); st.Pairing == nil || !st.Pairing.Open || st.Pairing.Link != "" {
+		t.Fatalf("pairing: %+v", st.Pairing)
+	}
+	req, err := device.PairOpen(ctx, w.dial, w.origin, key, "Desktop", rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !req.Unconfirmed {
+		t.Error("a pairing with no code isn't marked as needing the person's word")
+	}
+	w.wait("the request", func() bool { return len(w.remote.State().Requests) == 1 })
+	wrong := "000000"
+	if req.Digits == wrong {
+		wrong = "111111"
+	}
+	if _, err := w.remote.Approve(wrong, false); err == nil {
+		t.Fatal("wrong digits approved a device")
+	}
+	d, err := w.remote.Approve(req.Digits, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := req.Wait()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.ID != w.remote.State().MachineID || m.Name != "box" || d.Name != "Desktop" {
+		t.Errorf("paired: %+v / %+v", m, d)
+	}
+	c := rpc.NewClient(rpc.ClientOptions{Random: rand.Reader})
+	w.session(key, m, c)
+	if len(c.Threads()) == 0 {
+		t.Error("the device sees no threads")
+	}
+	// Approving spent the pairing: the next device with no code is turned away.
+	if _, err := device.PairOpen(ctx, w.dial, w.origin, newKey(t), "Another", rand.Reader); err == nil {
+		t.Error("pairing stayed open after a device was approved")
+	}
+}
+
+// Someone else who reaches the relay's address while pairing is open can ask too, and shows other
+// digits; so does a relay that puts itself between the device and the machine. Only the device whose
+// digits are typed is paired.
+func TestPairWithoutACodeOthersAsking(t *testing.T) {
+	w := newWorld(t)
+	ctx := context.Background()
+	w.local()
+	w.open2()
+	mine, err := device.PairOpen(ctx, w.dial, w.origin, newKey(t), "Mine", rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	theirs, err := device.PairOpen(ctx, w.dial, w.origin, newKey(t), "Type 123456", rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.wait("both requests", func() bool { return len(w.remote.State().Requests) == 2 })
+	if mine.Digits == theirs.Digits {
+		t.Skip("the two handshakes drew the same six digits (one in a million)")
+	}
+	result := make(chan error, 1)
+	go func() { _, err := theirs.Wait(); result <- err }()
+	if _, err := w.remote.Approve(mine.Digits, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mine.Wait(); err != nil {
+		t.Fatalf("my device: %v", err)
+	}
+	if err := <-result; !errors.Is(err, device.ErrDenied) {
+		t.Errorf("the other device was told %v", err)
+	}
+	if devs := w.remote.State().Devices; len(devs) != 1 || devs[0].Name != "Mine" {
+		t.Errorf("paired: %+v", devs)
+	}
+}
+
+// A device that doesn't keep its commitment (it reveals a number other than the one it committed to,
+// which is how it would choose its digits) is never shown to the person.
+func TestPairWithoutACodeHoldsTheCommitment(t *testing.T) {
+	w := newWorld(t)
+	ctx := context.Background()
+	w.local()
+	w.open2()
+	key := newKey(t)
+	conn, err := w.dial(ctx, device.PathPair, []byte{device.OpenPairToken})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	ini, first, _ := secure.InitiateOpen(w.origin, key, rand.Reader)
+	conn.Write(first)
+	answer, err := conn.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	third, ch, err := ini.Finish(answer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn.Write(third)
+	link := wire.NewLink(conn, ch)
+	other := append([]byte(nil), ini.Nonce()...)
+	other[5] ^= 1
+	req, _ := json.Marshal(device.Request{Name: "Chooser", Nonce: other})
+	link.Send(req)
+	// The machine hangs up on it, and it was never among those asking.
+	if _, err := conn.Read(); err == nil {
+		t.Error("the machine went on with a device that broke its commitment")
+	}
+	if n := len(w.remote.State().Requests); n != 0 {
+		t.Errorf("a device that broke its commitment is among the %d asking", n)
+	}
+}
+
+// A device is paired with the machine that answered it and nobody else, and only when what the machine
+// sent hangs together: its ID is the hash of the key the handshake was with and of the key its voucher
+// is signed with, and the voucher is for this device. And something that answers "paired" with nobody
+// having typed anything is not taken at its word.
+func TestDeviceChecksWhatItIsTold(t *testing.T) {
+	w := newWorld(t)
+	w.local()
+	ctx := context.Background()
+	// A rogue answers a device's handshake itself, as the relay or another listed machine could, and
+	// says "paired" at once.
+	rogueSeed, _ := secure.NewSeed(rand.Reader)
+	rogue, _ := secure.MachineFromSeed(rogueSeed)
+	key := newKey(t)
+	answerAs := func(decide func(peer []byte) device.Decision) device.Dialer {
+		return func(context.Context, string, []byte) (wire.Conn, error) {
+			a, b := make(chan []byte, 8), make(chan []byte, 8)
+			dev, mach := &chanConn{in: a, out: b}, &chanConn{in: b, out: a}
+			go func() {
+				first, _ := mach.Read()
+				res, answer, err := secure.RespondOpen(w.origin, rogue.Noise, first, rand.Reader)
+				if err != nil {
+					return
+				}
+				mach.Write(answer)
+				third, _ := mach.Read()
+				ch, err := res.Finish(third)
+				if err != nil {
+					return
+				}
+				link := wire.NewLink(mach, ch)
+				link.Receive()
+				link.Send(decision(decide(ch.Peer())))
+			}()
+			return dev, nil
+		}
+	}
+	psk := make([]byte, secure.KeySize)
+	own := secure.DeviceID(key.Public)
+	for name, decide := range map[string]func([]byte) device.Decision{
+		"another machine's ID": func([]byte) device.Decision {
+			real, _ := secure.ParseID(w.remote.State().MachineID)
+			v := rogue.Voucher(w.origin, own, time.Now())
+			copy(v[33:49], real[:]) // the real machine's ID in the rogue's voucher
+			return device.Decision{OK: true, PSK: psk, Voucher: v, Name: "box", Machine: real.String()}
+		},
+		"a voucher for another device": func([]byte) device.Decision {
+			return device.Decision{OK: true, PSK: psk, Voucher: rogue.Voucher(w.origin, secure.DeviceID([]byte("someone else")), time.Now()), Name: "box"}
+		},
+	} {
+		p, err := device.PairOpen(ctx, answerAs(decide), w.origin, key, "Desktop", rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if m, err := p.Wait(); err == nil {
+			t.Errorf("%s: the device kept %+v", name, m)
+		}
+	}
+	// A rogue that is consistent about itself is "paired" as far as the handshake can tell, with its
+	// own ID and not the real machine's. That is why the page asks the person before keeping it.
+	p, err := device.PairOpen(ctx, answerAs(func([]byte) device.Decision {
+		return device.Decision{OK: true, PSK: psk, Voucher: rogue.Voucher(w.origin, own, time.Now()), Name: "box"}
+	}), w.origin, key, "Desktop", rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := p.Wait()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !p.Unconfirmed || m.ID == w.remote.State().MachineID || m.ID != rogue.ID.String() {
+		t.Errorf("a rogue's answer: unconfirmed %v, id %s", p.Unconfirmed, m.ID)
+	}
+}
+
+// chanConn is one end of a connection in memory.
+type chanConn struct{ in, out chan []byte }
+
+func (c *chanConn) Read() ([]byte, error) {
+	b, ok := <-c.in
+	if !ok {
+		return nil, errors.New("closed")
+	}
+	return b, nil
+}
+func (c *chanConn) Write(b []byte) error { c.out <- append([]byte(nil), b...); return nil }
+func (c *chanConn) Close() error         { return nil }
+
+// A pairing connection has a short time to finish its handshake and say who is asking, and a request
+// then waits a couple of minutes at most: nothing holds a set of digits, unseen, for as long as pairing
+// is open. And what it says before it is anyone is one small message, not a megabyte to inflate.
+func TestPairingConnectionsDontLinger(t *testing.T) {
+	w := newWorld(t)
+	w.local()
+	ctx := context.Background()
+	w.open2()
+	conn, err := w.dial(ctx, device.PathPair, []byte{device.OpenPairToken})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	ini, first, _ := secure.InitiateOpen(w.origin, newKey(t), rand.Reader)
+	conn.Write(first)
+	answer, err := conn.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	third, ch, err := ini.Finish(answer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn.Write(third)
+	// Who is asking, as a compressed message in several records: more than one small record.
+	link := wire.NewLink(conn, ch)
+	link.Compress = true
+	req, _ := json.Marshal(device.Request{Name: strings.Repeat("a", 900), Nonce: ini.Nonce()})
+	link.Send(req)
+	if _, err := conn.Read(); err == nil {
+		t.Error("the machine took a compressed request from a device that isn't anyone yet")
+	}
+	if n := len(w.remote.State().Requests); n != 0 {
+		t.Errorf("%d requests", n)
+	}
+}
+
+// Pairing without a code answers as few handshakes as pairing with one, whatever the relay lets in.
+func TestPairWithoutACodeAnswersFewHandshakes(t *testing.T) {
+	w := newWorld(t)
+	w.local()
+	w.open2()
+	for i := 0; i < maxHandshakes+4; i++ {
+		w.relay.RefillOpen(8)
+		req, err := device.PairOpen(context.Background(), w.dial, w.origin, newKey(t), "x", rand.Reader)
+		if err == nil {
+			req.Cancel()
+		}
+		if i >= maxHandshakes && err == nil {
+			t.Fatalf("handshake %d was answered", i+1)
+		}
+	}
+	if w.remote.State().Pairing != nil {
+		t.Error("pairing stayed open")
 	}
 }

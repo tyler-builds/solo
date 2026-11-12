@@ -78,6 +78,19 @@ export class Relay extends DurableObject<Env> {
 	// fetch admits a socket the Worker has verified. The request is the Worker's own (src/index.ts).
 	override async fetch(request: Request): Promise<Response> {
 		const role = request.headers.get(HEADER.role);
+		if (role === "pair" && request.headers.get(HEADER.open) !== null) {
+			// A device with no code, for the machine that has pairing open. With several, the relay
+			// doesn't choose: which machine a device is paired with is the person's to say, by opening
+			// pairing on that one only.
+			const open = this.openOwners();
+			if (open.length === 0) {
+				return new Response(null, { status: 401 });
+			}
+			if (open.length > 1) {
+				return refuse(CLOSE.ambiguous);
+			}
+			return this.admitClient("pair", open[0]!, NO_DEVICE, openKey(open[0]!), KIND.openPair);
+		}
 		const id = request.headers.get(HEADER.machine) ?? "";
 		if (fromHex(id, ID_SIZE) === null) {
 			return new Response(null, { status: 400 });
@@ -158,7 +171,13 @@ export class Relay extends DurableObject<Env> {
 
 	// admitClient admits a device's socket or a pairing one, and tells the machine of it. A ticket is
 	// spent only here, when its socket is really admitted.
-	private admitClient(role: "device" | "pair", machine: string, device: string, ticket?: string): Response {
+	private admitClient(
+		role: "device" | "pair",
+		machine: string,
+		device: string,
+		ticket?: string,
+		kind: number = role === "pair" ? KIND.pair : KIND.device,
+	): Response {
 		const host = this.sockets(machineTag(machine))[0];
 		if (host === undefined) {
 			return refuse(CLOSE.offline);
@@ -176,7 +195,6 @@ export class Relay extends DurableObject<Env> {
 		const { 0: client, 1: server } = new WebSocketPair();
 		this.ctx.acceptWebSocket(server, [clientsTag(role, machine), connTag(machine, toHex(conn))]);
 		server.serializeAttachment({ role, machine, conn: toHex(conn), device, at: now } satisfies Peer);
-		const kind = role === "pair" ? KIND.pair : KIND.device;
 		send(host, concat(new Uint8Array([FRAME.open]), conn, new Uint8Array([kind]), fromHex(device, ID_SIZE)!));
 		return upgraded(client);
 	}
@@ -247,6 +265,25 @@ export class Relay extends DurableObject<Env> {
 					this.ctx.storage.sql.exec("DELETE FROM tickets WHERE hash = ? AND machine = ?", hash, peer.machine);
 					return;
 				}
+				// Pairing opened to devices that hold no code, and closed again: a row of the machine's
+				// own, with the window's end and how many connections it lets in.
+				if (body[0] === TICKET.open) {
+					// For a few minutes and a few connections at most, whatever the frame asks.
+					const until = Math.min(expires, Math.floor(Date.now() / 1000) + LIMIT.openPairSeconds);
+					this.ctx.storage.sql.exec("DELETE FROM tickets WHERE hash = ?", openKey(peer.machine));
+					this.addTicket(peer.machine, openKey(peer.machine), until, Math.min(view.getUint8(8), LIMIT.openPairUses));
+					return;
+				}
+				if (body[0] === TICKET.close) {
+					// The window that ends at the frame's time, so that a late close for an earlier
+					// window doesn't shut a newer one; a time of zero closes whatever is open.
+					if (expires === 0) {
+						this.ctx.storage.sql.exec("DELETE FROM tickets WHERE hash = ?", openKey(peer.machine));
+					} else {
+						this.ctx.storage.sql.exec("DELETE FROM tickets WHERE hash = ? AND expires = ?", openKey(peer.machine), expires);
+					}
+					return;
+				}
 				break;
 			}
 		}
@@ -302,6 +339,19 @@ export class Relay extends DurableObject<Env> {
 			);
 		}
 		return null;
+	}
+
+	// openOwners returns the connected machines that have pairing open to devices with no code.
+	private openOwners(): string[] {
+		const rows = this.ctx.storage.sql
+			.exec<TicketRow & { hash: string }>(
+				"SELECT hash, machine, expires, uses FROM tickets WHERE hash LIKE 'open:%' AND expires > ? AND uses > 0",
+				Date.now() / 1000,
+			)
+			.toArray();
+		return rows
+			.filter((row) => row.hash === openKey(row.machine) && this.sockets(machineTag(row.machine)).length > 0)
+			.map((row) => row.machine);
 	}
 
 	// sockets returns the sockets with a tag that the relay has not finished with.
@@ -398,6 +448,11 @@ export class Relay extends DurableObject<Env> {
 // owner names a machine by the relay key that vouches for it and its ID. idOf takes the ID back out.
 function owner(key: string, id: string): string {
 	return `${key}:${id}`;
+}
+
+// openKey is where the tickets table keeps a machine's open pairing: no hash looks like it.
+function openKey(machine: string): string {
+	return `open:${machine}`;
 }
 
 function idOf(machine: string): string {

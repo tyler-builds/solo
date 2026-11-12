@@ -63,11 +63,12 @@ const (
 type screenKind int
 
 const (
-	screenWelcome  screenKind = iota // not paired with anything
-	screenConfirm                    // a pairing link was opened: pair?
-	screenPairing                    // asking; the digits are shown
-	screenMachines                   // the machines this device knows
-	screenMain                       // a machine's UI, or the wait for it
+	screenWelcome       screenKind = iota // not paired with anything
+	screenConfirm                         // a pairing link was opened: pair?
+	screenPairing                         // asking; the digits are shown
+	screenMachines                        // the machines this device knows
+	screenMain                            // a machine's UI, or the wait for it
+	screenConfirmPaired                   // paired without a code: does the machine say so too?
 )
 
 // screen is what the shell shows.
@@ -75,6 +76,10 @@ type screen struct {
 	kind   screenKind
 	digits string // screenPairing
 	err    string // what went wrong on the way here
+	// scanAgain: a pairing with a code just failed. The page then says to scan again, and doesn't
+	// offer pairing without a code: whoever made the first fail shouldn't thereby move the person to
+	// the kind of pairing that rests on six digits alone.
+	scanAgain bool
 }
 
 // link is where the shell stands with the machine it shows.
@@ -105,6 +110,7 @@ type Shell struct {
 	current  *session
 	pairing  *device.Pairing
 	code     *secure.PairingCode
+	answered *device.Machine // paired without a code, and not yet confirmed at the machine (UI thread)
 	state    *state
 	told     [3]string // what Platform.Shown was last told (UI thread)
 }
@@ -236,12 +242,10 @@ func (c *session) end() {
 	})
 }
 
-// pair asks the machine the code names to pair with this device, under the name the user gave.
+// pair asks to pair this device, under the name the user gave: with the machine the code names, or,
+// when the page was opened with no code, with whichever machine has pairing open.
 func (s *Shell) pair(name string) {
 	code := s.code
-	if code == nil {
-		return
-	}
 	name = device.CleanName(name)
 	if name == "" {
 		name = "A device"
@@ -249,10 +253,16 @@ func (s *Shell) pair(name string) {
 	s.state.screen.Set(screen{kind: screenPairing})
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		p, err := device.Pair(ctx, s.p.Dial, s.origin, *code, s.key, name, s.p.Random)
+		var p *device.Pairing
+		var err error
+		if code != nil {
+			p, err = device.Pair(ctx, s.p.Dial, s.origin, *code, s.key, name, s.p.Random)
+		} else {
+			p, err = device.PairOpen(ctx, s.p.Dial, s.origin, s.key, name, s.p.Random)
+		}
 		cancel()
 		if err != nil {
-			s.failPairing(pairingProblem(err))
+			s.failPairing(pairingProblem(err), code != nil)
 			return
 		}
 		s.mu.Lock()
@@ -268,16 +278,44 @@ func (s *Shell) pair(name string) {
 			return // cancelled here
 		}
 		if err != nil {
-			s.failPairing(pairingProblem(err))
+			s.failPairing(pairingProblem(err), code != nil)
 			return
 		}
-		s.onUI(func() { s.paired(m) })
+		s.onUI(func() {
+			if p.Unconfirmed {
+				// Nothing told this device which machine it was talking to, so "paired" is so far the
+				// word of whoever answered. The person says whether their machine says so too.
+				s.answered = &m
+				s.state.screen.Set(screen{kind: screenConfirmPaired})
+				return
+			}
+			s.paired(m)
+		})
 	}()
+}
+
+// confirmPaired is the person's answer to whether their machine says this device was paired. UI thread.
+func (s *Shell) confirmPaired(yes bool) {
+	m := s.answered
+	s.answered = nil
+	if m == nil {
+		return
+	}
+	if yes {
+		s.paired(*m)
+		return
+	}
+	s.state.screen.Set(screen{kind: s.home(), err: "Nothing was kept. Something other than your machine answered this device, or the digits were typed for another device. Try again; if it happens again, check the relay in Solo's settings on the machine."})
+	if s.home() == screenMain && s.current == nil {
+		s.open(s.pick())
+	}
 }
 
 func pairingProblem(err error) string {
 	var closed *device.CloseError
 	switch {
+	case errors.Is(err, device.ErrNotOpen), errors.Is(err, device.ErrSeveralOpen):
+		return err.Error()
 	case errors.Is(err, device.ErrDenied):
 		return "The request was turned down at the machine, or the pairing was cancelled there."
 	case errors.As(err, &closed) && closed.Code == device.CloseOffline:
@@ -288,14 +326,21 @@ func pairingProblem(err error) string {
 	return "Pairing didn't finish. The code may have expired or been used: make a new one at the machine and scan it."
 }
 
-func (s *Shell) failPairing(msg string) {
+func (s *Shell) failPairing(msg string, hadCode bool) {
 	s.onUI(func() {
 		s.code = nil
-		s.state.screen.Set(screen{kind: s.home(), err: msg})
+		s.state.screen.Set(screen{kind: s.home(), err: msg, scanAgain: hadCode})
 		if s.home() == screenMain && s.current == nil {
 			s.open(s.pick())
 		}
 	})
+}
+
+// startOpen begins a pairing with no code: the page was opened at the relay's address, and the person
+// has pairing open at their machine. UI thread.
+func (s *Shell) startOpen() {
+	s.code = nil
+	s.state.screen.Set(screen{kind: screenConfirm})
 }
 
 // cancelPairing gives a pairing up.
