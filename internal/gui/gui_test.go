@@ -18,8 +18,17 @@ import (
 
 func newUI(t *testing.T, f *fakeBackend) (*App, *uitest.UI) {
 	t.Helper()
+	return newUIWith(t, f, nil)
+}
+
+// newUIWith is newUI with the app set up before its window opens.
+func newUIWith(t *testing.T, f *fakeBackend, setup func(*App)) (*App, *uitest.UI) {
+	t.Helper()
 	_, dark := Themes()
 	a := New(f)
+	if setup != nil {
+		setup(a)
+	}
 	u := uitest.New(t, a.Root, uitest.Size(1440, 900), uitest.Theme(dark))
 	t.Cleanup(u.Close)
 	return a, u

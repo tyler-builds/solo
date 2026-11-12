@@ -57,10 +57,10 @@ func (m Machine) NewPairingCode(random io.Reader, now time.Time, ttl time.Durati
 // What the machine signs for the relay. Each is its fields and a signature over a context string, the
 // relay's origin and those fields, so a signature made for one purpose or one relay is no use for
 // another. The relay checks them without keeping anything (relay/src/auth.ts).
-const (
-	// MachineAuthSize and VoucherSize are the sizes of the two tokens.
-	MachineAuthSize = 1 + ed25519.PublicKeySize + 16 + 8 + 16 + ed25519.SignatureSize
-	VoucherSize     = 1 + ed25519.PublicKeySize + 16 + 16 + 8 + ed25519.SignatureSize
+// The sizes in secure.go are these fields' sizes.
+var (
+	_ [MachineAuthSize]struct{} = [1 + ed25519.PublicKeySize + 16 + 8 + 16 + ed25519.SignatureSize]struct{}{}
+	_ [VoucherSize]struct{}     = [1 + ed25519.PublicKeySize + 16 + 16 + 8 + ed25519.SignatureSize]struct{}{}
 )
 
 func signed(context, origin string, body []byte) []byte {

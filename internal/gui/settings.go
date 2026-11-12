@@ -202,11 +202,12 @@ var settingsTabs = []struct {
 	{"models", "Models", icons.Bot},
 	{"branches", "Branches", icons.GitBranch},
 	{"prs", "Pull requests", icons.GitPullRequest},
+	{"remote", "Remote", icons.MonitorSmartphone},
 	{"history", "History", icons.Archive},
 }
 
 // settingsNav is Settings' list of pages.
-func settingsNav(ctx *ui.Context, tab *ui.Signal[string]) ui.Element {
+func settingsNav(ctx *ui.Context, tab *ui.Signal[string], hasRemote bool) ui.Element {
 	t := ctx.Theme()
 	nav := ui.Div().Column().Gap(2).Width(ui.Px(184)).Shrink(0).Role(access.RoleTabList).Label("Settings pages")
 	compact := isCompact(ctx)
@@ -215,6 +216,9 @@ func settingsNav(ctx *ui.Context, tab *ui.Signal[string]) ui.Element {
 		nav = ui.Div().Row().Gap(2).Shrink(0).ScrollX().Role(access.RoleTabList).Label("Settings pages")
 	}
 	for _, p := range settingsTabs {
+		if p.value == "remote" && !hasRemote {
+			continue
+		}
 		value := p.value
 		on := tab.Get() == value
 		item := ui.Div().Row().Align(ui.Center).Gap(space2 + 2).PaddingX(space3).Height(ui.Px(34)).Radius(radiusS).
@@ -658,6 +662,10 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 			page = branchesTab
 		case "prs":
 			page = prsTab
+		case "remote":
+			if page = a.remotePage(ctx); page == nil {
+				page = general
+			}
 		case "history":
 			page = settingsPage(ctx, "History", "Restoring a thread puts it back in your list with its worktree, so you can keep talking to it.",
 				a.historyList(ctx))
@@ -669,7 +677,7 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 		winW, winH := ctx.WindowSize()
 		bodyH := min(max(winH-220, 360), 660)
 		body := ui.Div().Row().Width(ui.Full).Height(ui.Px(bodyH)).Gap(space6).
-			Child(settingsNav(ctx, tab)).
+			Child(settingsNav(ctx, tab, a.Remote != nil)).
 			Child(ui.Div().Column().Grow(1).MinWidth(ui.Px(0)).ScrollY().PaddingRight(space4).PaddingBottom(space6).
 				Key("settings-page-" + tab.Get()).
 				Child(page))
@@ -679,7 +687,7 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 			// page under them.
 			width = ui.Px(max(winW-2*space2, 280))
 			body = ui.Div().Column().Width(ui.Full).Height(ui.Px(max(winH-200, 240))).Gap(space3).
-				Child(settingsNav(ctx, tab)).
+				Child(settingsNav(ctx, tab, a.Remote != nil)).
 				Child(ui.Div().Column().Grow(1).MinHeight(ui.Px(0)).ScrollY().PaddingBottom(space4).
 					Key("settings-page-" + tab.Get()).
 					Child(page))

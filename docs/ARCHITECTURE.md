@@ -289,6 +289,8 @@ action at a time (`core.ErrBusy`), so two devices can't both merge it.
 cmd/solo/            main
 cmd/solo-web/        the web client's main, and its page (TinyGo; scripts/web.sh)
 internal/api/        the interface between the UI and the engine; the settings patch
+internal/remote/     remote access: secure (keys, handshakes), wire (records), rpc (requests and
+                     state), host (the machine's side), device (a device's side), relaytest
 internal/core/       orchestrator, threads, notifications
 internal/store/      SQLite schema + queries
 internal/git/        repo scan, worktrees, diff, merge

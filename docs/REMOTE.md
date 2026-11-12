@@ -110,6 +110,36 @@ Tests run a device against a machine in memory, against the real engine over the
 against peers that break the rules; the frame decoder is fuzzed, and what a cold start, a resume and a
 transcript cost on the wire have ceilings (`TestSizeBudgets`, `TestResume`).
 
+## The machine's side (`internal/remote/host`)
+
+`host.Remote` is what the desktop app runs. It keeps the machine's seed in the OS keyring (in a file only
+the user can read where there is no keyring, which Settings then says), and the relay's address and the
+paired devices in `remote.json`, also the user's alone. The keyring is read when remote access is first
+used, not at every start.
+
+- **The relay connection** is one WebSocket the machine opens, signed for with its relay key. It is
+  retried with a growing, jittered wait; a relay that refuses the machine is said so in Settings rather
+  than retried quickly; a clock that is off is corrected once from the relay's `/v1/info`.
+- **Each device's connection** arrives on that socket. What the relay says of it (which device) only
+  picks the key to try: the handshake must then show the public key approved at this machine. A device
+  that was removed still gets through the relay with its voucher, and gets no answer here.
+- **Pairing** offers one code at a time, for five minutes by the machine's clock. A request is shown only
+  after a message arrives on the channel its handshake made. `Approve` takes the six digits typed at
+  the machine, pairs the one request that shows them, and turns the others down; five wrong sets of
+  digits end the code.
+- **Sessions** are keyed afresh at least every hour, and end at once when a device is removed, its
+  access changes, or remote access is turned off.
+- **The audit log** (`remote-audit.log`) has a line for every pairing, removal and request that changed
+  something, with the device's name.
+
+Settings › Remote drives it through `api.Remote`: the relay's address and state, the devices with their
+access (full, or only looking), and pairing with the QR code and the digits.
+
+`internal/remote/device` is a device's side of pairing and connecting, shared by the web client and the
+tests. `internal/remote/relaytest` is the relay in Go, for tests and for running the whole path on one
+machine; the host's tests run over it with real WebSockets, including a relay that alters or drops
+frames.
+
 ## The relay
 
 A Cloudflare Worker and one Durable Object, with the web client as static assets. It holds no secret. Its
