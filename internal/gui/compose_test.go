@@ -159,3 +159,28 @@ func TestAttachedImagesFocusComposer(t *testing.T) {
 		}
 	})
 }
+
+// With RemoteImages, an attachment is fetched off the UI thread: its box shows a placeholder, then the
+// image, and it asks for a preview rather than the image at full size.
+func TestRemoteImagesLoadAsync(t *testing.T) {
+	f := demoBackend()
+	a, u := newUI(t, f)
+	a.RemoteImages = true
+	shot := sampleScreenshot(t.TempDir(), color.RGBA{R: 0x30, G: 0x60, B: 0xc0, A: 0xff})
+	a.orchImages.Set([]string{shot})
+	u.Frame()
+	u.WaitFor("the image to show", func() bool {
+		found := false
+		u.Tree().Walk(func(nd *access.Node) bool {
+			found = found || (nd.Role == access.RoleButton && nd.Name == "View image")
+			return true
+		})
+		return found
+	})
+	if _, ok := a.imgs["preview\x00"+shot]; !ok {
+		t.Errorf("no preview was kept: %v", len(a.imgs))
+	}
+	if _, ok := a.imgs[shot]; ok {
+		t.Error("the full image was fetched for a thumbnail")
+	}
+}

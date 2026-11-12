@@ -246,8 +246,9 @@ Raw `SDKMessage`s are also appended to a per-session JSONL file for debugging an
 ## Web build
 
 The UI also builds for a web page (`GOOS=js GOARCH=wasm`, jamb's web target), so that Solo can be used
-from a browser, on a phone too. `internal/gui` reaches Solo only through `gui.Backend`; the desktop's
-backend, `gui.Live`, is in `backend_live.go`, which a page leaves out.
+from a browser, on a phone too. `internal/gui` reaches Solo only through `api.Backend` (`internal/api`,
+which `gui.Backend` names); the desktop's backend, `gui.Live`, is in `backend_live.go`, which a page
+leaves out.
 
 A page shares the desktop's types, not its code. In `core`, `store`, `git`, `forge`, `agent` and
 `launch`, the files that run git, Claude, the database or the user's apps are marked
@@ -268,14 +269,24 @@ buttons out.
 `internal/sample`: generated threads and transcripts as large as a busy real database, one of them
 streaming, which is also what the UI is measured against.
 
-Not there yet: a page's own `Backend` (it talks to a Solo over the relay), and attachments by their
-contents rather than by a path.
+Attachments work without a file system: a file picked in a page is stored by its contents
+(`SaveImageData`), and the UI reads every image through the backend (`ReadImage`), which reads only the
+attachments folder. With `App.RemoteImages` the UI fetches them off the UI thread and asks for previews
+scaled down.
+
+What a remote device may change is checked at the machine. `api.SettingsPatch` is a change to the
+settings field by field; its `CheckRemote` refuses the settings that name programs Solo runs (Claude's
+path, the editor and terminal commands), which are set at the machine only. A thread runs one landing
+action at a time (`core.ErrBusy`), so two devices can't both merge it.
+
+Not there yet: a page's own `Backend` (it talks to a Solo over the relay).
 
 ## Repo layout
 
 ```
 cmd/solo/            main
 cmd/solo-web/        the web client's main, and its page (TinyGo; scripts/web.sh)
+internal/api/        the interface between the UI and the engine; the settings patch
 internal/core/       orchestrator, threads, notifications
 internal/store/      SQLite schema + queries
 internal/git/        repo scan, worktrees, diff, merge

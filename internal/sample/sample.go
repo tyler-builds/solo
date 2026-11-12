@@ -313,11 +313,15 @@ func (b *Backend) SendToOrchestrator(_ context.Context, text string, _ ...string
 func (b *Backend) Send(_ context.Context, id, text string, _ ...string) error {
 	return b.send(id, text)
 }
-func (b *Backend) SaveImage(image.Image) (string, error)          { return "", errSample }
-func (b *Backend) ImportImage(string) (string, error)             { return "", errSample }
-func (b *Backend) Interrupt(context.Context, string) error        { return errSample }
-func (b *Backend) Answer(string, string, map[string]string) error { return errSample }
-func (b *Backend) Dismiss(string, string) error                   { return errSample }
+func (b *Backend) SaveImage(image.Image) (string, error) { return "", errSample }
+func (b *Backend) ImportImage(string) (string, error)    { return "", errSample }
+func (b *Backend) SaveImageData(context.Context, []byte) (string, error) {
+	return "", errSample
+}
+func (b *Backend) ReadImage(context.Context, string, int) ([]byte, error) { return nil, errSample }
+func (b *Backend) Interrupt(context.Context, string) error                { return errSample }
+func (b *Backend) Answer(string, string, map[string]string) error         { return errSample }
+func (b *Backend) Dismiss(string, string) error                           { return errSample }
 
 func (b *Backend) Changes(context.Context, string) ([]git.FileChange, error) {
 	return []git.FileChange{{Path: "src/auth/refresh.ts", Status: "M", Added: 9, Removed: 10},

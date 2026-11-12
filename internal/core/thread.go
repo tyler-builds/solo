@@ -843,8 +843,34 @@ func (c *Core) Merge(ctx context.Context, threadID string) (string, error) {
 	return c.MergeRepo(ctx, threadID, "")
 }
 
+// ErrBusy is returned by a landing action (merging, opening a pull request, marking ready, discarding,
+// marking done, restoring) on a thread that has one under way: from another window or device, or from
+// Solo. The one under way decides what the thread becomes; the second would act on a stale view of it.
+var ErrBusy = errors.New("another action on this thread is still running; try again when it finishes")
+
+// land marks a landing action as under way on a thread, and returns what ends it. It fails with ErrBusy
+// when the thread already has one.
+func (c *Core) land(threadID string) (func(), error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.landing[threadID] {
+		return nil, ErrBusy
+	}
+	c.landing[threadID] = true
+	return func() {
+		c.mu.Lock()
+		delete(c.landing, threadID)
+		c.mu.Unlock()
+	}, nil
+}
+
 // MergeRepo is Merge for one of the worker's repositories (by path or folder name; "" for all).
 func (c *Core) MergeRepo(ctx context.Context, threadID, repo string) (string, error) {
+	release, err := c.land(threadID)
+	if err != nil {
+		return "", err
+	}
+	defer release()
 	v, ok := c.Thread(threadID)
 	if !ok {
 		return "", fmt.Errorf("no thread %s", threadID)
@@ -889,6 +915,11 @@ func (c *Core) MergeRepo(ctx context.Context, threadID, repo string) (string, er
 // MergeLocal merges each of a worker's branches into its base branch in the repository's own
 // checkout, skipping pull requests.
 func (c *Core) MergeLocal(ctx context.Context, threadID string) (string, error) {
+	release, err := c.land(threadID)
+	if err != nil {
+		return "", err
+	}
+	defer release()
 	v, ok := c.Thread(threadID)
 	if !ok {
 		return "", fmt.Errorf("no thread %s", threadID)
@@ -1079,6 +1110,11 @@ func (c *Core) removeWorktrees(ctx context.Context, id string, keepBranches bool
 
 // Discard stops a worker and deletes its worktrees and branches.
 func (c *Core) Discard(ctx context.Context, threadID string) error {
+	release, err := c.land(threadID)
+	if err != nil {
+		return err
+	}
+	defer release()
 	v, ok := c.Thread(threadID)
 	if !ok {
 		return fmt.Errorf("no thread %s", threadID)
@@ -1107,6 +1143,11 @@ func (c *Core) Discard(ctx context.Context, threadID string) error {
 // that hasn't landed (ThreadView.Unlanded) keeps them, its uncommitted edits committed, so nothing is
 // lost and Restore brings it back. Discard is what throws work away.
 func (c *Core) Done(ctx context.Context, threadID string) error {
+	release, err := c.land(threadID)
+	if err != nil {
+		return err
+	}
+	defer release()
 	v, ok := c.Thread(threadID)
 	if !ok {
 		return fmt.Errorf("no thread %s", threadID)
@@ -1184,6 +1225,11 @@ func keepWork(ctx context.Context, v ThreadView, p PartView) error {
 // Claude session resumes: on its branch if that still exists, or on a new branch of the same name
 // from the current head of the branch it started from.
 func (c *Core) Restore(ctx context.Context, threadID string) error {
+	release, err := c.land(threadID)
+	if err != nil {
+		return err
+	}
+	defer release()
 	v, ok := c.Thread(threadID)
 	if !ok {
 		return fmt.Errorf("no thread %s", threadID)

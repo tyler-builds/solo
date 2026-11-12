@@ -79,6 +79,8 @@ type App struct {
 	busy        *ui.Signal[map[string]bool] // threads with a landing action under way (merge, open PR)
 	railQuery   *ui.Signal[string]          // the rail's filter
 	imgs        map[string]*ui.ImageSource  // decoded attachments, by path (UI thread only)
+	imgLoading  map[string]bool             // attachments being fetched (RemoteImages; UI thread only)
+	imgVer      *ui.Signal[int]             // counts the attachments that have arrived
 	lists       map[string]*ui.ListHandle   // transcript lists, by scope, so a send can scroll one (UI thread only)
 
 	items map[string]*ui.Signal[[]core.Item] // UI thread only
@@ -108,6 +110,10 @@ type App struct {
 	// Set it before Run.
 	Touch  bool
 	zoomed bool // touchZoom was applied (UI thread only)
+	// RemoteImages says the backend fetches attachments from another machine: the UI then loads them
+	// off the UI thread, shows a placeholder until they arrive, and asks for previews scaled down. Set it
+	// before Run.
+	RemoteImages bool
 
 	// Notify shows a desktop notification; nil shows none. Set it before Run.
 	Notify func(Notification)
@@ -162,6 +168,8 @@ func New(b Backend) *App {
 		busy:       ui.NewSignal(map[string]bool{}),
 		railQuery:  ui.NewSignal(""),
 		imgs:       map[string]*ui.ImageSource{},
+		imgLoading: map[string]bool{},
+		imgVer:     ui.NewSignal(0),
 		items:      map[string]*ui.Signal[[]core.Item]{},
 		views:      map[string]*ui.Signal[core.ThreadView]{},
 		rows:       map[string]*rowCache{},

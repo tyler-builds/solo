@@ -4,6 +4,7 @@ package core
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -28,6 +29,10 @@ const (
 	maxImageBytes = 3_500_000
 	maxImageSide  = 2000
 	maxImages     = 20 // per message
+	// maxImageFile and maxImagePixels bound an image before it is decoded to be scaled down: a file's
+	// header can claim any size, and decoding allocates four bytes for each pixel it claims.
+	maxImageFile   = 16 << 20
+	maxImagePixels = 50_000_000
 )
 
 var imageTypes = map[string]string{"image/png": ".png", "image/jpeg": ".jpg", "image/gif": ".gif", "image/webp": ".webp"}
@@ -50,35 +55,125 @@ func (c *Core) SaveImage(img image.Image) (string, error) {
 // among the attachments is used as it is. A large image is scaled down to fit Claude's limits.
 func (c *Core) ImportImage(path string) (string, error) {
 	path = filepath.Clean(path)
-	if filepath.Dir(path) == c.attachmentsDir() {
+	if c.isAttachment(path) {
 		if _, err := os.Stat(path); err != nil {
 			return "", err
 		}
 		return path, nil
 	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		return "", err
+	}
+	if fi.Size() > maxImageFile {
+		return "", fmt.Errorf("%s is larger than %d MB", filepath.Base(path), maxImageFile>>20)
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return "", err
 	}
+	return c.saveImageData(data, filepath.Base(path))
+}
+
+// SaveImageData stores an image file's contents as an attachment and returns its path. A large image
+// is scaled down to fit Claude's limits.
+func (c *Core) SaveImageData(_ context.Context, data []byte) (string, error) {
+	return c.saveImageData(data, "The image")
+}
+
+// saveImageData checks that data is an image Claude takes, scales it down when it is too large, and
+// stores it. name is what errors call it.
+func (c *Core) saveImageData(data []byte, name string) (string, error) {
+	if len(data) > maxImageFile {
+		return "", fmt.Errorf("%s is larger than %d MB", name, maxImageFile>>20)
+	}
 	mt := http.DetectContentType(data)
 	ext, ok := imageTypes[mt]
 	if !ok {
-		return "", fmt.Errorf("%s isn't a PNG, JPEG, GIF or WebP image", filepath.Base(path))
+		return "", fmt.Errorf("%s isn't a PNG, JPEG, GIF or WebP image", name)
 	}
 	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
 	if err != nil {
-		return "", fmt.Errorf("%s: %w", filepath.Base(path), err)
+		return "", fmt.Errorf("%s: %w", name, err)
+	}
+	if cfg.Width <= 0 || cfg.Height <= 0 || cfg.Width > maxImagePixels/cfg.Height {
+		return "", fmt.Errorf("%s has too many pixels to scale down", name)
 	}
 	if len(data) > maxImageBytes || cfg.Width > maxImageSide || cfg.Height > maxImageSide {
 		img, _, err := image.Decode(bytes.NewReader(data))
 		if err != nil {
-			return "", fmt.Errorf("%s: %w", filepath.Base(path), err)
+			return "", fmt.Errorf("%s: %w", name, err)
 		}
 		if data, ext, err = encodeImage(img); err != nil {
 			return "", err
 		}
 	}
 	return c.writeAttachment(data, ext)
+}
+
+// isAttachment reports whether path names a file directly in the attachments folder. Images reach
+// Claude and the UI by path, and only these paths are read: a message can't name another file.
+func (c *Core) isAttachment(path string) bool {
+	return filepath.IsAbs(path) && filepath.Dir(filepath.Clean(path)) == filepath.Clean(c.attachmentsDir())
+}
+
+// ReadImage returns the contents of an attachment, by the path SaveImage, SaveImageData or
+// ImportImage returned. With maxSide above zero, an image with a longer side is scaled down to it,
+// for a preview that costs less to send and to decode.
+func (c *Core) ReadImage(_ context.Context, path string, maxSide int) ([]byte, error) {
+	if !c.isAttachment(path) {
+		return nil, errors.New("not an attachment")
+	}
+	fi, err := os.Lstat(path)
+	if err != nil {
+		return nil, errors.New("the image is gone")
+	}
+	if !fi.Mode().IsRegular() || fi.Size() > maxImageFile {
+		return nil, errors.New("not an attachment")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || maxSide <= 0 {
+		return data, err
+	}
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", filepath.Base(path), err)
+	}
+	if cfg.Width <= maxSide && cfg.Height <= maxSide {
+		return data, nil
+	}
+	if cfg.Width <= 0 || cfg.Height <= 0 || cfg.Width > maxImagePixels/cfg.Height {
+		return nil, errors.New("the image has too many pixels to scale down")
+	}
+	img, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", filepath.Base(path), err)
+	}
+	return encodePreview(scaleTo(img, maxSide))
+}
+
+// scaleTo returns img scaled so that its longer side is at most side.
+func scaleTo(img image.Image, side int) image.Image {
+	b := img.Bounds()
+	w, h := b.Dx(), b.Dy()
+	if w <= side && h <= side {
+		return img
+	}
+	scale := float64(side) / float64(max(w, h))
+	dst := image.NewRGBA(image.Rect(0, 0, max(1, int(float64(w)*scale)), max(1, int(float64(h)*scale))))
+	draw.CatmullRom.Scale(dst, dst.Bounds(), img, b, draw.Src, nil)
+	return dst
+}
+
+// encodePreview encodes a scaled image: as JPEG, or as PNG when it has transparency.
+func encodePreview(img image.Image) ([]byte, error) {
+	var buf bytes.Buffer
+	if o, ok := img.(interface{ Opaque() bool }); ok && !o.Opaque() {
+		err := png.Encode(&buf, img)
+		return buf.Bytes(), err
+	}
+	err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 85})
+	return buf.Bytes(), err
 }
 
 // ImportImages imports each path (see ImportImage).
@@ -102,11 +197,11 @@ func (c *Core) ImportImages(paths []string) ([]string, error) {
 
 func (c *Core) writeAttachment(data []byte, ext string) (string, error) {
 	dir := c.attachmentsDir()
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
 	p := filepath.Join(dir, agent.NewUUID()+ext)
-	if err := os.WriteFile(p, data, 0o644); err != nil {
+	if err := os.WriteFile(p, data, 0o600); err != nil {
 		return "", err
 	}
 	return p, nil
@@ -118,13 +213,7 @@ func encodeImage(img image.Image) ([]byte, string, error) {
 	if img == nil {
 		return nil, "", errors.New("no image")
 	}
-	b := img.Bounds()
-	if w, h := b.Dx(), b.Dy(); w > maxImageSide || h > maxImageSide {
-		scale := float64(maxImageSide) / float64(max(w, h))
-		dst := image.NewRGBA(image.Rect(0, 0, max(1, int(float64(w)*scale)), max(1, int(float64(h)*scale))))
-		draw.CatmullRom.Scale(dst, dst.Bounds(), img, b, draw.Src, nil)
-		img = dst
-	}
+	img = scaleTo(img, maxImageSide)
 	var buf bytes.Buffer
 	if err := png.Encode(&buf, img); err != nil {
 		return nil, "", err
@@ -151,6 +240,9 @@ func (c *Core) loadImages(paths []string) ([]agent.Image, error) {
 	}
 	var out []agent.Image
 	for _, p := range paths {
+		if !c.isAttachment(p) {
+			return nil, fmt.Errorf("image %s isn't an attachment", filepath.Base(p))
+		}
 		data, err := os.ReadFile(p)
 		if err != nil {
 			return nil, fmt.Errorf("image %s: %w", filepath.Base(p), err)
