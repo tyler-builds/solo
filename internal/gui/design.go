@@ -368,6 +368,9 @@ var logoSVG []byte
 
 var logo = ui.MustSVG(bytes.Replace(logoSVG, []byte(`viewBox="0 0 128 128"`), []byte(`viewBox="8 8 112 112"`), 1))
 
+// BrandMark is Solo's mark, for screens outside this package (the web client's).
+func BrandMark(size float32) ui.Element { return brandMark(size) }
+
 func brandMark(size float32) ui.Element {
 	return ui.SVG(logo).Size(ui.Px(size), ui.Px(size)).Alt("Solo")
 }
