@@ -20,6 +20,7 @@ import (
 	"github.com/tyler-builds/jamb/ui"
 
 	"github.com/tyler-builds/solo/internal/agent"
+	"github.com/tyler-builds/solo/internal/api"
 	"github.com/tyler-builds/solo/internal/core"
 )
 
@@ -30,7 +31,7 @@ const (
 	// Below compactWindow, as on a phone, there is room for one conversation at a time: Solo's, or
 	// the open thread's. The threads are in a drawer (see compactCenter and threadsDrawer).
 	compactWindow = 700
-	itemLimit     = 400 // transcript items loaded per thread
+	defaultItems  = 400 // transcript items loaded per thread (see App.ItemLimit)
 	// touchZoom scales the UI on a touchscreen (App.Touch): the desktop's 13 px text and 28 px buttons
 	// become about 16 and 34, the sizes of a phone's apps.
 	touchZoom = 1.2
@@ -88,6 +89,7 @@ type App struct {
 	// the rows last laid out for each transcript (see transcriptRows). UI thread only.
 	views map[string]*ui.Signal[core.ThreadView]
 	rows  map[string]*rowCache
+	shown []string // the conversations last named to an api.Watcher (see watchShown)
 	// needsUser counts the open threads that wait on the user.
 	needsUser *ui.Computed[int]
 
@@ -110,6 +112,10 @@ type App struct {
 	// Set it before Run.
 	Touch  bool
 	zoomed bool // touchZoom was applied (UI thread only)
+	// ItemLimit is how many of a transcript's newest items are loaded; 0 for the default, 400. A page
+	// holds fewer: its memory, and how long its collector pauses, grow with what it holds. Set it before
+	// Run.
+	ItemLimit int
 	// RemoteImages says the backend fetches attachments from another machine: the UI then loads them
 	// off the UI thread, shows a placeholder until they arrive, and asks for previews scaled down. Set it
 	// before Run.
@@ -295,7 +301,7 @@ func (a *App) refresh() <-chan struct{} {
 	}
 	loaded := map[string][]core.Item{}
 	for _, id := range load {
-		if items, err := a.b.Items(context.Background(), id, itemLimit); err == nil {
+		if items, err := a.b.Items(context.Background(), id, a.itemLimit()); err == nil {
 			loaded[id] = items
 		}
 	}
@@ -333,12 +339,19 @@ func (a *App) refresh() <-chan struct{} {
 	return applied
 }
 
+func (a *App) itemLimit() int {
+	if a.ItemLimit > 0 {
+		return a.ItemLimit
+	}
+	return defaultItems
+}
+
 // itemsOf returns the signal holding a thread's transcript, loading it the first time. UI thread only.
 func (a *App) itemsOf(id string) *ui.Signal[[]core.Item] {
 	if s := a.items[id]; s != nil {
 		return s
 	}
-	items, _ := a.b.Items(context.Background(), id, itemLimit)
+	items, _ := a.b.Items(context.Background(), id, a.itemLimit())
 	s := ui.NewSignal(items)
 	a.items[id] = s
 	a.mu.Lock()
@@ -554,6 +567,23 @@ func (a *App) notify(v ui.ToastVariant, title, msg string) {
 	}
 }
 
+// watchShown tells a backend that fetches transcripts (api.Watcher) which conversations are on screen:
+// Solo's, and the open thread's. Call in a render.
+func (a *App) watchShown() {
+	w, ok := a.b.(api.Watcher)
+	if !ok {
+		return
+	}
+	ids := []string{core.OrchestratorID}
+	if id := a.openID.Get(); id != "" {
+		ids = append(ids, id)
+	}
+	if !slices.Equal(ids, a.shown) {
+		a.shown = ids
+		w.Watch(ids)
+	}
+}
+
 // Root renders the window.
 func (a *App) Root(ctx *ui.Context) ui.Element {
 	a.mu.Lock()
@@ -570,6 +600,7 @@ func (a *App) Root(ctx *ui.Context) ui.Element {
 		a.wakeRefresher()
 	}
 	a.mu.Unlock()
+	a.watchShown()
 	t := ctx.Theme()
 	if a.Touch && !a.zoomed {
 		a.zoomed = true

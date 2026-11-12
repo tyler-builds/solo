@@ -76,6 +76,40 @@ The other end is authenticated but not trusted to behave, since a paired device 
 size is checked before anything is kept: a record that is not the message's last must be full, a flag no
 link uses is refused, and a compressed message may inflate to 8 MiB at most. Breaking a rule ends the link.
 
+## Requests and state (`internal/remote/rpc`)
+
+Inside the channel, a device and a machine exchange JSON envelopes: `hello` and `welcome`, requests and
+their answers, and `sync`, the machine's state as it changes. `Host` serves devices over any
+`api.Backend`; `Client` is an `api.Backend` that keeps a mirror of the machine, which the web UI reads
+without waiting.
+
+- **Large things cross in parts.** An envelope over 192 KiB (an image, a long diff, a transcript) is cut
+  into parts that other messages cross between, at most four unacknowledged: a device that stops
+  reading stops the machine, so nothing piles up at the relay. Bytes travel after the JSON, not in it.
+- **State, then the news.** Each `sync` carries what changed, then the machine's own `core.Change`
+  records as it made them: notifications depend on their details, and a listener told of a change finds
+  it already in the mirror. At most one `sync` every 300 ms, which is what keeps streaming text within
+  the relay's quota.
+- **Watched threads.** A device names the threads on screen (`watch`, renewed every 25 s; it lapses after
+  45 s). Only those get their transcript, as the items that differ from what was sent, and their
+  streaming text, as the text added. A lapsed lease stops both: a hidden or lost page costs nothing.
+- **Resume.** A machine's run is an epoch, and each change a revision. A device that reconnects says what
+  it holds; in the same epoch it is sent the threads that changed since, and a transcript only if its
+  revision moved. A new epoch starts it over.
+- **Requests run once.** Each has a random ID. A device whose connection drops sends it again on the
+  next, and the machine answers from what the first run returned. A request that changes something runs
+  to its end even when the device goes.
+- **What a device may ask** is checked at the machine (`methods.go`): sizes and counts are bounded,
+  threads are named by ID, images by attachment, a folder put in git must be one the machine found, the
+  Claude checked is the machine's own, and the settings that name programs are refused
+  (`api.SettingsPatch.CheckRemote`). A read-only device's changes are all refused. Every change is
+  handed to the audit log with the device's name.
+- **Liveness.** A device pings every 5 s; either end gives a session up after 15 s of silence.
+
+Tests run a device against a machine in memory, against the real engine over the real encryption, and
+against peers that break the rules; the frame decoder is fuzzed, and what a cold start, a resume and a
+transcript cost on the wire have ceilings (`TestSizeBudgets`, `TestResume`).
+
 ## The relay
 
 A Cloudflare Worker and one Durable Object, with the web client as static assets. It holds no secret. Its

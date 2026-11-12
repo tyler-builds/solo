@@ -72,3 +72,10 @@ type Backend interface {
 	RateLimits() []agent.Event
 	CheckClaude(ctx context.Context, override string) core.ClaudeStatus
 }
+
+// Watcher is a backend that wants to know which threads the UI shows, such as one that fetches their
+// transcripts from another machine. The UI calls Watch when the threads on screen change; it must not
+// block.
+type Watcher interface {
+	Watch(threadIDs []string)
+}

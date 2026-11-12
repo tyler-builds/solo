@@ -279,7 +279,9 @@ settings field by field; its `CheckRemote` refuses the settings that name progra
 path, the editor and terminal commands), which are set at the machine only. A thread runs one landing
 action at a time (`core.ErrBusy`), so two devices can't both merge it.
 
-Not there yet: a page's own `Backend` (it talks to a Solo over the relay).
+`internal/remote/rpc` has the page's backend, `rpc.Client`, and the machine's side, `rpc.Host`
+(see [REMOTE.md](REMOTE.md)). The UI tells such a backend which conversations are on screen
+(`api.Watcher`), and loads fewer transcript items when `App.ItemLimit` says so.
 
 ## Repo layout
 
