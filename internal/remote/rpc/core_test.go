@@ -27,6 +27,14 @@ func TestMain(m *testing.M) {
 	if agenttest.Main() {
 		return
 	}
+	// Isolate git from the machine's config (signing, hooks) and give it an identity, as CI has none.
+	for k, v := range map[string]string{
+		"GIT_CONFIG_GLOBAL": os.DevNull, "GIT_CONFIG_NOSYSTEM": "1",
+		"GIT_AUTHOR_NAME": "Test", "GIT_AUTHOR_EMAIL": "test@example.com",
+		"GIT_COMMITTER_NAME": "Test", "GIT_COMMITTER_EMAIL": "test@example.com",
+	} {
+		os.Setenv(k, v)
+	}
 	os.Exit(m.Run())
 }
 
