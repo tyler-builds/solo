@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tyler-builds/jamb/ui"
+
 	"github.com/tyler-builds/solo/internal/agent"
 )
 
@@ -70,5 +72,56 @@ func TestUsageTip(t *testing.T) {
 	}
 	if r := resetLine(float64(now.Add(3*24*time.Hour).Unix()), now); !strings.HasPrefix(r, "Resets Sat Nov 14") {
 		t.Errorf("resetLine = %q", r)
+	}
+}
+
+// The server marks a limit allowed_warning once usage passes any of its warning thresholds, 25% among
+// them. A quarter of the weekly limit used is not near it: the bar keeps the accent color and the tooltip
+// says nothing about being close. From the share Claude Code warns at, the server's warning shows.
+func TestUsageWarnsByAmountUsed(t *testing.T) {
+	_, th := Themes()
+	now := time.Date(2026, 11, 11, 13, 0, 0, 0, time.Local)
+	early := agent.Event{RateLimitType: "seven_day", Status: "allowed_warning", Utilization: fraction(0.25)}
+	if c := usageColor(th, early, 0.25); c != th.Accent {
+		t.Errorf("25%% used, warned: color %v, want the accent", c)
+	}
+	if tip := usageTip(early, 0.25, true, now); tip != "Weekly limit: 25% used" {
+		t.Errorf("25%% used, warned: tip %q", tip)
+	}
+
+	cases := []struct {
+		status string
+		used   float64
+		want   ui.Color
+	}{
+		{"allowed", 0.25, th.Accent},
+		{"allowed_warning", 0.5, th.Accent},
+		{"allowed_warning", 0.7, th.Warning},
+		{"allowed", 0.75, th.Accent},
+		{"allowed", 0.8, th.Warning},
+		{"rejected", 0.25, th.Danger},
+		{"rejected", 1, th.Danger},
+	}
+	for _, c := range cases {
+		e := agent.Event{RateLimitType: "seven_day", Status: c.status}
+		if got := usageColor(th, e, c.used); got != c.want {
+			t.Errorf("%s at %v: color %v, want %v", c.status, c.used, got, c.want)
+		}
+	}
+}
+
+// A weekly limit a quarter used, which the server marks allowed_warning, shows a bar and no notice.
+func TestUsageBarQuarterUsedWeekly(t *testing.T) {
+	f := demoBackend()
+	f.rate = []agent.Event{
+		{Kind: agent.EventRateLimit, RateLimitType: "five_hour", Status: "allowed", Utilization: fraction(0.15)},
+		{Kind: agent.EventRateLimit, RateLimitType: "seven_day", Status: "allowed_warning", Utilization: fraction(0.25)},
+	}
+	_, u := newUI(t, f)
+	if !u.Has("usage-seven_day") {
+		t.Fatal("no weekly bar")
+	}
+	if u.Has("usage-notice") {
+		t.Error("a notice for a limit a quarter used")
 	}
 }

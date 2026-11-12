@@ -106,3 +106,22 @@ func TestUsedFraction(t *testing.T) {
 		}
 	}
 }
+
+// Utilization is kept as the share used, never turned into what is left: a weekly window a quarter used,
+// which the server already marks allowed_warning, reads as 25% used.
+func TestRateLimitQuarterUsedWeekly(t *testing.T) {
+	e := newEnv(t)
+	ev := rateEvent("five_hour", "allowed", used(0.15))
+	ev.Windows = []agent.RateLimitWindow{
+		{RateLimitType: "five_hour", Utilization: 0.15, ResetsAt: 1_800_000_000, Status: "allowed"},
+		{RateLimitType: "seven_day", Utilization: 0.25, ResetsAt: 1_900_000_000, Status: "allowed_warning"},
+	}
+	e.c.onEvent(ev)
+	got := e.c.RateLimits()
+	if len(got) != 2 || got[1].RateLimitType != "seven_day" {
+		t.Fatalf("limits = %+v", got)
+	}
+	if u, ok := UsedFraction(got[1]); !ok || u != 0.25 {
+		t.Errorf("seven_day used = %v (%v), want 0.25", u, ok)
+	}
+}
