@@ -1245,9 +1245,9 @@ func (a *App) proposalCard(ctx *ui.Context, d core.ProposalData, steps []*core.I
 					Child(ui.Text(label).FontSize(12).TextColor(t.TextSubtle).NoWrap()).
 					Child(ui.Icon(map[bool]*icons.Icon{true: icons.ChevronDown, false: icons.ChevronRight}[open.Get()]).Size(12).Color(t.TextSubtle)))
 		}
-		card := ui.Div().Column().Gap(space3).Padding(space4).Radius(radiusL).Background(t.Surface).
+		card := ui.Div().Column().Gap(space3).Padding(space4).Radius(radiusL).Background(t.Surface).Key("proposal-"+d.ThreadID).
 			Border(1, t.BorderStrong).
-			Child(a.cardHeader(ctx, icons.GitMerge, t.Success, "Merge proposed", d.ThreadID, checksBadge(ctx, th))).
+			Child(a.proposalHeader(ctx, th)).
 			Child(a.md(ctx, d.Summary, a.threadBases(d.ThreadID))).
 			Child(actions)
 		if open.Get() {
@@ -1750,21 +1750,8 @@ func (a *App) cardWhere(ctx *ui.Context, where *ui.DivElement, th core.ThreadVie
 // request is opened, and once the thread has landed.
 func checksBadge(ctx *ui.Context, th core.ThreadView) ui.Element {
 	t := ctx.Theme()
-	switch th.Status {
-	case core.StatusMerged, core.StatusDiscarded, core.StatusArchived:
-		return nil
-	}
-	prs := openPRs(th)
-	if len(prs) == 0 && th.PR != nil && th.PR.State == forge.StateOpen {
-		prs = []*forge.PR{th.PR}
-	}
-	var cs checksState
-	switch {
-	case len(prs) > 0:
-		cs = checksOf(prs)
-	case th.CanMerge && th.Forge == forge.None:
-		cs = checksState{checks: forge.ChecksPassing, text: "Checks passed", tip: "A local merge has no checks to wait for"}
-	default:
+	cs, ok := mergeChecks(th)
+	if !ok {
 		return nil
 	}
 	icon, c := checksLook(ctx, cs.checks)
@@ -1772,6 +1759,25 @@ func checksBadge(ctx *ui.Context, th core.ThreadView) ui.Element {
 		Child(ui.Text("·").FontSize(12).TextColor(t.TextSubtle)).
 		Child(ui.Icon(icon).Size(13).Color(c)).
 		Child(ui.Text(cs.text).FontSize(12).TextColor(c).NoWrap())
+}
+
+// mergeChecks is where a merge's checks stand, as checksBadge shows them; false with none to show.
+func mergeChecks(th core.ThreadView) (checksState, bool) {
+	switch th.Status {
+	case core.StatusMerged, core.StatusDiscarded, core.StatusArchived:
+		return checksState{}, false
+	}
+	prs := openPRs(th)
+	if len(prs) == 0 && th.PR != nil && th.PR.State == forge.StateOpen {
+		prs = []*forge.PR{th.PR}
+	}
+	switch {
+	case len(prs) > 0:
+		return checksOf(prs), true
+	case th.CanMerge && th.Forge == forge.None:
+		return checksState{checks: forge.ChecksPassing, text: "Checks passed", tip: "A local merge has no checks to wait for"}, true
+	}
+	return checksState{}, false
 }
 
 // checksLook is the icon and color of where checks stand: a check, a timer while they run, a cross
