@@ -90,6 +90,10 @@ type App struct {
 	views map[string]*ui.Signal[core.ThreadView]
 	rows  map[string]*rowCache
 	shown []string // the conversations last named to an api.Watcher (see watchShown)
+	// remoteState is Remote's state, and remoteTick counts the seconds a pairing code has been shown.
+	remoteState   *ui.Signal[api.RemoteState]
+	remoteTick    *ui.Signal[int]
+	remoteTicking bool // the countdown's timer is running (UI thread only)
 	// needsUser counts the open threads that wait on the user.
 	needsUser *ui.Computed[int]
 
@@ -112,6 +116,9 @@ type App struct {
 	// Set it before Run.
 	Touch  bool
 	zoomed bool // touchZoom was applied (UI thread only)
+	// Remote is this machine's remote access, which Settings then has a page for; nil leaves the page
+	// out, as a web page does. Set it before Run.
+	Remote api.Remote
 	// ItemLimit is how many of a transcript's newest items are loaded; 0 for the default, 400. A page
 	// holds fewer: its memory, and how long its collector pauses, grow with what it holds. Set it before
 	// Run.
@@ -132,6 +139,7 @@ type App struct {
 	wake               chan struct{} // wakes the refresher: something changed (see onChange)
 	quit               chan struct{} // closed by Close: the refresher stops
 	unsub              func()
+	unsubRemote        func()
 	closing            sync.Once
 }
 
@@ -146,43 +154,45 @@ type confirmation struct {
 // New creates the UI over a backend.
 func New(b Backend) *App {
 	a := &App{
-		b:          b,
-		threads:    ui.NewSignal(b.Threads()),
-		todos:      ui.NewSignal(b.Todos(false)),
-		repos:      ui.NewSignal(b.RepoPaths()),
-		plain:      ui.NewSignal(b.PlainFolders()),
-		rate:       ui.NewSignal(b.RateLimits()),
-		pending:    ui.NewSignal(loadPending(b, b.Threads())),
-		navSel:     ui.NewSignal("orchestrator"),
-		drawer:     ui.NewSignal(false),
-		openID:     ui.NewSignal(""),
-		openTab:    ui.NewSignal("conversation"),
-		cfg:        ui.NewSignal(b.Settings()),
-		panelSize:  ui.NewSignal(ui.Percent(50)),
-		panelAnim:  ui.NewSignal[float32](0),
-		panelGoal:  50,
-		settings:   ui.NewSignal(false),
-		confirm:    ui.NewSignal[*confirmation](nil),
-		palette:    ui.NewSignal(false),
-		builtVer:   ui.NewSignal(0),
-		orchDraft:  ui.NewSignal(""),
-		orchFocus:  ui.NewFocusHandle(),
-		foldedAsks: ui.NewSignal(map[string]bool{}),
-		askOpen:    ui.NewSignal(""),
-		lightbox:   ui.NewSignal(""),
-		orchImages: ui.NewSignal([]string(nil)),
-		busy:       ui.NewSignal(map[string]bool{}),
-		railQuery:  ui.NewSignal(""),
-		imgs:       map[string]*ui.ImageSource{},
-		imgLoading: map[string]bool{},
-		imgVer:     ui.NewSignal(0),
-		items:      map[string]*ui.Signal[[]core.Item]{},
-		views:      map[string]*ui.Signal[core.ThreadView]{},
-		rows:       map[string]*rowCache{},
-		dirty:      map[string]bool{},
-		watched:    map[string]bool{},
-		wake:       make(chan struct{}, 1),
-		quit:       make(chan struct{}),
+		b:           b,
+		threads:     ui.NewSignal(b.Threads()),
+		todos:       ui.NewSignal(b.Todos(false)),
+		repos:       ui.NewSignal(b.RepoPaths()),
+		plain:       ui.NewSignal(b.PlainFolders()),
+		rate:        ui.NewSignal(b.RateLimits()),
+		pending:     ui.NewSignal(loadPending(b, b.Threads())),
+		navSel:      ui.NewSignal("orchestrator"),
+		drawer:      ui.NewSignal(false),
+		openID:      ui.NewSignal(""),
+		openTab:     ui.NewSignal("conversation"),
+		cfg:         ui.NewSignal(b.Settings()),
+		panelSize:   ui.NewSignal(ui.Percent(50)),
+		panelAnim:   ui.NewSignal[float32](0),
+		panelGoal:   50,
+		settings:    ui.NewSignal(false),
+		confirm:     ui.NewSignal[*confirmation](nil),
+		palette:     ui.NewSignal(false),
+		builtVer:    ui.NewSignal(0),
+		orchDraft:   ui.NewSignal(""),
+		orchFocus:   ui.NewFocusHandle(),
+		foldedAsks:  ui.NewSignal(map[string]bool{}),
+		askOpen:     ui.NewSignal(""),
+		lightbox:    ui.NewSignal(""),
+		orchImages:  ui.NewSignal([]string(nil)),
+		busy:        ui.NewSignal(map[string]bool{}),
+		railQuery:   ui.NewSignal(""),
+		imgs:        map[string]*ui.ImageSource{},
+		imgLoading:  map[string]bool{},
+		imgVer:      ui.NewSignal(0),
+		remoteState: ui.NewSignal(api.RemoteState{}),
+		remoteTick:  ui.NewSignal(0),
+		items:       map[string]*ui.Signal[[]core.Item]{},
+		views:       map[string]*ui.Signal[core.ThreadView]{},
+		rows:        map[string]*rowCache{},
+		dirty:       map[string]bool{},
+		watched:     map[string]bool{},
+		wake:        make(chan struct{}, 1),
+		quit:        make(chan struct{}),
 	}
 	a.needsUser = ui.NewComputed(func() int {
 		n := 0
@@ -200,6 +210,9 @@ func New(b Backend) *App {
 // Close stops listening to the backend.
 func (a *App) Close() {
 	a.unsub()
+	if a.unsubRemote != nil {
+		a.unsubRemote()
+	}
 	a.closing.Do(func() { close(a.quit) })
 }
 
@@ -594,6 +607,14 @@ func (a *App) Root(ctx *ui.Context) ui.Element {
 		a.focused = ctx.Window().Focused
 		a.raise = ctx.Window().Focus
 		a.clipboard = ctx.SetClipboard
+		if rm := a.Remote; rm != nil {
+			a.remoteState.Set(rm.State())
+			post := ctx.Post
+			a.unsubRemote = rm.Subscribe(func() {
+				st := rm.State()
+				post(func() { a.remoteState.Set(st) })
+			})
+		}
 		// Pick up what changed before the window existed, and from now on.
 		a.dirtyAll = true
 		go a.refresher()

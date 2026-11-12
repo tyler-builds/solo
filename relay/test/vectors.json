@@ -1,0 +1,31 @@
+{
+  "deviceId": "000102030405060708090a0b0c0d0e0f",
+  "hostKeys": "xSwrGGDufm-MhFtgQHEp29gVrtNqqqg2zyw6JnoDdCA",
+  "machineAuth": "AcUsKxhg7n5vjIRbYEBxKdvYFa7TaqqoNs8sOiZ6A3QgMRmzV901f8zBQxFDKhYJ2wAAAaMYXFAAWlpaWlpaWlpaWlpaWlpaWsHrnG_EOF7XpxQ5JnFiMru3FsjF-fyy5k3k4kqm3Q1UN2OXQN_owu59YS7xHXMx7NiwnmNOICUp7vS5uuMa3gU",
+  "machineId": "3119b357dd357fccc14311432a1609db",
+  "machineKey": "xSwrGGDufm-MhFtgQHEp29gVrtNqqqg2zyw6JnoDdCA",
+  "nowMs": 1800000000000,
+  "origin": "https://solo-relay-test.example.workers.dev",
+  "otherOrigin": "https://another.example.workers.dev",
+  "pairToken": "ATEZs1fdNX_MwUMRQyoWCdvRYXlN0rAo1Uipac1IE7KbKJMIM4eLVK4IgBbh5R1Jjw",
+  "pairingCode": "ATEZs1fdNX_MwUMRQyoWCdtwi-WC0Cnqmt5Ulwi96MKai3L-upd2DXtQmeOxTcjyOFpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaAAAAAGtJ0yw",
+  "rejectAuth": {
+    "a voucher": "AcUsKxhg7n5vjIRbYEBxKdvYFa7TaqqoNs8sOiZ6A3QgMRmzV901f8zBQxFDKhYJ2wABAgMEBQYHCAkKCwwNDg8AAAAAa0nSAD_5FRIHsPiRoCNGyiP8YUAtU8lhjnXaQhcq7-MgZwNJRCqiZwqbKd8X317g1EA3QwYIvB7JcpBj-6aTuXBJFwI",
+    "altered machine ID": "AcUsKxhg7n5vjIRbYEBxKdvYFa7TaqqoNs8sOiZ6A3QgMBmzV901f8zBQxFDKhYJ2wAAAaMYXFAAWlpaWlpaWlpaWlpaWlpaWsHrnG_EOF7XpxQ5JnFiMru3FsjF-fyy5k3k4kqm3Q1UN2OXQN_owu59YS7xHXMx7NiwnmNOICUp7vS5uuMa3gU",
+    "altered signature": "AcUsKxhg7n5vjIRbYEBxKdvYFa7TaqqoNs8sOiZ6A3QgMRmzV901f8zBQxFDKhYJ2wAAAaMYXFAAWlpaWlpaWlpaWlpaWlpaWsHrnG_EOF7XpxQ5JnFiMru3FsjF-fyy5k3k4kqm3Q1UN2OXQN_owu59YS7xHXMx7NiwnmNOICUp7vS5uuMa3gQ",
+    "altered time": "AcUsKxhg7n5vjIRbYEBxKdvYFa7TaqqoNs8sOiZ6A3QgMRmzV901f8zBQxFDKhYJ2wEAAaMYXFAAWlpaWlpaWlpaWlpaWlpaWsHrnG_EOF7XpxQ5JnFiMru3FsjF-fyy5k3k4kqm3Q1UN2OXQN_owu59YS7xHXMx7NiwnmNOICUp7vS5uuMa3gU",
+    "another machine's": "AW5mB0W0uE6MHR1ew0E34zADXTYCnltO-8MrzlmugEecbLe985sctJW9mszgJJSDUQAAAaMYXFAAWlpaWlpaWlpaWlpaWlpaWoTNZQHJl94Csw3uMpFBEYooaX6h7lwJk7s7kbNO9xsJlWo5pQr958VIOkfBxTvg-893UDHh5v3HeLVUdLgJKwc",
+    "truncated": "AcUsKxhg7n5vjIRbYEBxKdvYFa7TaqqoNs8sOiZ6A3QgMRmzV901f8zBQxFDKhYJ2wAAAaMYXFAAWlpaWlpaWlpaWlpaWlpaWsHrnG_EOF7XpxQ5JnFiMru3FsjF-fyy5k3k4kqm3Q1UN2OXQN_owu59YS7xHXMx7NiwnmNOICUp7vS5uuMa3g",
+    "wrong version": "AMUsKxhg7n5vjIRbYEBxKdvYFa7TaqqoNs8sOiZ6A3QgMRmzV901f8zBQxFDKhYJ2wAAAaMYXFAAWlpaWlpaWlpaWlpaWlpaWsHrnG_EOF7XpxQ5JnFiMru3FsjF-fyy5k3k4kqm3Q1UN2OXQN_owu59YS7xHXMx7NiwnmNOICUp7vS5uuMa3gU"
+  },
+  "rejectVoucher": {
+    "a machine's token": "AcUsKxhg7n5vjIRbYEBxKdvYFa7TaqqoNs8sOiZ6A3QgMRmzV901f8zBQxFDKhYJ2wAAAaMYXFAAWlpaWlpaWlpaWlpaWlpaWsHrnG_EOF7XpxQ5JnFiMru3FsjF-fyy5k3k4kqm3Q1UN2OXQN_owu59YS7xHXMx7NiwnmNOICUp7vS5uuMa3gU",
+    "altered device": "AcUsKxhg7n5vjIRbYEBxKdvYFa7TaqqoNs8sOiZ6A3QgMRmzV901f8zBQxFDKhYJ2wEBAgMEBQYHCAkKCwwNDg8AAAAAa0nSAD_5FRIHsPiRoCNGyiP8YUAtU8lhjnXaQhcq7-MgZwNJRCqiZwqbKd8X317g1EA3QwYIvB7JcpBj-6aTuXBJFwI",
+    "altered machine": "AcUsKxhg7n5vjIRbYEBxKdvYFa7TaqqoNs8sOiZ6A3QgMBmzV901f8zBQxFDKhYJ2wABAgMEBQYHCAkKCwwNDg8AAAAAa0nSAD_5FRIHsPiRoCNGyiP8YUAtU8lhjnXaQhcq7-MgZwNJRCqiZwqbKd8X317g1EA3QwYIvB7JcpBj-6aTuXBJFwI",
+    "altered signature": "AcUsKxhg7n5vjIRbYEBxKdvYFa7TaqqoNs8sOiZ6A3QgMRmzV901f8zBQxFDKhYJ2wABAgMEBQYHCAkKCwwNDg8AAAAAa0nSAD_5FRIHsPiRoCNGyiP8YUAtU8lhjnXaQhcq7-MgZwNJRCqiZwqbKd8X317g1EA3QwYIvB7JcpBj-6aTuXBJFwM",
+    "truncated": "AcUsKxhg7n5vjIRbYEBxKdvYFa7TaqqoNs8sOiZ6A3QgMRmzV901f8zBQxFDKhYJ2wABAgMEBQYHCAkKCwwNDg8AAAAAa0nSAD_5FRIHsPiRoCNGyiP8YUAtU8lhjnXaQhcq7-MgZwNJRCqiZwqbKd8X317g1EA3QwYIvB7JcpBj-6aTuXBJFw"
+  },
+  "ticketHash": "a8ea22ba395acc5f12a525ff718db5e81afaaa953d1e57b4cac065cc1cd4f25b",
+  "voucher": "AcUsKxhg7n5vjIRbYEBxKdvYFa7TaqqoNs8sOiZ6A3QgMRmzV901f8zBQxFDKhYJ2wABAgMEBQYHCAkKCwwNDg8AAAAAa0nSAD_5FRIHsPiRoCNGyiP8YUAtU8lhjnXaQhcq7-MgZwNJRCqiZwqbKd8X317g1EA3QwYIvB7JcpBj-6aTuXBJFwI",
+  "windowMs": 120000
+}

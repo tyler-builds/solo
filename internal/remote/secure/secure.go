@@ -26,6 +26,13 @@ import (
 // different versions cannot agree on anything.
 const Version = "solo/remote/v1"
 
+// MachineAuthSize and VoucherSize are the sizes of the two tokens a machine signs for the relay
+// (machine.go).
+const (
+	MachineAuthSize = 137
+	VoucherSize     = 137
+)
+
 // KeySize is the size of every key and secret here: X25519 keys, pre-shared keys, seeds.
 const KeySize = 32
 

@@ -14,6 +14,7 @@ import (
 	"github.com/tyler-builds/jamb/ui/uitest"
 
 	"github.com/tyler-builds/solo/internal/agent"
+	"github.com/tyler-builds/solo/internal/api"
 	"github.com/tyler-builds/solo/internal/core"
 	"github.com/tyler-builds/solo/internal/forge"
 )
@@ -61,6 +62,24 @@ func TestShots(t *testing.T) {
 		{"opening", func(a *App, f *fakeBackend) { a.openID.Set("c3d4e5f6-forms"); a.panelAnim.Set(0.35) }},
 		{"narrow-thread", func(a *App, f *fakeBackend) { a.openThread("c3d4e5f6-forms", "conversation") }},
 		{"settings", func(a *App, f *fakeBackend) { diffSplit.Set(false); a.settings.Set(true) }},
+		{"settings-remote", func(a *App, f *fakeBackend) {
+			a.Remote = pairedRemote()
+			a.settingsTab = "remote"
+			a.settings.Set(true)
+		}},
+		{"settings-remote-pairing", func(a *App, f *fakeBackend) {
+			rm := pairedRemote()
+			rm.StartPairing()
+			rm.st.Requests = []api.RemoteRequest{{Name: "Tyler's phone", At: time.Now()}}
+			a.Remote = rm
+			a.settingsTab = "remote"
+			a.settings.Set(true)
+		}},
+		{"settings-remote-new", func(a *App, f *fakeBackend) {
+			a.Remote = &fakeRemote{st: api.RemoteState{Connection: api.RemoteOff}}
+			a.settingsTab = "remote"
+			a.settings.Set(true)
+		}},
 		{"palette", func(a *App, f *fakeBackend) { a.palette.Set(true) }},
 		// Claude's usage limits at the foot of the rail, and the notice when only a status is known.
 		{"usage", func(a *App, f *fakeBackend) { f.rate = demoLimits(); a.rate.Set(f.rate) }},

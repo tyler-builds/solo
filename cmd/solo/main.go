@@ -15,6 +15,7 @@ import (
 	"github.com/tyler-builds/solo/internal/core"
 	"github.com/tyler-builds/solo/internal/gui"
 	"github.com/tyler-builds/solo/internal/orchestrator"
+	"github.com/tyler-builds/solo/internal/remote/host"
 )
 
 func main() {
@@ -26,12 +27,19 @@ func main() {
 
 func run() error {
 	dataDir := core.DefaultDataDir()
-	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+	// The folder and the log are the user's alone: they hold conversations, attachments and, with
+	// remote access, the keys of paired devices. Folders made by earlier versions are tightened.
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		return err
 	}
-	logFile, err := os.OpenFile(filepath.Join(dataDir, "solo.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	logPath := filepath.Join(dataDir, "solo.log")
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
+	}
+	if runtime.GOOS != "windows" {
+		os.Chmod(dataDir, 0o700)
+		os.Chmod(logPath, 0o600)
 	}
 	defer logFile.Close()
 	level := slog.LevelInfo
@@ -57,8 +65,21 @@ func run() error {
 		return err
 	}
 	c.ResumeInterrupted() // threads that were working when Solo last closed carry on
-	g := gui.New(gui.Live{Core: c, O: o})
+	live := gui.Live{Core: c, O: o}
+	g := gui.New(live)
 	defer g.Close()
+	// Remote access: off until the user sets it up in Settings. A failure here leaves the app usable.
+	remote, err := host.New(host.Config{Dir: dataDir, Backend: live, Log: log, Notify: func(title, body string) {
+		if err := app.Notify(app.Notification{Title: title, Body: body, Tag: "solo-remote"}); err != nil {
+			log.Debug("notification", "err", err)
+		}
+	}})
+	if err != nil {
+		log.Error("remote access is unavailable", "err", err)
+	} else {
+		defer remote.Close()
+		g.Remote = remote
+	}
 
 	light, dark := gui.Themes()
 	a := app.New().AppID(appID()).
