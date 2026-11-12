@@ -61,7 +61,8 @@
       result = await WebAssembly.instantiate(bytes, go.importObject);
     }
     status.remove();
-    globalThis.soloInstance = result.instance; // for measuring
+    // For measuring, on a developer's machine only: the instance's memory holds the device's keys.
+    if (location.hostname === "127.0.0.1" || location.hostname === "localhost") globalThis.soloInstance = result.instance;
     jambHost.attach(result.instance);
     soloHost.attach(result.instance);
     await go.run(result.instance);

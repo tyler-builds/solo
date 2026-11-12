@@ -173,3 +173,38 @@ func TestLandingLock(t *testing.T) {
 		t.Errorf("a second Discard: %v", err)
 	}
 }
+
+// A snippet is cut from the text at a place found in its lowercase form, which for some letters is a
+// different length: the cut must stay inside the text. A message could otherwise end the app whenever
+// someone searched for a word in it.
+func TestSnippetStaysInTheText(t *testing.T) {
+	text := strings.Repeat("Ⱥ", 100) + " needle"
+	lower := strings.ToLower(text)
+	if len(lower) == len(text) {
+		t.Skip("lowercasing didn't change the length here")
+	}
+	got := snippet(text, strings.Index(lower, "needle"), len("needle"))
+	if got == "" {
+		t.Error("no snippet")
+	}
+	for _, at := range []int{-5, 0, len(text), len(text) + 50, 1 << 30} {
+		snippet(text, at, 6) // must not panic
+	}
+}
+
+// An attachment has one spelling: a second spelling of the same file isn't taken, so a file is never
+// kept under one name and removed under another.
+func TestAttachmentHasOneSpelling(t *testing.T) {
+	e := newEnv(t)
+	att, err := e.c.SaveImage(image.NewRGBA(image.Rect(0, 0, 4, 4)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := filepath.Join(filepath.Dir(att), ".") + string(filepath.Separator) + "." + string(filepath.Separator) + filepath.Base(att)
+	if e.c.isAttachment(other) {
+		t.Errorf("%q was taken as an attachment", other)
+	}
+	if !e.c.isAttachment(att) {
+		t.Error("the attachment's own path wasn't")
+	}
+}

@@ -26,12 +26,12 @@ type Remote interface {
 	// The relay lives in the user's own Cloudflare account. SetCloudToken keeps an API token for it,
 	// DeployRelay puts the relay and the web client there (or joins the relay already there) and
 	// connects to it, and RemoveRelay deletes it. AcceptRelay resumes remote access after a change to
-	// the relay from elsewhere paused it (RemoteCloud.Paused).
+	// the relay from elsewhere paused it (RemoteCloud.Paused), removing every device first if asked.
 	SetCloudToken(ctx context.Context, token string) error
 	ForgetCloudToken() error
 	DeployRelay(ctx context.Context) error
 	RemoveRelay(ctx context.Context) error
-	AcceptRelay(ctx context.Context) error
+	AcceptRelay(ctx context.Context, removeDevices bool) error
 }
 
 // RemoteCloud is where remote access stands with the Cloudflare account.
@@ -42,9 +42,14 @@ type RemoteCloud struct {
 	// CanDeploy: this build of Solo has the relay and the web client in it.
 	CanDeploy bool
 	Busy      string // what a deploy is doing now, or ""
-	// Paused: the relay was changed from elsewhere, and remote access waits for the user. Alert says so.
-	Paused bool
-	Alert  string
+	// Paused: the relay is not as this machine left it, and remote access waits for the user. Alert
+	// says so, and Changes what was found. Alert is also set, without a pause, when the relay was
+	// deleted from elsewhere.
+	Paused  bool
+	Alert   string
+	Changes []string
+	// CheckProblem: the relay couldn't be checked lately.
+	CheckProblem string
 }
 
 // RemoteConnection is where the machine stands with its relay.
@@ -94,10 +99,10 @@ type RemotePairing struct {
 	Expires time.Time
 }
 
-// RemoteRequest is a device that holds the pairing code and asks to pair. The six digits it shows are
-// not here: the person reads them from the device and types them, which is what proves the device in
-// their hand is the one that asked.
+// RemoteRequest is a device that holds the pairing code and asks to pair. Nothing the device says of
+// itself is here, neither its name nor the six digits it shows: until the person has typed the digits
+// they read from the device in their hand, anything a requester says is text chosen by whoever holds
+// the code, and would be shown right beside the box the digits are typed in.
 type RemoteRequest struct {
-	Name string
-	At   time.Time
+	At time.Time
 }

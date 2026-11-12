@@ -87,10 +87,13 @@ func (c *Client) call(ctx context.Context, method, p, contentType string, body i
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
 	}
-	client := c.HTTP
-	if client == nil {
-		client = http.DefaultClient
+	base := c.HTTP
+	if base == nil {
+		base = http.DefaultClient
 	}
+	// The API doesn't redirect, and the token follows no redirect anywhere.
+	client := *base
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	resp, err := client.Do(req)
 	if err != nil {
 		// The error may quote the request; its headers are not in it, but say less anyway.
@@ -312,10 +315,27 @@ func (c *Client) Put(ctx context.Context, u Upload) error {
 	return nil
 }
 
-// SetKeys replaces the relay's list of machines, leaving its code and web client as they are: how a
-// machine adds itself to a relay another machine deployed, whatever version that one is.
-func (c *Client) SetKeys(ctx context.Context, account, script string, keys []string, bundle int) error {
-	settings, _ := json.Marshal(map[string]any{"bindings": bindings(keys, bundle)})
+// SetKeys replaces the relay's list of machines, leaving its code, its web client and every other
+// binding as they are: how a machine adds itself to a relay another machine deployed, whatever version
+// that one is and whatever bindings a later version has added.
+func (c *Client) SetKeys(ctx context.Context, account, script string, keys []string) error {
+	var now struct {
+		Bindings []map[string]any `json:"bindings"`
+	}
+	if err := c.call(ctx, "GET", "/accounts/"+account+"/workers/scripts/"+script+"/settings", "", nil, "", &now); err != nil {
+		return err
+	}
+	found := false
+	for _, b := range now.Bindings {
+		if b["name"] == bindingKeys {
+			b["type"], b["text"] = "plain_text", strings.Join(keys, ",")
+			found = true
+		}
+	}
+	if !found {
+		return errors.New("the relay has no list of machines to add this one to")
+	}
+	settings, _ := json.Marshal(map[string]any{"bindings": now.Bindings})
 	var buf bytes.Buffer
 	mw := multipart.NewWriter(&buf)
 	h := textproto.MIMEHeader{}
@@ -424,6 +444,40 @@ func (c *Client) Versions(ctx context.Context, account, script string) ([]Versio
 	}
 	sort.SliceStable(vs, func(i, j int) bool { return vs[i].Created.After(vs[j].Created) })
 	return vs, nil
+}
+
+// ActiveVersion returns the ID of the version of a script that is being served now, or "" when the
+// API doesn't say.
+func (c *Client) ActiveVersion(ctx context.Context, account, script string) (string, error) {
+	var out struct {
+		Deployments []struct {
+			Versions []struct {
+				ID      string  `json:"version_id"`
+				Percent float64 `json:"percentage"`
+			} `json:"versions"`
+		} `json:"deployments"`
+	}
+	if err := c.call(ctx, "GET", "/accounts/"+account+"/workers/scripts/"+script+"/deployments", "", nil, "", &out); err != nil {
+		return "", err
+	}
+	if len(out.Deployments) == 0 || len(out.Deployments[0].Versions) != 1 {
+		return "", nil // none, or traffic split between versions: nothing Solo does
+	}
+	return out.Deployments[0].Versions[0].ID, nil
+}
+
+// ValidHost reports whether s is a host name of plain letters, digits, hyphens and dots, as a
+// workers.dev address is: it goes into the headers the web client is served with.
+func ValidHost(s string) bool {
+	if s == "" || len(s) > 253 {
+		return false
+	}
+	for _, c := range s {
+		if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-' || c == '.') {
+			return false
+		}
+	}
+	return true
 }
 
 // Delete removes a script, its Durable Object and its web client. Its address stops answering.

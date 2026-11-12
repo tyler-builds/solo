@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -700,4 +701,169 @@ func FuzzFrames(f *testing.F) {
 			return nil
 		})
 	})
+}
+
+// A connection that has finished its handshake and doesn't say hello is not kept: it would be a
+// session nobody can see, and so nobody can end.
+func TestHelloIsDue(t *testing.T) {
+	m := newMem()
+	h := NewHost(m, Options{HelloFor: 40 * time.Millisecond})
+	defer h.Close()
+	host, device := pipe()
+	done := make(chan error, 1)
+	go func() { done <- h.Serve(host, Device{ID: "d1"}) }()
+	s := newSession(device, maxFromMachine)
+	go s.run(func(Envelope) error { return nil })
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() { // it says it is there, and nothing else
+		for {
+			select {
+			case <-stop:
+				return
+			case <-time.After(5 * time.Millisecond):
+				s.ping()
+			}
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("a connection that never said hello was kept")
+	}
+}
+
+// Large messages are for a device that has said hello and may change things: before hello, and from a
+// device that may only look, a message in parts ends the session, and its bytes are never kept.
+func TestLargeMessagesNeedASession(t *testing.T) {
+	part := func(seq uint32, last byte) []byte {
+		b := make([]byte, 10+partSize)
+		b[0] = framePart
+		b[4], b[8], b[9] = 1, byte(seq), last
+		return b
+	}
+	hello, _ := json.Marshal(Hello{Protocol: Protocol})
+	helloFrame, _ := Envelope{T: kindHello, P: hello}.encode()
+	for name, tc := range map[string]struct {
+		dev    Device
+		frames [][]byte
+	}{
+		"before hello":       {Device{ID: "d1"}, [][]byte{part(1, 0)}},
+		"a read-only device": {Device{ID: "d1", ReadOnly: true}, [][]byte{append([]byte{frameWhole}, helloFrame...), part(1, 0)}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			m := newMem()
+			h := NewHost(m, Options{FlushEvery: time.Millisecond})
+			defer h.Close()
+			host, device := pipe()
+			done := make(chan error, 1)
+			go func() { done <- h.Serve(host, tc.dev) }()
+			go func() {
+				for {
+					if _, err := device.Receive(); err != nil {
+						return
+					}
+				}
+			}()
+			for _, f := range tc.frames {
+				device.Send(f)
+			}
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+				t.Fatal("the session took a message in parts")
+			}
+		})
+	}
+
+	// Only an image upload carries bytes: anything else that does is refused, unread.
+	m := newMem()
+	m.addThread("a", core.StatusIdle)
+	r := newRig(t, m, Device{ID: "d1"})
+	r.c.mu.Lock()
+	s := r.c.s
+	r.c.mu.Unlock()
+	res, err := r.c.send(context.Background(), s, Envelope{T: kindReq, ID: "big", M: "send",
+		P: json.RawMessage(`{"thread":"a","text":"x"}`), Blob: make([]byte, 300_000)})
+	if err != nil || res.E == nil || len(m.sent) != 0 {
+		t.Errorf("a message with bytes attached: %+v, %v, sent %v", res.E, err, m.sent)
+	}
+}
+
+// A device's requests are counted over all its connections, and those still running after their
+// connection went count too: reconnecting doesn't start sixteen more.
+func TestRequestsAreCountedPerDevice(t *testing.T) {
+	m := newMem()
+	m.addThread("a", core.StatusIdle)
+	release := make(chan struct{})
+	var started atomic.Int32
+	m.onMerge = func() (string, error) {
+		started.Add(1)
+		<-release
+		return "done", nil
+	}
+	r := newRig(t, m, Device{ID: "d1"})
+	defer close(release)
+	for round := 0; round < 3; round++ {
+		for i := 0; i < maxRequests; i++ {
+			go r.c.Merge(context.Background(), "a")
+		}
+		r.wait("the requests to start", func() bool { return int(started.Load()) >= maxRequests })
+		time.Sleep(30 * time.Millisecond)
+		r.disconnect()
+		r.connect()
+	}
+	if n := started.Load(); n != maxRequests {
+		t.Errorf("%d requests ran at once for one device, over three connections; the limit is %d", n, maxRequests)
+	}
+}
+
+// The answers kept are dropped oldest first, and stay within their count and their bytes.
+func TestAnswersAreForgottenOldestFirst(t *testing.T) {
+	h := NewHost(newMem(), Options{})
+	defer h.Close()
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	add := func(key string, size int) {
+		a := &answer{done: make(chan struct{}), at: time.Now(), size: size}
+		close(a.done)
+		h.answered[key] = a
+		h.order = append(h.order, key)
+		h.kept += size
+		h.forgetAnswersLocked()
+	}
+	for i := 0; i < answersKept+10; i++ {
+		add(fmt.Sprint("k", i), 10)
+	}
+	if _, ok := h.answered["k0"]; ok || len(h.answered) != answersKept {
+		t.Errorf("%d answers kept, the oldest among them: %v", len(h.answered), ok)
+	}
+	if _, ok := h.answered[fmt.Sprint("k", answersKept+9)]; !ok {
+		t.Error("the newest answer was dropped")
+	}
+	add("big", answersBytes)
+	if h.kept > answersBytes+10 || len(h.answered) > 2 {
+		t.Errorf("after a large answer: %d bytes in %d answers", h.kept, len(h.answered))
+	}
+	if _, ok := h.answered["big"]; !ok {
+		t.Error("the answer just given was dropped")
+	}
+}
+
+// Checking Claude starts Claude: devices share one check rather than each start their own.
+func TestClaudeIsCheckedOnce(t *testing.T) {
+	m := newMem()
+	r := newRig(t, m, Device{ID: "d1", ReadOnly: true})
+	var wg sync.WaitGroup
+	for i := 0; i < 12; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			r.c.CheckClaude(context.Background(), "")
+		}()
+	}
+	wg.Wait()
+	if n := m.claudeChecks.Load(); n != 1 {
+		t.Errorf("Claude was started %d times for 12 requests", n)
+	}
 }

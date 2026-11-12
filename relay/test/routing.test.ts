@@ -4,12 +4,16 @@ import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { describe, expect, test } from "vitest";
 import { CLOSE, FRAME, KIND, LIMIT } from "../src/protocol";
 import {
+	accepted,
+	addTicket,
 	closeFrame,
 	connectDevice,
 	connectMachine,
+	connectPair,
 	dataFrame,
 	hex,
 	opened,
+	otherListed,
 	random,
 	relay,
 	Socket,
@@ -152,6 +156,45 @@ describe("a machine that is not there", () => {
 		expect(await first.closed).toBe(CLOSE.offline);
 		expect(await second.closed).toBe(CLOSE.offline);
 		expect(await other.idle()).toBe(true);
+	});
+});
+
+describe("a machine is its key and its ID", () => {
+	test("another key that claims a machine's ID is another machine: it takes nothing over", async () => {
+		const real = await connectMachine();
+		const device = await connectDevice(real.id);
+		const open = await opened(real);
+
+		// Another of the user's machines, or an old one that was sold, claims the same ID.
+		const impostor = await connectMachine(real.id, otherListed);
+		expect(await real.socket.idle()).toBe(true); // not replaced, and told nothing
+		device.send(text("for the real one"));
+		expect(await real.socket.frame()).toEqual(dataFrame(open.conn, text("for the real one")));
+		expect(await impostor.socket.idle()).toBe(true);
+
+		// A device with the real machine's voucher never reaches the impostor, and a voucher the
+		// impostor's key signed never reaches the real machine.
+		const theirs = await accepted(await upgrade("/v1/device", await voucher(real.id, random(16), { signer: otherListed })));
+		expect((await opened(impostor)).kind).toBe(KIND.device);
+		expect(await real.socket.idle()).toBe(true);
+		theirs.send(text("for the impostor"));
+		expect((await impostor.socket.frame())[0]).toBe(FRAME.data);
+		expect(await real.socket.idle()).toBe(true);
+
+		// Nor can it close the real machine's connections by naming them.
+		impostor.socket.send(closeFrame(open.conn));
+		impostor.socket.send(dataFrame(open.conn, text("forged")));
+		expect(await device.idle()).toBe(true);
+	});
+
+	test("a pairing socket reaches the machine that registered the ticket, not one that shares its ID", async () => {
+		const real = await connectMachine();
+		const impostor = await connectMachine(real.id, otherListed);
+		const ticket = random(32);
+		await addTicket(real, ticket);
+		await connectPair(real.id, ticket);
+		expect((await opened(real)).kind).toBe(KIND.pair);
+		expect(await impostor.socket.idle()).toBe(true);
 	});
 });
 

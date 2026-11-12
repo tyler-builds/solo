@@ -22,6 +22,8 @@ export type Role = "machine" | "device" | "pair";
 export const HEADER = {
 	role: "X-Solo-Role",
 	machine: "X-Solo-Machine",
+	// The relay key that signed a machine's token or a device's voucher.
+	key: "X-Solo-Key",
 	device: "X-Solo-Device",
 	ticket: "X-Solo-Ticket",
 } as const;
@@ -65,3 +67,4 @@ export const LIMIT = {
 export const CONN_SIZE = 8;
 export const ID_SIZE = 16;
 export const HASH_SIZE = 32;
+export const KEY_SIZE = 32;

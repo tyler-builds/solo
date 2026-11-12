@@ -96,9 +96,12 @@ func (f *fakeRemote) DeployRelay(context.Context) error {
 	return nil
 }
 func (f *fakeRemote) RemoveRelay(context.Context) error { return nil }
-func (f *fakeRemote) AcceptRelay(context.Context) error { return nil }
-func (f *fakeRemote) RevokeAll() error                  { return nil }
-func (f *fakeRemote) SetReadOnly(string, bool) error    { return nil }
+func (f *fakeRemote) AcceptRelay(context.Context, bool) error {
+	f.change(func(st *api.RemoteState) { st.Cloud.Paused, st.Cloud.Alert, st.Cloud.Changes = false, "", nil })
+	return nil
+}
+func (f *fakeRemote) RevokeAll() error               { return nil }
+func (f *fakeRemote) SetReadOnly(string, bool) error { return nil }
 
 // pairedRemote is a machine connected to its relay with two devices.
 func pairedRemote() *fakeRemote {
@@ -135,8 +138,8 @@ func TestRemotePagePairs(t *testing.T) {
 	u.WaitFor("the devices", func() bool { return has(access.RoleStaticText, "Pixel 9") && has(access.RoleStaticText, "Work laptop") })
 	u.ByRole(access.RoleButton, "Add a device").Click()
 	u.WaitFor("the pairing code", func() bool { return has(access.RoleImage, "Pairing code") })
-	rm.change(func(st *api.RemoteState) { st.Requests = []api.RemoteRequest{{Name: "Tyler's phone", At: time.Now()}} })
-	u.WaitFor("the request", func() bool { return has(access.RoleStaticText, "Tyler's phone") })
+	rm.change(func(st *api.RemoteState) { st.Requests = []api.RemoteRequest{{At: time.Now()}} })
+	u.WaitFor("the request", func() bool { return has(access.RoleStaticText, "A device is asking to pair") })
 	u.Get("remote-digits").Click()
 	u.Type("482 913")
 	u.ByRole(access.RoleButton, "Pair").Click()
@@ -191,5 +194,37 @@ func TestRemotePageSetsUp(t *testing.T) {
 	})
 	if !found {
 		t.Error("the relay's address isn't shown")
+	}
+}
+
+// A relay that was changed from elsewhere is said so, whatever the page otherwise shows, with what was
+// found and the choices: resume, resume without the devices, or remove the relay.
+func TestRemotePagePaused(t *testing.T) {
+	for _, relay := range []string{"https://solo-relay.example.workers.dev", ""} {
+		rm := pairedRemote()
+		rm.st.Relay = relay
+		rm.st.Connection = api.RemoteOff
+		rm.st.Cloud.Paused = true
+		rm.st.Cloud.Alert = "Remote access is paused: the relay is not as this copy of Solo left it."
+		rm.st.Cloud.Changes = []string{"A version was uploaded on 12 Nov 2026 at 10:49, through api."}
+		a, u := newUIWith(t, demoBackend(), func(a *App) { a.Remote = rm })
+		a.settingsTab = "remote"
+		a.settings.Set(true)
+		u.Frame()
+		if !u.Has("remote-alert") || !u.Has("remote-accept") || !u.Has("remote-accept-clean") || !u.Has("remote-remove-paused") {
+			t.Fatalf("relay %q: the alert or its choices are missing", relay)
+		}
+		if u.Has("remote-deploy") {
+			t.Errorf("relay %q: setting up is offered while paused", relay)
+		}
+		found := false
+		u.Tree().Walk(func(n *access.Node) bool {
+			found = found || strings.Contains(n.Name, "uploaded on 12 Nov 2026")
+			return true
+		})
+		if !found {
+			t.Errorf("relay %q: what was found isn't shown", relay)
+		}
+		u.Close()
 	}
 }

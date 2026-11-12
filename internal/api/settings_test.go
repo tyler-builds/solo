@@ -136,5 +136,12 @@ func TestSettingsPatchCheckRemote(t *testing.T) {
 		if want := name == "claudePath" || name == "editorCommand" || name == "terminalCommand"; DesktopOnly(name) != want {
 			t.Errorf("DesktopOnly(%q) = %v", name, !want)
 		}
+		// Every setting is listed, one way or the other: a new one must be decided, not defaulted.
+		if _, listed := remote[name]; !listed {
+			t.Errorf("the setting %q isn't listed as remote or not (api.remote)", name)
+		}
+	}
+	if !DesktopOnly("somethingNew") {
+		t.Error("a setting nobody listed can be changed remotely")
 	}
 }

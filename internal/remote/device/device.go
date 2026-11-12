@@ -9,6 +9,7 @@ import (
 	"io"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/flynn/noise"
 
@@ -91,6 +92,20 @@ type Pairing struct {
 	link   *wire.Link
 }
 
+// within closes conn if ctx ends before the function it returns is called: a relay that accepts a
+// connection and then says nothing doesn't hold a handshake up for ever.
+func within(ctx context.Context, conn wire.Conn) (done func()) {
+	finished := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			conn.Close()
+		case <-finished:
+		}
+	}()
+	return func() { close(finished) }
+}
+
 // Pair asks the machine a pairing code names to pair with this device. It returns once the machine has
 // answered the handshake: the digits are then shown, and Wait waits for the person there.
 func Pair(ctx context.Context, dial Dialer, origin string, code secure.PairingCode, key noise.DHKey, name string, random io.Reader) (*Pairing, error) {
@@ -98,6 +113,7 @@ func Pair(ctx context.Context, dial Dialer, origin string, code secure.PairingCo
 	if err != nil {
 		return nil, err
 	}
+	defer within(ctx, conn)()
 	psk := code.PSK()
 	p := secure.Params{Purpose: secure.Pair, Origin: origin, Machine: code.Machine, Code: &code}
 	ini, first, err := secure.Initiate(p, key, code.MachineKey[:], psk[:], random)
@@ -163,6 +179,7 @@ func Connect(ctx context.Context, dial Dialer, origin string, m Machine, key noi
 	if err != nil {
 		return nil, err
 	}
+	defer within(ctx, conn)()
 	p := secure.Params{Purpose: secure.Session, Origin: origin, Machine: id}
 	ini, first, err := secure.Initiate(p, key, m.Key, m.PSK, random)
 	if err != nil {
@@ -191,17 +208,18 @@ func Connect(ctx context.Context, dial Dialer, origin string, m Machine, key noi
 var ErrRevoked = errors.New("This device is no longer paired with the machine.")
 
 // CleanName makes a name safe to show: a device or a machine names itself, and the other end shows
-// that to a person deciding whether to trust it. Control characters and the characters that reorder or
-// hide text are dropped, and the name is cut to 40 characters.
+// that to a person. Letters, digits, spaces and a few marks are kept, everything else is dropped
+// (control characters, and the characters that reorder, hide or break text among them), and the name
+// is cut to 40 characters. A device's name is not shown at the machine at all until the device has been
+// approved.
 func CleanName(name string) string {
 	var b strings.Builder
 	n := 0
 	for _, r := range name {
 		switch {
-		case r < 0x20, r == 0x7f, r >= 0x80 && r < 0xa0:
-			continue
-		case r == 0x200e, r == 0x200f, r == 0x061c, r >= 0x202a && r <= 0x202e, r >= 0x2066 && r <= 0x2069,
-			r >= 0x200b && r <= 0x200d, r == 0xfeff, r == 0xfffd:
+		case unicode.IsLetter(r), unicode.IsDigit(r), unicode.Is(unicode.Mn, r):
+		case r == ' ', strings.ContainsRune("-_.,'()&+’", r):
+		default:
 			continue
 		}
 		b.WriteRune(r)

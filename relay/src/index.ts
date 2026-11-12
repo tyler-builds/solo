@@ -36,8 +36,9 @@ export default {
 		// What the tokens are signed for, and where the page that may connect was served from.
 		const origin = `https://${url.host}`;
 		// A browser says which page opened the socket, and only the relay's own page may. A machine is
-		// a native program and sends no Origin.
-		if (role !== "machine" && request.headers.get("Origin") !== origin) {
+		// a native program and sends no Origin: one that does is a page, which is no machine.
+		const from = request.headers.get("Origin");
+		if (role === "machine" ? from !== null : from !== origin) {
 			return status(403);
 		}
 		const facts = await verified(role, token, origin, env);
@@ -72,11 +73,13 @@ async function verified(
 	switch (role) {
 		case "machine": {
 			const v = await verifyMachineAuth(origin, token, Date.now(), hostKeys);
-			return v.ok ? { [HEADER.machine]: toHex(v.machineId) } : refused(v);
+			return v.ok ? { [HEADER.machine]: toHex(v.machineId), [HEADER.key]: toHex(v.key) } : refused(v);
 		}
 		case "device": {
 			const v = await verifyVoucher(origin, token, hostKeys);
-			return v.ok ? { [HEADER.machine]: toHex(v.machineId), [HEADER.device]: toHex(v.deviceId) } : refused(v);
+			return v.ok
+				? { [HEADER.machine]: toHex(v.machineId), [HEADER.key]: toHex(v.key), [HEADER.device]: toHex(v.deviceId) }
+				: refused(v);
 		}
 		case "pair": {
 			const pair = parsePairToken(token);

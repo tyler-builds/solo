@@ -190,15 +190,28 @@ func TestRealCloudflare(t *testing.T) {
 	if err := client.SendToOrchestrator(ctx, "still here"); err != nil {
 		t.Errorf("the first machine's session after the second joined: %v", err)
 	}
+	// Joining changed the list of machines and nothing else: the web client is still served, under
+	// its headers.
+	if resp, err := http.Get(address + "/"); err != nil {
+		t.Errorf("the page after a second machine joined: %v", err)
+	} else {
+		n, _ := io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != 200 || n == 0 || !strings.Contains(resp.Header.Get("Content-Security-Policy"), "default-src 'none'") {
+			t.Errorf("the page after a second machine joined: HTTP %d, %d bytes, policy %q", resp.StatusCode, n, resp.Header.Get("Content-Security-Policy"))
+		}
+	}
 
 	// The first machine sees a change it didn't make, pauses, and resumes when told it was the user's.
 	if err := first.CheckRelay(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if !first.State().Cloud.Paused {
+	if st := first.State().Cloud; !st.Paused {
 		t.Error("a change from another machine wasn't noticed")
+	} else {
+		t.Logf("what the check found: %d changes", len(st.Changes))
 	}
-	if err := first.AcceptRelay(ctx); err != nil {
+	if err := first.AcceptRelay(ctx, false); err != nil {
 		t.Fatal(err)
 	}
 	wait("the first machine to resume", func() bool { return first.State().Connection == Online })

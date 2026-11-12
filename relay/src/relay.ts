@@ -15,6 +15,7 @@ import {
 	HASH_SIZE,
 	HEADER,
 	ID_SIZE,
+	KEY_SIZE,
 	KIND,
 	LIMIT,
 	SUBPROTOCOL,
@@ -23,9 +24,12 @@ import {
 	type Role,
 } from "./protocol";
 
-// Peer is what a socket's attachment says of it. IDs and the connection are in hex.
+// Peer is what a socket's attachment says of it. The connection and the device are in hex.
 interface Peer {
 	role: Role;
+	// The machine the socket is, or is for: the relay key that vouches for it and its ID, both in hex
+	// (see owner). A machine is known by both, so a machine can't take another's place by claiming its
+	// ID: under its own key that is another machine.
 	machine: string;
 	// The connection number the machine knows a device's or a pairing socket by; empty for a machine.
 	conn: string;
@@ -45,7 +49,7 @@ const NO_DEVICE = "0".repeat(ID_SIZE * 2);
 
 // Tags, which are how sockets are found: every machine's socket, one machine's socket, one machine's
 // device or pairing sockets, and the one socket of a connection. The connection's tag has the machine
-// in it, so a machine can only ever name its own.
+// in it, and a machine is its key and its ID together, so a machine can only ever name its own.
 const everyMachine = "machine";
 const machineTag = (machine: string) => `m:${machine}`;
 const clientsTag = (role: Role, machine: string) => `${role === "pair" ? "p" : "d"}:${machine}`;
@@ -74,10 +78,25 @@ export class Relay extends DurableObject<Env> {
 	// fetch admits a socket the Worker has verified. The request is the Worker's own (src/index.ts).
 	override async fetch(request: Request): Promise<Response> {
 		const role = request.headers.get(HEADER.role);
-		const machine = request.headers.get(HEADER.machine) ?? "";
-		if (fromHex(machine, ID_SIZE) === null) {
+		const id = request.headers.get(HEADER.machine) ?? "";
+		if (fromHex(id, ID_SIZE) === null) {
 			return new Response(null, { status: 400 });
 		}
+		if (role === "pair") {
+			// A pairing socket names its machine by ID alone; which key that machine connected under
+			// is in the ticket it registered.
+			const hash = request.headers.get(HEADER.ticket) ?? "";
+			const machine = this.ticketOwner(id, hash);
+			if (machine === null) {
+				return new Response(null, { status: 401 });
+			}
+			return this.admitClient("pair", machine, NO_DEVICE, hash);
+		}
+		const key = request.headers.get(HEADER.key) ?? "";
+		if (fromHex(key, KEY_SIZE) === null) {
+			return new Response(null, { status: 400 });
+		}
+		const machine = owner(key, id);
 		switch (role) {
 			case "machine":
 				return this.admitMachine(machine);
@@ -87,13 +106,6 @@ export class Relay extends DurableObject<Env> {
 					return new Response(null, { status: 400 });
 				}
 				return this.admitClient("device", machine, device);
-			}
-			case "pair": {
-				const hash = request.headers.get(HEADER.ticket) ?? "";
-				if (!this.ticketIsGood(machine, hash)) {
-					return new Response(null, { status: 401 });
-				}
-				return this.admitClient("pair", machine, NO_DEVICE, hash);
 			}
 		}
 		return new Response(null, { status: 400 });
@@ -260,37 +272,36 @@ export class Relay extends DurableObject<Env> {
 		);
 	}
 
-	// ticketIsGood says whether a pairing socket's ticket admits it to machine: the machine registered
-	// its hash, it has not expired and it has uses left. A wrong ticket is counted, and after too many
-	// for one machine every ticket for it is refused until the window has passed. That is for the
-	// request quota: the ticket is 256 bits and is not going to be guessed.
-	private ticketIsGood(machine: string, hash: string): boolean {
+	// ticketOwner returns the machine a pairing socket's ticket admits it to, or null: the machine
+	// with that ID registered the ticket's hash, it has not expired and it has uses left. A right
+	// ticket is always admitted. A wrong one is counted, and after too many for one machine the wrong
+	// ones are no longer written down until the window has passed: the count is there to ration the
+	// rows written, not to guard the ticket, which is 256 bits and is not going to be guessed.
+	private ticketOwner(id: string, hash: string): string | null {
 		const sql = this.ctx.storage.sql;
 		const now = Date.now();
-		const failed = sql
-			.exec<FailureRow>("SELECT since, count FROM failures WHERE machine = ?", machine)
-			.toArray()[0];
-		const counting = failed !== undefined && now - failed.since < LIMIT.failureWindowMs;
-		if (counting && failed.count >= LIMIT.failures) {
-			return false;
-		}
 		const ticket = sql
 			.exec<TicketRow>("SELECT machine, expires, uses FROM tickets WHERE hash = ?", hash)
 			.toArray()[0];
-		if (ticket !== undefined && ticket.machine === machine && ticket.expires > now / 1000 && ticket.uses > 0) {
-			return true;
+		if (ticket !== undefined && idOf(ticket.machine) === id && ticket.expires > now / 1000 && ticket.uses > 0) {
+			return ticket.machine;
 		}
-		// A failure is a row written, and writes are rationed too. Only a machine that has a ticket
-		// out has anything to count: for any other, every ticket is wrong, and nothing is kept.
-		if (sql.exec("SELECT 1 FROM tickets WHERE machine = ? LIMIT 1", machine).toArray().length > 0) {
+		const failed = sql.exec<FailureRow>("SELECT since, count FROM failures WHERE machine = ?", id).toArray()[0];
+		const counting = failed !== undefined && now - failed.since < LIMIT.failureWindowMs;
+		if (counting && failed.count >= LIMIT.failures) {
+			return null;
+		}
+		// Only a machine that has a ticket out has anything to count: for any other, every ticket is
+		// wrong, and nothing is kept.
+		if (sql.exec("SELECT 1 FROM tickets WHERE machine LIKE ? LIMIT 1", `%:${id}`).toArray().length > 0) {
 			sql.exec(
 				"INSERT OR REPLACE INTO failures (machine, since, count) VALUES (?, ?, ?)",
-				machine,
+				id,
 				counting ? failed.since : now,
 				counting ? failed.count + 1 : 1,
 			);
 		}
-		return false;
+		return null;
 	}
 
 	// sockets returns the sockets with a tag that the relay has not finished with.
@@ -382,6 +393,15 @@ export class Relay extends DurableObject<Env> {
 		const usage = JSON.stringify({ day, frames: (row?.frames ?? 0) + this.pending });
 		return concat(new Uint8Array([FRAME.usage]), new TextEncoder().encode(usage));
 	}
+}
+
+// owner names a machine by the relay key that vouches for it and its ID. idOf takes the ID back out.
+function owner(key: string, id: string): string {
+	return `${key}:${id}`;
+}
+
+function idOf(machine: string): string {
+	return machine.slice(machine.indexOf(":") + 1);
 }
 
 // peerOf reads who a socket is, or null when the relay has finished with it.

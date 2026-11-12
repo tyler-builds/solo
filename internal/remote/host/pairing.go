@@ -24,6 +24,10 @@ const (
 	maxRequests = 3
 	// maxWrongCodes is how many wrong sets of digits end a pairing: guessing six digits takes more.
 	maxWrongCodes = 5
+	// maxHandshakes is how many pairing handshakes one code answers. The relay is asked to let in
+	// pairingUses connections, but the relay is not trusted to: one that let in a million could try
+	// handshakes until one showed the digits it wanted.
+	maxHandshakes = 8
 	// MaxDevices is how many devices a machine pairs with; the relay carries as many at once.
 	MaxDevices = 16
 )
@@ -34,6 +38,7 @@ type pairing struct {
 	link     string
 	requests []*pairRequest
 	wrong    int
+	answered int // handshakes answered with this code
 }
 
 // pairRequest is a device that finished the pairing handshake and waits for the person.
@@ -45,7 +50,8 @@ type pairRequest struct {
 	decide chan device.Decision
 }
 
-// end turns down every request. It is safe on a nil pairing.
+// end turns down every request. It is safe on a nil pairing. Call with Remote.mu held: the requests
+// are only ever read and changed under it. Sending the decisions doesn't block.
 func (p *pairing) end() {
 	if p == nil {
 		return
@@ -57,6 +63,13 @@ func (p *pairing) end() {
 		}
 	}
 	p.requests = nil
+}
+
+// endPairing is end for a caller that doesn't hold r.mu.
+func (r *Remote) endPairing(p *pairing) {
+	r.mu.Lock()
+	p.end()
+	r.mu.Unlock()
 }
 
 func constantEqual(a, b []byte) bool { return subtle.ConstantTimeCompare(a, b) == 1 }
@@ -84,7 +97,7 @@ func (r *Remote) StartPairing() (Pairing, error) {
 	r.pairing = p
 	r.mu.Unlock()
 	if old != nil {
-		old.end()
+		r.endPairing(old)
 		rc.ticket(old.code, false)
 	}
 	rc.ticket(code, true)
@@ -97,7 +110,7 @@ func (r *Remote) StartPairing() (Pairing, error) {
 		}
 		r.mu.Unlock()
 		if expired {
-			p.end()
+			r.endPairing(p)
 			r.changed()
 		}
 	})
@@ -114,7 +127,7 @@ func (r *Remote) CancelPairing() {
 	if p == nil {
 		return
 	}
-	p.end()
+	r.endPairing(p)
 	if rc != nil {
 		rc.ticket(p.code, false)
 	}
@@ -156,7 +169,7 @@ func (r *Remote) Approve(digits string, readOnly bool) (Device, error) {
 		}
 		r.mu.Unlock()
 		if spent {
-			p.end()
+			r.endPairing(p)
 			if rc != nil {
 				rc.ticket(p.code, false)
 			}
@@ -197,9 +210,9 @@ func (r *Remote) Approve(digits string, readOnly bool) (Device, error) {
 	r.mu.Unlock()
 
 	q.decide <- device.Decision{OK: true, PSK: psk, Voucher: voucher, Name: r.cfg.Name, ReadOnly: readOnly}
-	p.end()
+	r.endPairing(p)
 	rc.ticket(p.code, false)
-	r.rpc.Drop(d.ID) // a session under the device's earlier key ends
+	r.cut(d.ID) // whatever the device had open under its earlier key ends
 	r.audit.event("paired", d.ID, d.Name)
 	if r.cfg.Notify != nil {
 		r.cfg.Notify("A device was paired", d.Name+" can now use Solo on this machine.")
@@ -221,6 +234,21 @@ func (r *Remote) servePairing(rc *relayConn, c *muxConn) {
 	}
 	first, err := c.Read()
 	if err != nil {
+		return
+	}
+	// A code answers a handful of handshakes, whatever the relay lets through: each answered handshake
+	// is a set of digits its sender gets to see, and enough of them would hold any six digits.
+	r.mu.Lock()
+	p.answered++
+	spent := p.answered > maxHandshakes
+	if spent && r.pairing == p {
+		r.pairing = nil
+		p.end()
+	}
+	r.mu.Unlock()
+	if spent {
+		rc.ticket(p.code, false)
+		r.changed()
 		return
 	}
 	psk := p.code.PSK()

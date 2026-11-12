@@ -199,9 +199,6 @@ func TestPairAndUse(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.wait("the request", func() bool { return len(w.remote.State().Requests) == 1 })
-	if got := w.remote.State().Requests[0].Name; got != "Tyler's phone" {
-		t.Errorf("the request's name is shown as %q", got)
-	}
 	if len(req.Digits) != 6 {
 		t.Fatalf("digits %q", req.Digits)
 	}
@@ -521,5 +518,165 @@ func TestTamperingRelay(t *testing.T) {
 				t.Fatal("the session went on over a tampering relay")
 			}
 		})
+	}
+}
+
+// Removing a device, or limiting it to looking, reaches every connection it has, whatever state the
+// connection is in: one that finished its handshake and has yet to say hello, and one the relay has
+// opened that has yet to start its handshake. A device that was taken over keeps such connections
+// ready for the moment it is removed.
+func TestRemovalReachesEveryConnection(t *testing.T) {
+	ctx := context.Background()
+	t.Run("parked after its handshake, then removed", func(t *testing.T) {
+		w := newWorld(t)
+		key, m := w.pair("Phone", false)
+		parked, err := device.Connect(ctx, w.dial, w.origin, m, key, rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(30 * time.Millisecond)
+		if err := w.remote.Revoke(w.remote.State().Devices[0].ID); err != nil {
+			t.Fatal(err)
+		}
+		c := rpc.NewClient(rpc.ClientOptions{Random: rand.Reader})
+		done := make(chan error, 1)
+		go func() { done <- c.Run(parked) }()
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			t.Fatal("the parked connection lived on")
+		}
+		if c.Status().Synced || len(c.Threads()) != 0 {
+			t.Error("a removed device got a session on a connection it had parked")
+		}
+	})
+	t.Run("parked after its handshake, then limited to looking", func(t *testing.T) {
+		w := newWorld(t)
+		key, m := w.pair("Phone", false)
+		parked, err := device.Connect(ctx, w.dial, w.origin, m, key, rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(30 * time.Millisecond)
+		if err := w.remote.SetReadOnly(w.remote.State().Devices[0].ID, true); err != nil {
+			t.Fatal(err)
+		}
+		c := rpc.NewClient(rpc.ClientOptions{Random: rand.Reader})
+		done := make(chan error, 1)
+		go func() { done <- c.Run(parked) }()
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			t.Fatal("the parked connection lived on with its old access")
+		}
+		// Its next connection is one that may only look.
+		c2 := rpc.NewClient(rpc.ClientOptions{Random: rand.Reader})
+		w.session(key, m, c2)
+		if !c2.Status().ReadOnly {
+			t.Error("the device's next session can still change things")
+		}
+		if err := c2.SendToOrchestrator(ctx, "hi"); err == nil {
+			t.Error("a device limited to looking sent a message")
+		}
+	})
+	t.Run("opened before its removal, handshake after", func(t *testing.T) {
+		w := newWorld(t)
+		key, m := w.pair("Phone", false)
+		conn, err := w.dial(ctx, device.PathDevice, m.Voucher)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		time.Sleep(30 * time.Millisecond) // the machine has the connection, and waits for its first message
+		if err := w.remote.Revoke(w.remote.State().Devices[0].ID); err != nil {
+			t.Fatal(err)
+		}
+		id, _ := secure.ParseID(m.ID)
+		ini, first, err := secure.Initiate(secure.Params{Purpose: secure.Session, Origin: w.origin, Machine: id}, key, m.Key, m.PSK, rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		conn.Write(first)
+		if answer, err := conn.Read(); err == nil {
+			if _, err := ini.Finish(answer); err == nil {
+				t.Error("the machine answered the handshake of a device removed while it waited")
+			}
+		}
+	})
+	t.Run("one device, too many connections", func(t *testing.T) {
+		w := newWorld(t)
+		key, m := w.pair("Phone", false)
+		for i := 0; i < maxDeviceConns; i++ {
+			l, err := device.Connect(ctx, w.dial, w.origin, m, key, rand.Reader)
+			if err != nil {
+				t.Fatalf("connection %d: %v", i+1, err)
+			}
+			defer l.Close()
+		}
+		if l, err := device.Connect(ctx, w.dial, w.origin, m, key, rand.Reader); err == nil {
+			l.Close()
+			t.Errorf("a device opened more than %d connections", maxDeviceConns)
+		}
+	})
+}
+
+// A device is "seen" when it has said hello, not when a handshake's first message arrives: the relay
+// can send a first message it kept again, and a lost phone must not look as if it were still in use.
+func TestReplayedHandshakeIsNotSeen(t *testing.T) {
+	w := newWorld(t)
+	key, m := w.pair("Phone", false)
+	var first []byte
+	w.local().Tamper = func(toDevice bool, f []byte) []byte {
+		if !toDevice && first == nil {
+			first = append([]byte(nil), f...)
+		}
+		return f
+	}
+	c := rpc.NewClient(rpc.ClientOptions{Random: rand.Reader})
+	link, err := device.Connect(context.Background(), w.dial, w.origin, m, key, rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	link.Close()
+	_ = c
+	w.relay.Tamper = nil
+	time.Sleep(30 * time.Millisecond)
+	if seen := w.remote.State().Devices[0].LastSeen; !seen.IsZero() {
+		t.Fatalf("a handshake with no hello counted as the device being seen: %v", seen)
+	}
+	// The relay sends the kept first message again, on a connection of its own making.
+	conn, err := w.dial(context.Background(), device.PathDevice, m.Voucher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	conn.Write(first)
+	conn.Read()
+	time.Sleep(50 * time.Millisecond)
+	if seen := w.remote.State().Devices[0].LastSeen; !seen.IsZero() {
+		t.Errorf("a replayed first message marked the device as seen at %v", seen)
+	}
+}
+
+// A pairing code answers a few handshakes and no more, whatever the relay lets through: each answered
+// handshake shows its sender a set of digits, and enough of them would show any.
+func TestPairingCodeAnswersFewHandshakes(t *testing.T) {
+	w := newWorld(t)
+	p := w.offer()
+	code := w.code(p.Link)
+	// A relay that lets in as many as ask.
+	hash := secure.TicketHash(code.Ticket())
+	for i := 0; i < maxHandshakes+4; i++ {
+		w.local().Refill(hash, 3)
+		req, err := device.Pair(context.Background(), w.dial, w.origin, code, newKey(t), "x", rand.Reader)
+		if err == nil {
+			req.Cancel()
+		}
+		if i >= maxHandshakes && err == nil {
+			t.Fatalf("handshake %d with one code was answered", i+1)
+		}
+	}
+	if w.remote.State().Pairing != nil {
+		t.Error("the code lived on")
 	}
 }

@@ -83,13 +83,16 @@ type Remote struct {
 	audit  *auditLog
 	random func([]byte) (int, error)
 
-	mu       sync.Mutex
-	saved    saved
-	machine  *secure.Machine // loaded when first needed: reading the keyring may ask the user
-	secrets  Secrets
-	conn     Connection
-	problem  string
-	relay    *relayConn // the connection to the relay, when there is one
+	mu      sync.Mutex
+	saved   saved
+	machine *secure.Machine // loaded when first needed: reading the keyring may ask the user
+	secrets Secrets
+	conn    Connection
+	problem string
+	relay   *relayConn // the connection to the relay, when there is one
+	// live are each paired device's connections, from the moment the relay opens one: its handshake
+	// may not be done, and it may not have said hello. Removing a device closes them all.
+	live     map[string]map[*muxConn]struct{}
 	stop     chan struct{}
 	pairing  *pairing
 	subs     map[int]func()
@@ -98,8 +101,11 @@ type Remote struct {
 	closed   bool
 	done     chan struct{} // closed by Close
 
-	hasToken  bool   // a Cloudflare token is kept, or set in the environment
-	cloudBusy string // what a deploy is doing now
+	hasToken     bool      // a Cloudflare token is kept, or set in the environment
+	cloudBusy    string    // what a deploy is doing now
+	checkFails   int       // checks of the relay that couldn't be made, in a row
+	checkProblem string    // what Settings says of that
+	watching     sync.Once // the relay's watcher runs
 }
 
 // New loads the machine's remote access, and connects to its relay if it is set up and on.
@@ -124,7 +130,8 @@ func New(cfg Config) (*Remote, error) {
 		cfg.HTTP = http.DefaultClient
 	}
 	r := &Remote{cfg: cfg, log: cfg.Log, path: filepath.Join(cfg.Dir, "remote.json"), secrets: cfg.Secrets,
-		conn: Off, subs: map[int]func(){}, random: rand.Read, done: make(chan struct{})}
+		conn: Off, subs: map[int]func(){}, random: rand.Read, done: make(chan struct{}),
+		live: map[string]map[*muxConn]struct{}{}}
 	var err error
 	if r.saved, err = loadSaved(r.path); err != nil {
 		return nil, err
@@ -161,6 +168,9 @@ func New(cfg Config) (*Remote, error) {
 			return err == nil && fi.IsDir() && filepath.IsAbs(p)
 		},
 		Audit: func(d rpc.Device, method, detail string, err error) { r.audit.request(d, method, detail, err) },
+		// A device is seen when it has said hello on its channel: a handshake's first message alone
+		// can be one the relay kept and sent again.
+		OnHello: func(d rpc.Device) { go r.seen(d.ID) },
 	})
 	// Whether a Cloudflare token is kept is only looked up once remote access is in use: reading the
 	// keyring can ask the user to unlock it, and most starts of Solo have no need.
@@ -175,7 +185,7 @@ func New(cfg Config) (*Remote, error) {
 		r.start()
 	}
 	if r.saved.Cloud.Script != "" {
-		go r.watchRelay()
+		r.watching.Do(func() { go r.watchRelay() })
 	}
 	return r, nil
 }
@@ -268,7 +278,7 @@ func (r *Remote) State() State {
 	if p := r.pairing; p != nil && time.Now().Before(p.code.Expires) {
 		st.Pairing = &Pairing{Link: p.link, Expires: p.code.Expires}
 		for _, q := range p.requests {
-			st.Requests = append(st.Requests, Request{Name: q.name, At: q.at})
+			st.Requests = append(st.Requests, Request{At: q.at})
 		}
 	}
 	return st
@@ -332,6 +342,22 @@ func (r *Remote) SetEnabled(on bool) error {
 	return err
 }
 
+// cut ends every connection of a device: its sessions, with a word of why, and then whatever else it
+// has open, a handshake under way or a connection that has yet to say hello included. Call without r.mu
+// held, after the device's record was changed: a connection that starts later reads the new record.
+func (r *Remote) cut(deviceID string) {
+	r.rpc.Drop(deviceID)
+	r.mu.Lock()
+	conns := make([]*muxConn, 0, len(r.live[deviceID]))
+	for c := range r.live[deviceID] {
+		conns = append(conns, c)
+	}
+	r.mu.Unlock()
+	for _, c := range conns {
+		c.Close()
+	}
+}
+
 // Revoke removes a device: its session ends now, and its key opens nothing from here on.
 func (r *Remote) Revoke(deviceID string) error {
 	r.mu.Lock()
@@ -344,7 +370,7 @@ func (r *Remote) Revoke(deviceID string) error {
 	r.saved.Devices = slices.Delete(slices.Clone(r.saved.Devices), i, i+1)
 	err := r.saved.write(r.path)
 	r.mu.Unlock()
-	r.rpc.Drop(deviceID)
+	r.cut(deviceID)
 	r.audit.event("revoked", deviceID, name)
 	r.changed()
 	return err
@@ -359,7 +385,7 @@ func (r *Remote) RevokeAll() error {
 	r.mu.Unlock()
 	r.CancelPairing()
 	for _, d := range devices {
-		r.rpc.Drop(d.ID)
+		r.cut(d.ID)
 		r.audit.event("revoked", d.ID, d.Name)
 	}
 	r.changed()
@@ -381,7 +407,7 @@ func (r *Remote) SetReadOnly(deviceID string, readOnly bool) error {
 	name := devices[i].Name
 	err := r.saved.write(r.path)
 	r.mu.Unlock()
-	r.rpc.Drop(deviceID)
+	r.cut(deviceID)
 	r.audit.event(fmt.Sprintf("read-only=%v", readOnly), deviceID, name)
 	r.changed()
 	return err

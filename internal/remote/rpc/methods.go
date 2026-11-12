@@ -105,6 +105,14 @@ func decode[T any](p json.RawMessage) (T, error) {
 	return v, nil
 }
 
+// checkPath is checkID for a folder or a repository, which may be named by its whole path.
+func checkPath(what, p string) error {
+	if len(p) == 0 || len(p) > 4096 || !utf8.ValidString(p) || strings.ContainsFunc(p, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
+		return invalid("that isn't a %s", what)
+	}
+	return nil
+}
+
 func checkID(what, id string) error {
 	if !validID(id) || !utf8.ValidString(id) {
 		return invalid("that isn't a %s", what)
@@ -308,7 +316,7 @@ func init() {
 				err = checkID("thread", a.Thread)
 			}
 			if err == nil {
-				err = checkID("repository", a.Repo)
+				err = checkPath("repository", a.Repo)
 			}
 			if err != nil {
 				return nil, nil, "", err
@@ -322,7 +330,7 @@ func init() {
 				err = checkID("thread", a.Thread)
 			}
 			if err == nil && a.Repo != "" {
-				err = checkID("repository", a.Repo)
+				err = checkPath("repository", a.Repo)
 			}
 			if err != nil {
 				return nil, nil, "", err
@@ -394,7 +402,7 @@ func init() {
 		"initRepo": {write: true, run: func(ctx context.Context, c *conn, p json.RawMessage, _ []byte) (any, []byte, string, error) {
 			a, err := decode[folderParams](p)
 			if err == nil {
-				err = checkID("folder", a.Folder)
+				err = checkPath("folder", a.Folder)
 			}
 			if err != nil {
 				return nil, nil, "", err
@@ -411,8 +419,19 @@ func init() {
 			return textResult{Text: path}, nil, a.Folder, err
 		}},
 		// The path a device gives is never run: the check is of the Claude the machine is set to use.
-		"checkClaude": {run: func(ctx context.Context, c *conn, _ json.RawMessage, _ []byte) (any, []byte, string, error) {
-			return c.h.b.CheckClaude(ctx, c.h.b.Settings().ClaudePath), nil, "", nil
+		// Each check starts Claude Code, so devices share one: a check is made at most every claudeFor,
+		// one at a time, and a device that may only look can't start programs without end.
+		"checkClaude": {run: func(_ context.Context, c *conn, _ json.RawMessage, _ []byte) (any, []byte, string, error) {
+			h := c.h
+			h.claudeMu.Lock()
+			defer h.claudeMu.Unlock()
+			if h.claudeAt.IsZero() || time.Since(h.claudeAt) > claudeFor {
+				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+				h.claude = h.b.CheckClaude(ctx, h.b.Settings().ClaudePath)
+				cancel()
+				h.claudeAt = time.Now()
+			}
+			return h.claude, nil, "", nil
 		}},
 		"completeTodo": {write: true, run: func(_ context.Context, c *conn, p json.RawMessage, _ []byte) (any, []byte, string, error) {
 			a, err := decode[todoParams](p)

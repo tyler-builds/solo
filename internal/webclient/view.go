@@ -124,6 +124,7 @@ func (s *Shell) confirm(ctx *ui.Context) ui.Element {
 		gui.BrandMark(40),
 		heading(ctx, "Pair this device?"),
 		para(ctx, "It will be able to use Solo on the machine that showed this code, once you approve it there."),
+		para(ctx, "Go on only if you just scanned the code on your own machine's screen. A link that someone sent you pairs this device with their machine, not yours."),
 		ui.Div().Column().Gap(6).
 			Child(ui.Text("What the machine will call this device").FontSize(12).TextColor(ctx.Theme().TextMuted)).
 			Child(ui.TextInput(s.state.name).Label("This device's name").Placeholder("My phone").Width(ui.Full).

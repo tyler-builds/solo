@@ -19,18 +19,27 @@
   const state = (code) => {
     if (app) { app.solo_ws_state(code); run(); } else if (globalThis.soloGoState) { globalThis.soloGoState(code); }
   };
+  // drop closes the socket and tells the app so. The app is told by this script, not by the socket's
+  // own event, which is ignored once the socket is no longer the current one.
+  const drop = (code) => {
+    const old = ws;
+    ws = null;
+    try { if (old) old.close(); } catch {}
+    state(code);
+  };
   const message = (e) => {
     if (typeof e.data === "string") return; // the relay sends a device no text
     const data = new Uint8Array(e.data);
-    let off = 0;
-    do {
-      const n = Math.min(size, data.length - off);
-      const piece = data.subarray(off, off + n);
-      off += n;
-      const final = off >= data.length ? 1 : 0;
-      if (app) { view(inAddr).set(piece); app.solo_ws_data(n, final); } else { globalThis.soloGoData(piece, final); }
-    } while (off < data.length);
-    run(); // the app takes the message before this callback ends
+    // One sealed record is at most 64 KiB, and so is the buffer. A larger message is not one of the
+    // machine's, and is not copied anywhere.
+    if (data.length > size) { drop(1009); return; }
+    try {
+      if (app) { view(inAddr).set(data); app.solo_ws_data(data.length, 1); } else { globalThis.soloGoData(data, 1); }
+      run(); // the app takes the message before this callback ends
+    } catch (err) {
+      drop(1011);
+      throw err;
+    }
   };
   // The page was shown again, or the network came back: a connection that is waiting is tried now.
   const resumed = () => {
@@ -39,6 +48,14 @@
   document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") resumed(); });
   addEventListener("online", resumed);
   addEventListener("pageshow", (e) => { if (e.persisted) resumed(); });
+
+  // The pairing code comes in the address, after "#". It is taken out at once, before the app has
+  // even loaded, so that it is in neither the address bar nor this page's entry in the history.
+  let fragment = "";
+  try {
+    fragment = location.hash.replace(/^#/, "");
+    if (fragment) history.replaceState(null, "", location.pathname + location.search);
+  } catch {}
 
   globalThis.soloHost = {
     attach(instance) {
@@ -116,17 +133,14 @@
         return false;
       }
     },
-    // takeFragment returns what followed "#" in the address and removes it, so a pairing code is in
-    // neither the address bar nor the history.
+    // takeFragment hands the app what followed "#" in the address, once.
     takeFragment() {
-      try {
-        const frag = location.hash.replace(/^#/, "");
-        if (frag) history.replaceState(null, "", location.pathname + location.search);
-        return frag;
-      } catch {
-        return "";
-      }
+      const frag = fragment;
+      fragment = "";
+      return frag;
     },
+    // dropped is called by the app when it can't keep up with what arrives.
+    dropped() { setTimeout(() => drop(1008), 0); }, // not from inside the app's own call
     // What the app shows: its screen, the pairing digits while they are on it, and the state of its
     // connection. The app is one canvas, so this is how a test can tell.
     shown: { screen: "", digits: "", link: "" },

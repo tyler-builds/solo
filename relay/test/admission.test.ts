@@ -214,4 +214,8 @@ describe("the Worker's word to the Durable Object", () => {
 		expect(await target.socket.idle()).toBe(true);
 		expect(await other.socket.idle()).toBe(true);
 	});
+	test("a page can't connect as a machine: a machine sends no Origin", async () => {
+		const res = await upgrade("/v1/machine", await machineAuth(random(16)), { origin: ORIGIN });
+		expect(res.status).toBe(403);
+	});
 });

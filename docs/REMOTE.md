@@ -24,6 +24,20 @@ Not protected, by design:
   remote access is then down until midnight UTC. The desktop app is unaffected.
 - The relay sees addresses, public keys, timing and sizes.
 
+Limits worth knowing, found when the finished code was reviewed (see "Review" at the end):
+
+- The check for a changed relay is after the fact: a changed web client can run for up to six hours
+  before Solo pauses, and not at all if no token is kept. It is detection, not prevention.
+- A machine's key stays on the relay's list until the relay is removed: a machine that was retired can
+  still connect to the relay as itself, and see when devices come and go. It can't read anything, and
+  can no longer take another machine's place.
+- A device that was removed keeps its pass to the relay: it can open connections there, which the
+  machine closes unanswered.
+- A paired device, even one that may only look, can ask for things that cost the machine work (a long
+  diff, a search). What it can make the machine hold or run at once is bounded.
+- A relay on this machine (`cmd/solo-localrelay`) is for development: another program that takes its
+  port stands in for it, and for the web client it serves. Settings says so.
+
 ## Identities and keys (`internal/remote/secure`)
 
 No primitive is written here. The handshake is the Noise protocol (`github.com/flynn/noise`) with X25519,
@@ -51,7 +65,9 @@ A device is added only at the machine, and the person there approves it.
    handshake can make.
 4. Both ends show **six digits** derived from the handshake's hash. The person types the device's digits
    into the machine, which approves the request that has them. Someone who photographed the QR code can also
-   ask to pair, but their handshake has other digits.
+   ask to pair, but their handshake has other digits. The machine says only that a device is asking: a
+   device's name is its own choice of words, and is not shown until it is approved. A code answers eight
+   handshakes at most, whatever the relay lets through, and five wrong sets of digits end it.
 5. On approval the machine records the device's public key, gives it a random key of its own for later
    sessions and a voucher for the relay, and the code is spent.
 
@@ -64,6 +80,13 @@ new handshake with new keys.
 
 On a finished handshake's **channel**, a message that was altered, repeated, dropped or reordered does not
 open, and the channel is over; the device connects again.
+
+A connection belongs to its device from the moment the relay opens it. **Removing a device, or limiting it
+to looking, closes every connection it has**, whatever the connection is doing: a handshake under way and
+a connection that hasn't yet spoken included. The machine also reads the device's record again once the
+handshake is done, gives a connection ten seconds to say hello, and lets a device have three connections
+at a time. A device counts as seen when it has said hello, not when a first handshake message arrives,
+which the relay could send again.
 
 ## Messages (`internal/remote/wire`)
 
@@ -104,6 +127,11 @@ without waiting.
   Claude checked is the machine's own, and the settings that name programs are refused
   (`api.SettingsPatch.CheckRemote`). A read-only device's changes are all refused. Every change is
   handed to the audit log with the device's name.
+- **What a device can cost** is bounded before it is read: nothing arrives in parts before hello or from
+  a device that may only look, a message in parts must finish within two minutes, only an image upload
+  carries bytes, a device has sixteen requests under way at most over all its connections, the answers
+  kept for repeats are bounded in number and in bytes, images are decoded one at a time, and Claude is
+  checked at most every thirty seconds however many devices ask.
 - **Liveness.** A device pings every 5 s; either end gives a session up after 15 s of silence.
 
 Tests run a device against a machine in memory, against the real engine over the real encryption, and
@@ -186,13 +214,16 @@ Workers scripts, in one account.
   list back in case another machine wrote at the same moment. It replaces the code and the web client
   only when its own bundle is newer; a relay is never replaced by an older one.
 - **The check for changes.** Whoever controls the Cloudflare account can replace the web client, and a
-  replaced web client could use a paired device's keys. Solo records the uploads of the relay it made
-  or its user accepted, lists them again at start and a few times a day, and when one appears that it
-  doesn't know, closes the relay connection and says so in Settings until the user either accepts the
-  change (another of their machines made it) or removes the relay. This needs the token; without it
-  nothing is checked.
-- **Removing** deletes the Worker, which cuts off every device and machine. Deleting it in the Cloudflare
-  dashboard does the same from anywhere.
+  replaced web client could use a paired device's keys. Solo records the uploads of the relay as they
+  stand right after its own change, and which one is served. At start, after setting up, and a few times
+  a day it looks again: an upload it doesn't know, a switch back to an earlier one, or a token Cloudflare
+  no longer takes (which leaves the relay unchecked) closes the relay connection and says so in Settings,
+  with what was found. Nothing resumes it but the user's answer: the change was theirs (another of their
+  machines made it), or resume with every device removed, or remove the relay. Turning remote access on,
+  entering the address again, setting up again or restarting don't. A relay that was deleted from
+  elsewhere takes its devices with it here. This needs the token; without it nothing is checked.
+- **Removing** deletes the Worker and removes every device here, which cuts off every device and machine.
+  Deleting the Worker in the Cloudflare dashboard does the same from anywhere.
 
 `TestDeployAndJoin` runs all of this against a stand-in for the API. `SOLO_CF_TOKEN_FILE=… go test
 ./internal/remote/host -run TestRealCloudflare` runs it in a real account: it deployed and answered in
@@ -214,7 +245,12 @@ with the Cloudflare account can change.
 | `/v1/pair` | the machine's ID and a ticket derived from the pairing code's secret | by the Durable Object against the ticket's hash, which the machine registered. The relay never has the secret |
 
 A voucher is a pass to the relay, not to the machine. `/v1/device` and `/v1/pair` also require the page's
-own origin.
+own origin, and `/v1/machine` refuses a request that has one: a page is no machine.
+
+**A machine is its key and its ID together.** A token signed by another listed key that claims a machine's
+ID is another machine to the relay: it takes nothing over, receives none of the first one's devices, and
+a pairing connection goes to the machine that registered the ticket. A right ticket is always let in; wrong
+ones are counted only to ration what is written down.
 
 **Forwarding.** A device's socket carries only its own conversation, so its frames are the sealed records
 themselves. A machine's one socket carries every device's, so its frames start with a type:
@@ -375,3 +411,25 @@ Workers Scripts: Edit and Account Settings: Read. Each run made one Worker, test
   comes with the web client. The spike programs (`cmd/spike-wire`, `cmd/spike-host`, `cmd/spike-cf`, the
   naive protocol) stay on the `spike/remote` branch and do not ship; `cmd/spike-cf`'s upload code is what
   `internal/cloudflare` starts from.
+
+## Review
+
+Before any lasting deployment the finished code was read by two reviewers who had not written it, one
+for the Go side (keys, handshakes, the request layer, the machine's side) and one for the relay, the web
+client and the Cloudflare deploy. Neither found a way in for anyone not paired. What they found was
+fixed, each with a test:
+
+- A removed device, or one just limited to looking, could keep a connection it had parked before the
+  change and start a session on it for up to an hour. Removal now closes every connection of the device.
+- A changed relay could be accepted without the user knowing: the pause could be got round, and
+  recovering from one left the devices trusted. See "The check for changes".
+- A listed machine could take another machine's place at the relay by claiming its ID.
+- A device, even one that may only look, could make the machine hold gigabytes or start Claude without
+  limit; anyone who knew a machine's ID could keep it from pairing; a message could make the desktop app
+  exit when its text was searched for.
+- The name a device gave itself was shown beside the box for its digits.
+- The release workflow ran actions by tag in a job that could write to the repository.
+
+Left as they are, and listed under "What is and is not protected" where they matter: a relay's list of
+machines never shrinks, vouchers don't expire, a long diff is built whole before it is cut, and the web
+client's mirror trusts its own machine to send sensible amounts.
