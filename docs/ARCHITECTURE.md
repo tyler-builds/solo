@@ -263,6 +263,11 @@ UI for the web and fails when it reaches something a page does not have.
 A page cannot open an editor or a terminal (`launch.Available` is false there), so the UI leaves those
 buttons out.
 
+`cmd/solo-web` is the web client's entry point, and `scripts/web.sh` builds it with TinyGo into
+`dist/web` (see [REMOTE.md](REMOTE.md) for what was measured). Until remote access lands it runs over
+`internal/sample`: generated threads and transcripts as large as a busy real database, one of them
+streaming, which is also what the UI is measured against.
+
 Not there yet: a page's own `Backend` (it talks to a Solo over the relay), and attachments by their
 contents rather than by a path.
 
@@ -270,6 +275,7 @@ contents rather than by a path.
 
 ```
 cmd/solo/            main
+cmd/solo-web/        the web client's main, and its page (TinyGo; scripts/web.sh)
 internal/core/       orchestrator, threads, notifications
 internal/store/      SQLite schema + queries
 internal/git/        repo scan, worktrees, diff, merge

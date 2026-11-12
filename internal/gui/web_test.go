@@ -20,9 +20,11 @@ func TestBuildsForWeb(t *testing.T) {
 	if err != nil {
 		t.Skip("no go tool to build with")
 	}
-	cmd := exec.Command(goTool, "build", ".")
+	// The UI, and the web client that runs it (cmd/solo-web), which TinyGo builds for a real page
+	// (scripts/web.sh): Go's own compiler finds what a page does not have much sooner.
+	cmd := exec.Command(goTool, "build", "-o", os.DevNull, ".", "../../cmd/solo-web")
 	cmd.Env = append(os.Environ(), "GOOS=js", "GOARCH=wasm", "CGO_ENABLED=0")
 	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("internal/gui does not build for the web (GOOS=js GOARCH=wasm go build ./internal/gui): %v\n%s", err, out)
+		t.Fatalf("the UI does not build for the web (GOOS=js GOARCH=wasm go build ./internal/gui ./cmd/solo-web): %v\n%s", err, out)
 	}
 }
