@@ -1,0 +1,16 @@
+// For local runs and the tests only. Solo deploys the relay itself, through Cloudflare's REST API,
+// and writes the real HOST_KEYS and SOLO_BUNDLE then.
+{
+  "name": "solo-relay",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "vars": {
+    "HOST_KEYS": "",
+    "SOLO_RELAY": "local",
+    "SOLO_BUNDLE": "0"
+  },
+  "durable_objects": {
+    "bindings": [{ "name": "RELAY", "class_name": "Relay" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Relay"] }]
+}
