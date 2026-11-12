@@ -11,6 +11,10 @@
 # when memory is short.
 #
 # The names of the app's functions go to app.names, which the page fetches only to show a stack.
+#
+# The build's files must belong to the user who runs the script. Under rootless podman (or rootless
+# docker) the container's root is that user, so TinyGo runs as root; under rootful docker, as on CI,
+# root is the host's root, so TinyGo runs as the user's own uid and gid instead.
 set -eu
 
 image=docker.io/tinygo/tinygo:0.44.0@sha256:7998bda3b044521b650a6a671229712b13f59a29ae373c60669907122e8d42f7
@@ -26,14 +30,30 @@ tools=$(mktemp -d)
 trap 'rm -rf "$tools"' EXIT
 mkdir -p "$cache"
 
+# rootless succeeds when the engine maps the container's root to the user: podman reports it in
+# Host.Security.Rootless, docker among its security options.
+rootless() {
+	case $("$engine" info --format '{{.Host.Security.Rootless}}' 2>/dev/null) in
+	true) return 0 ;;
+	false) return 1 ;;
+	esac
+	"$engine" info --format '{{.SecurityOptions}}' 2>/dev/null | grep -q rootless
+}
+if rootless; then
+	user=0:0
+else
+	user=$(id -u):$(id -g)
+fi
+
 # The module cache's files are not executable; TinyGo runs this one.
 cp "$jamb/scripts/web/wasm-opt.sh" "$tools/wasm-opt.sh"
 chmod 755 "$tools/wasm-opt.sh"
 
 echo "== tinygo build cmd/solo-web"
-"$engine" run --rm -u 0 --memory="${MEMORY:-3g}" --memory-swap="${MEMORY:-3g}" --security-opt label=disable \
+"$engine" run --rm --user "$user" --memory="${MEMORY:-3g}" --memory-swap="${MEMORY:-3g}" --security-opt label=disable \
 	-v "$root:/src:ro" -v "$modcache:/gomod:ro" -v "$out:/out" -v "$cache:/tmp/.cache" -v "$tools:/tools:ro" \
-	-e GOMODCACHE=/gomod -e GOPROXY=off -e GOFLAGS=-buildvcs=false -e HOME=/tmp \
+	-e GOMODCACHE=/gomod -e GOPROXY=off -e GOFLAGS=-buildvcs=false \
+	-e HOME=/tmp -e XDG_CACHE_HOME=/tmp/.cache -e GOCACHE=/tmp/.cache/go-build \
 	-e WASMOPT=/tools/wasm-opt.sh -e NAMES=/out/app.names \
 	-w /src "$image" \
 	tinygo build -target wasm -no-debug -scheduler=asyncify -panic-unwind=none -stack-size=1MB \
