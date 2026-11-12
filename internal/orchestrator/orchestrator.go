@@ -337,9 +337,11 @@ func (o *Orchestrator) onChange(ch core.Change) {
 	}
 	var line string
 	var pr *forge.PR
+	basePR := false // the pull request is its base branch's, which it added to
 	for _, p := range v.Parts {
 		if p.Repo == ch.Repo {
 			pr = p.PR
+			basePR = pr != nil && pr.Head != "" && pr.Head == p.BaseBranch
 		}
 	}
 	if pr != nil && ch.PREvent != "" && ch.PREvent != core.PRMerged {
@@ -355,6 +357,9 @@ func (o *Orchestrator) onChange(ch core.Change) {
 			}
 		case core.PRFound:
 			line = fmt.Sprintf("%s: found %s, opened outside Solo (by the thread itself, say). Solo follows it now like one it opened: checks, merge.", label(v), noun)
+			if basePR {
+				line = fmt.Sprintf("%s: its changes are in %s, the branch of open %s, which hasn't merged. Solo follows it now like one it opened (checks, merge, its later commits), and the thread is merged when it merges.", label(v), pr.Head, noun)
+			}
 			if pr.AutoMerge {
 				line += " Auto-merge is on, so it merges once its required checks pass."
 			}

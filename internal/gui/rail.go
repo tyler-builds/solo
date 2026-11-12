@@ -370,6 +370,10 @@ func (a *App) activityLine(th core.ThreadView) string {
 	case core.StatusInterrupted:
 		return "Stopped"
 	case core.StatusMerged:
+		if pr := th.PR; pr != nil && pr.State == forge.StateMerged && pr.Head == th.BaseBranch {
+			// Its base branch was that pull request's: its work went in with it, not into that branch alone.
+			return fmt.Sprintf("Merged with %s #%d", pr.Kind.Noun(), pr.Number)
+		}
 		if th.BaseBranch != "" {
 			return "Merged into " + th.BaseBranch
 		}

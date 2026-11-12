@@ -296,6 +296,89 @@ func TestSquashMergedElsewhereLands(t *testing.T) {
 	}
 }
 
+// A thread started from an open pull request's branch, to add to it, that pushes its commits to that
+// branch itself: its work is in its base branch, but that pull request hasn't merged. The thread
+// follows it instead of closing as merged, its later commits go to it too, and it closes when the pull
+// request merges.
+func TestWorkInOpenPRsBranchFollowsIt(t *testing.T) {
+	gh := fakeGHOwn(t)
+	e := newEnv(t)
+	mustGit(t, e.repo, "branch", "feature")
+	origin := withOrigin(t, e)
+	ctx := context.Background()
+	list := `[{"number":331,"url":"https://github.com/acme/proj/pull/331","state":"OPEN","isDraft":false,"headRefName":"feature","createdAt":"2020-01-01T00:00:00Z"}]`
+	os.WriteFile(filepath.Join(gh, "list.json"), []byte(list), 0o644)
+	setOwnView(t, gh, 331, "OPEN", "feature")
+
+	v, err := e.c.CreateWorker(ctx, WorkerSpec{Repo: "proj", Title: "Use the view", Prompt: "write view.sql v", Base: "feature"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	v = waitStatus(t, e.c, v.ID, StatusIdle)
+	waitFor(t, "the count", func() bool { v, _ = e.c.Thread(v.ID); return v.Changed >= 0 })
+	if v.PR != nil || v.BaseBranch != "feature" {
+		t.Fatalf("before it pushed: PR %+v, base %s (the pull request is older than the thread, and not from its branch)", v.PR, v.BaseBranch)
+	}
+	mustGit(t, v.WorktreePath, "add", "-A")
+	mustGit(t, v.WorktreePath, "commit", "-qm", "view")
+	mustGit(t, v.WorktreePath, "push", "-q", "origin", "HEAD:feature")
+	e.c.countChanges(v.ID)
+	v, _ = e.c.Thread(v.ID)
+	if v.Status != StatusIdle || v.PR == nil || v.PR.Number != 331 || v.WorktreePath == "" || v.CanOpenPR || !v.Unlanded {
+		t.Fatalf("after it pushed to the pull request's branch %+v, PR %+v", v, v.PR)
+	}
+
+	// A later commit goes to the pull request's branch as well.
+	os.WriteFile(filepath.Join(v.WorktreePath, "more.sql"), []byte("m\n"), 0o644)
+	mustGit(t, v.WorktreePath, "add", "-A")
+	mustGit(t, v.WorktreePath, "commit", "-qm", "more")
+	e.c.countChanges(v.ID)
+	if got, want := mustGit(t, origin, "rev-parse", "feature"), mustGit(t, v.WorktreePath, "rev-parse", "HEAD"); got != want {
+		t.Fatalf("origin's feature at %s, the thread at %s", got, want)
+	}
+	if v, _ = e.c.Thread(v.ID); v.Status != StatusIdle {
+		t.Fatalf("after pushing more %+v", v)
+	}
+
+	setOwnView(t, gh, 331, "MERGED", "feature")
+	e.c.CheckPRs(ctx)
+	v = waitStatus(t, e.c, v.ID, StatusMerged)
+	if v.WorktreePath != "" || v.Unlanded {
+		t.Fatalf("after the merge %+v", v)
+	}
+}
+
+// Work in a base branch that no open pull request is from has landed, as before; and while the forge
+// can't say whether one is, the thread is left as it is.
+func TestWorkInBaseBranchWithoutPRLands(t *testing.T) {
+	gh := fakeGHOwn(t)
+	e := newEnv(t)
+	mustGit(t, e.repo, "branch", "feature")
+	withOrigin(t, e)
+	ctx := context.Background()
+	v, err := e.c.CreateWorker(ctx, WorkerSpec{Repo: "proj", Title: "Direct", Prompt: "write d.txt d", Base: "feature"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	v = waitStatus(t, e.c, v.ID, StatusIdle)
+	waitFor(t, "the count", func() bool { v, _ = e.c.Thread(v.ID); return v.Changed >= 0 })
+	mustGit(t, v.WorktreePath, "add", "-A")
+	mustGit(t, v.WorktreePath, "commit", "-qm", "d")
+	mustGit(t, v.WorktreePath, "push", "-q", "origin", "HEAD:feature")
+
+	os.WriteFile(filepath.Join(gh, "list.json"), []byte("not json"), 0o644)
+	e.c.countChanges(v.ID)
+	if v, _ = e.c.Thread(v.ID); v.Status != StatusIdle || v.PR != nil {
+		t.Fatalf("while the forge can't say %+v", v)
+	}
+	os.WriteFile(filepath.Join(gh, "list.json"), []byte(`[{"number":9,"url":"https://github.com/acme/proj/pull/9","state":"MERGED","isDraft":false,"headRefName":"feature","createdAt":"2020-01-01T00:00:00Z"}]`), 0o644)
+	go e.c.countChanges(v.ID)
+	v = waitStatus(t, e.c, v.ID, StatusMerged)
+	if v.PR != nil {
+		t.Fatalf("an old merged pull request from the branch was linked: %+v", v.PR)
+	}
+}
+
 // Marking a thread with unlanded changes done keeps its branch, with its uncommitted work committed,
 // and Restore brings it back; discarding is what deletes it.
 func TestDoneKeepsUnlandedWork(t *testing.T) {

@@ -18,7 +18,8 @@ import (
 // (gh pr create), the user opens one for a branch it pushed, or its changes reach the base branch some
 // other way (a squash merge on the forge, a cherry-pick). Solo finds these when a turn ends, on load,
 // and every landedSweep while a thread waits, and then treats them as its own: a found pull request is
-// followed like one Solo opened, and work already in the base branch closes the thread as merged.
+// followed like one Solo opened, and work already in the base branch closes the thread as merged,
+// unless that branch is itself an open pull request's: the thread then follows that one.
 
 // createsPR matches a shell command that opens a pull or merge request.
 var createsPR = regexp.MustCompile(`\b(gh\s+pr\s+create|glab\s+mr\s+create)\b`)
@@ -238,10 +239,49 @@ func (c *Core) fetchBase(ctx context.Context, repo, branch string) {
 	}
 }
 
+// basePR finds the open pull request that a part's base branch is the branch of, once the part's work
+// is in origin's copy of that branch: a thread started from a pull request's branch to add to it. Its
+// work is then in a pull request still to merge, not landed. Not for the default branch, which every
+// other thread starts from. ok is false when the forge couldn't say, to look again later.
+func (c *Core) basePR(ctx context.Context, p PartView) (pr *forge.PR, ok bool) {
+	if p.Forge == forge.None || p.BaseBranch == git.DefaultBranch(ctx, p.Repo) || !git.InRemoteBase(ctx, p.Worktree, p.BaseBranch) {
+		return nil, true
+	}
+	client, err := forge.New(p.Forge)
+	if err != nil {
+		return nil, true // without its CLI no pull request can be followed
+	}
+	lctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	prs, err := client.ByHead(lctx, p.Worktree, p.BaseBranch)
+	cancel()
+	if err != nil {
+		c.log.Warn("core: looking for the base branch's pull request", "branch", p.BaseBranch, "err", err)
+		return nil, false
+	}
+	for _, l := range prs {
+		if l.State != forge.StateOpen {
+			continue
+		}
+		vctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		found, err := client.View(vctx, p.Worktree, l.PR)
+		cancel()
+		if err != nil {
+			c.log.Warn("core: reading the base branch's pull request", "url", l.URL, "err", err)
+			return nil, false
+		}
+		if found.State != forge.StateOpen {
+			return nil, true // it merged or closed just now
+		}
+		return &found, true
+	}
+	return nil, true
+}
+
 // findLanded closes the parts whose changes are already in their base branch, by ancestry or by
 // content (a squash merge): their change count drops to 0, and once nothing is left to land the
 // thread is merged, as with Solo's own merge. A part with an open or merged pull request is left to
-// it.
+// it, and so is one whose base branch is an open pull request's (basePR): that pull request becomes
+// the part's, and the thread is merged when it merges.
 func (c *Core) findLanded(ctx context.Context, id string) {
 	v, ok := c.Thread(id)
 	if !ok || !v.IsWorker || v.InTurn || Finished(v.Status) || Active(v.Status) || v.Status == StatusQueued || v.Resolving {
@@ -253,7 +293,17 @@ func (c *Core) findLanded(ctx context.Context, id string) {
 			continue
 		}
 		c.fetchBase(ctx, p.Repo, p.BaseBranch)
-		if git.InBase(ctx, p.Worktree, p.BaseBranch) {
+		if !git.InBase(ctx, p.Worktree, p.BaseBranch) {
+			continue
+		}
+		pr, ok := c.basePR(ctx, p)
+		switch {
+		case !ok:
+		case pr != nil:
+			c.addNotice(id, "info", fmt.Sprintf("Its changes are in %s, the branch of open %s #%d%s. Solo follows it now; the thread is merged when it merges.",
+				p.BaseBranch, pr.Kind.Noun(), pr.Number, inRepo(v, p)))
+			c.applyPR(id, p.Repo, *pr, PRFound)
+		default:
 			landed = append(landed, p)
 		}
 	}
