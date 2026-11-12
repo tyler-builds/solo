@@ -238,6 +238,15 @@ func (f *fakeBackend) SaveImage(img image.Image) (string, error) {
 
 func (f *fakeBackend) ImportImage(path string) (string, error) { return path, nil }
 
+func (f *fakeBackend) SaveImageData(_ context.Context, data []byte) (string, error) {
+	p := filepath.Join(os.TempDir(), fmt.Sprintf("solo-file-%d.png", time.Now().UnixNano()))
+	return p, os.WriteFile(p, data, 0o600)
+}
+
+func (f *fakeBackend) ReadImage(_ context.Context, path string, _ int) ([]byte, error) {
+	return os.ReadFile(path)
+}
+
 // sampleScreenshot writes a small picture of a settings form, standing in for a pasted screenshot.
 func sampleScreenshot(dir string, accent color.RGBA) string {
 	img := image.NewRGBA(image.Rect(0, 0, 640, 400))

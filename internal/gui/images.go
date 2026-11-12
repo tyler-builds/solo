@@ -1,25 +1,63 @@
 package gui
 
 import (
-	"os"
+	"context"
 	"path/filepath"
+	"time"
 
 	"github.com/tyler-builds/jamb/access"
 	"github.com/tyler-builds/jamb/icons"
 	"github.com/tyler-builds/jamb/ui"
 )
 
-// image returns the decoded attachment at path, or nil when it can't be read. Call on the UI thread.
-func (a *App) image(path string) *ui.ImageSource {
-	if src, ok := a.imgs[path]; ok {
-		return src
+// previewSide is the longest side of the previews a page asks for (see App.RemoteImages).
+const previewSide = 640
+
+// image returns the decoded attachment at path, or nil when it can't be read or, with RemoteImages, hasn't
+// arrived yet (loading). full asks for the image at its own size, for the lightbox; a preview may come
+// scaled down. Call on the UI thread, in a render.
+func (a *App) image(path string, full bool) (src *ui.ImageSource, loading bool) {
+	if !a.RemoteImages {
+		if src, ok := a.imgs[path]; ok {
+			return src, false
+		}
+		if data, err := a.b.ReadImage(context.Background(), path, 0); err == nil {
+			src, _ = ui.ImageFromBytes(data)
+		}
+		a.imgs[path] = src
+		return src, false
 	}
-	var src *ui.ImageSource
-	if data, err := os.ReadFile(path); err == nil {
-		src, _ = ui.ImageFromBytes(data)
+	a.imgVer.Get() // an image that arrives shows
+	side, key := previewSide, "preview\x00"+path
+	if full {
+		side, key = 0, path
 	}
-	a.imgs[path] = src
-	return src
+	if src, ok := a.imgs[key]; ok {
+		return src, false
+	}
+	if !a.imgLoading[key] {
+		a.imgLoading[key] = true
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+			var src *ui.ImageSource
+			if data, err := a.b.ReadImage(ctx, path, side); err == nil {
+				src, _ = ui.ImageFromBytes(data)
+			}
+			a.onUI(func() {
+				a.imgs[key] = src
+				delete(a.imgLoading, key)
+				a.imgVer.Update(func(n int) int { return n + 1 })
+			})
+		}()
+	}
+	if full {
+		// The preview stands in while the full image loads.
+		if src := a.imgs["preview\x00"+path]; src != nil {
+			return src, true
+		}
+	}
+	return nil, true
 }
 
 // thumb is a square preview of an image; a click shows it full size. With remove, it has a button
@@ -28,8 +66,11 @@ func (a *App) thumb(ctx *ui.Context, path string, size float32, remove func()) u
 	t := ctx.Theme()
 	box := ui.Div().Width(ui.Px(size)).Height(ui.Px(size)).Shrink(0).Radius(radiusM).
 		Border(1, t.Border).Background(t.Background).ClipContent()
-	src := a.image(path)
-	if src == nil {
+	src, loading := a.image(path, false)
+	if src == nil && loading {
+		box = box.Row().Justify(ui.Center).Align(ui.Center).Label("Loading image").
+			Child(ui.Icon(icons.Image).Size(16).Color(t.TextSubtle))
+	} else if src == nil {
 		box = box.Row().Justify(ui.Center).Align(ui.Center).Tooltip(filepath.Base(path) + " can't be shown").
 			Child(ui.Icon(icons.ImageOff).Size(16).Color(t.TextSubtle))
 	} else {
@@ -75,7 +116,7 @@ func (a *App) lightboxDialog(ctx *ui.Context) ui.Element {
 	if path == "" {
 		return nil
 	}
-	src := a.image(path)
+	src, _ := a.image(path, true)
 	if src == nil {
 		return nil
 	}

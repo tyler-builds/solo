@@ -50,6 +50,11 @@ func (c *Core) OpenPR(ctx context.Context, threadID string, draft bool) (forge.P
 // OpenPRFor is OpenPR for one of the worker's repositories (by path or folder name; "" for all).
 // Pull requests a thread opens in several repositories link to each other.
 func (c *Core) OpenPRFor(ctx context.Context, threadID, repo string, draft bool) ([]forge.PR, error) {
+	release, err := c.land(threadID)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	v, ok := c.Thread(threadID)
 	if !ok {
 		return nil, fmt.Errorf("no thread %s", threadID)
@@ -164,6 +169,11 @@ func (c *Core) linkPRs(ctx context.Context, threadID string, bodies map[string]s
 // MarkReady marks a worker's draft pull requests ready for review, and turns on auto-merge when
 // Settings asks.
 func (c *Core) MarkReady(ctx context.Context, threadID string) error {
+	release, err := c.land(threadID)
+	if err != nil {
+		return err
+	}
+	defer release()
 	v, ok := c.Thread(threadID)
 	if !ok {
 		return fmt.Errorf("no thread %s", threadID)

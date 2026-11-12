@@ -62,6 +62,7 @@ type Core struct {
 	rateLimits map[string]agent.Event // the latest event of each kind of limit (usage.go)
 	closed     bool
 	forges     map[string]forge.Kind // by repository
+	landing    map[string]bool       // threads with a landing action under way (see land)
 	stop       chan struct{}         // closed by Close
 	pollNow    chan struct{}         // asks the pull request watcher to look now
 	fetched    map[string]time.Time  // when each "repo\x00branch" was last fetched to look for landed work
@@ -122,6 +123,7 @@ func New(cfg Config) (*Core, error) {
 		bySession: map[string]*thread{},
 		subs:      map[int]func(Change){},
 		forges:    map[string]forge.Kind{},
+		landing:   map[string]bool{},
 		stop:      make(chan struct{}),
 		pollNow:   make(chan struct{}, 1),
 		fetched:   map[string]time.Time{},

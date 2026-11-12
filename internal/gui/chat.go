@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/tyler-builds/jamb/access"
 	"github.com/tyler-builds/jamb/icons"
@@ -20,6 +21,7 @@ import (
 	"github.com/tyler-builds/jamb/ui"
 
 	"github.com/tyler-builds/solo/internal/agent"
+	"github.com/tyler-builds/solo/internal/api"
 	"github.com/tyler-builds/solo/internal/core"
 	"github.com/tyler-builds/solo/internal/forge"
 )
@@ -1607,6 +1609,31 @@ func (a *App) composer(ctx *ui.Context, v core.ThreadView, key, scope, placehold
 				return out, nil
 			})
 		}
+		// pickedFiles attaches the files of an Open dialog: by path, or by contents in a web page, whose
+		// files have no paths.
+		pickedFiles := func(files []dialog.File) {
+			attach(true, func() ([]string, error) {
+				var out []string
+				for _, f := range files {
+					var p string
+					var err error
+					if f.Path != "" {
+						p, err = a.b.ImportImage(f.Path)
+					} else if len(f.Data) > api.MaxImageUpload {
+						err = fmt.Errorf("%s is larger than %d MB", f.Name, api.MaxImageUpload>>20)
+					} else {
+						c, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+						p, err = a.b.SaveImageData(c, f.Data)
+						cancel()
+					}
+					if err != nil {
+						return out, err
+					}
+					out = append(out, p)
+				}
+				return out, nil
+			})
+		}
 		empty := strings.TrimSpace(draft.Get()) == "" && len(images.Get()) == 0 && len(quotes.Get()) == 0
 		// As in t3code: while the thread works, the button stops it, or steers it once there's a message.
 		round := ui.Style{Radius: 999}
@@ -1648,7 +1675,13 @@ func (a *App) composer(ctx *ui.Context, v core.ThreadView, key, scope, placehold
 							if r.Err != nil {
 								a.notify(ui.ToastError, "Couldn't open the file picker", r.Err.Error())
 							} else if !r.Canceled {
-								importFiles(r.Paths)
+								files := r.Files
+								if len(files) == 0 { // a platform that reports the paths only
+									for _, p := range r.Paths {
+										files = append(files, dialog.File{Name: filepath.Base(p), Path: p})
+									}
+								}
+								pickedFiles(files)
 							}
 						})
 				}))
