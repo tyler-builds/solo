@@ -579,21 +579,35 @@ func checkedOutAt(ctx context.Context, repo, ref string) (string, error) {
 // is in the local base branch or origin's copy of it (the thread pushed or merged it there itself), or
 // its changes are, as after a squash merge, a rebase or a cherry-pick (see ContentIn).
 func InBase(ctx context.Context, worktree, base string) bool {
-	if st, err := Run(ctx, worktree, "status", "--porcelain"); err != nil || st != "" {
+	return InRemoteBase(ctx, worktree, base) || (clean(ctx, worktree) && inRef(ctx, worktree, "refs/heads/"+base))
+}
+
+// InRemoteBase is InBase for origin's copy of base alone, as last fetched.
+func InRemoteBase(ctx context.Context, worktree, base string) bool {
+	return clean(ctx, worktree) && InRemoteBranch(ctx, worktree, base)
+}
+
+// InRemoteBranch reports whether a worktree's commit is in origin's copy of branch, by ancestry or by
+// content, whatever it has uncommitted.
+func InRemoteBranch(ctx context.Context, worktree, branch string) bool {
+	return inRef(ctx, worktree, "refs/remotes/origin/"+branch)
+}
+
+// clean reports whether a worktree has nothing uncommitted.
+func clean(ctx context.Context, worktree string) bool {
+	st, err := Run(ctx, worktree, "status", "--porcelain")
+	return err == nil && st == ""
+}
+
+// inRef reports whether a worktree's commit is in ref, by ancestry or by content.
+func inRef(ctx context.Context, worktree, ref string) bool {
+	if _, err := Run(ctx, worktree, "rev-parse", "--verify", "-q", ref+"^{commit}"); err != nil {
 		return false
 	}
-	for _, ref := range []string{"refs/remotes/origin/" + base, "refs/heads/" + base} {
-		if _, err := Run(ctx, worktree, "rev-parse", "--verify", "-q", ref+"^{commit}"); err != nil {
-			continue
-		}
-		if _, err := Run(ctx, worktree, "merge-base", "--is-ancestor", "HEAD", ref); err == nil {
-			return true
-		}
-		if ContentIn(ctx, worktree, "HEAD", ref) {
-			return true
-		}
+	if _, err := Run(ctx, worktree, "merge-base", "--is-ancestor", "HEAD", ref); err == nil {
+		return true
 	}
-	return false
+	return ContentIn(ctx, worktree, "HEAD", ref)
 }
 
 // ContentIn reports whether the changes commit makes since it forked from ref are already in ref,
@@ -655,6 +669,21 @@ type Base struct {
 	FetchErr error
 }
 
+// DefaultBranch is the repository's default branch: origin's HEAD, else main or master, else "".
+func DefaultBranch(ctx context.Context, repo string) string {
+	if head, err := Run(ctx, repo, "symbolic-ref", "--short", "-q", "refs/remotes/origin/HEAD"); err == nil {
+		return strings.TrimPrefix(head, "origin/")
+	}
+	for _, c := range []string{"main", "master"} {
+		for _, ref := range []string{"refs/remotes/origin/" + c, "refs/heads/" + c} {
+			if _, err := Run(ctx, repo, "rev-parse", "--verify", "-q", ref+"^{commit}"); err == nil {
+				return c
+			}
+		}
+	}
+	return ""
+}
+
 // LatestBase finds the branch a new worktree starts from, and fetches it so the worktree starts from
 // its latest commit. want names the branch; empty means the default branch: origin's HEAD, else main
 // or master, else the checkout's current branch.
@@ -666,18 +695,8 @@ func LatestBase(ctx context.Context, repo, want string) (Base, error) {
 		return err == nil
 	}
 	branch := want
-	if branch == "" && hasOrigin {
-		if head, err := Run(ctx, repo, "symbolic-ref", "--short", "-q", "refs/remotes/origin/HEAD"); err == nil {
-			branch = strings.TrimPrefix(head, "origin/")
-		}
-	}
 	if branch == "" {
-		for _, c := range []string{"main", "master"} {
-			if exists("refs/remotes/origin/"+c) || exists("refs/heads/"+c) {
-				branch = c
-				break
-			}
-		}
+		branch = DefaultBranch(ctx, repo)
 	}
 	if branch == "" {
 		cur, err := Run(ctx, repo, "symbolic-ref", "--short", "-q", "HEAD")
@@ -723,6 +742,12 @@ func ValidBranchName(ctx context.Context, repo, name string) bool {
 // Push pushes the worktree's branch to origin and sets it as the upstream.
 func Push(ctx context.Context, worktree, branch string) error {
 	_, err := Run(ctx, worktree, "push", "--quiet", "-u", "origin", branch)
+	return err
+}
+
+// PushTo pushes the worktree's commit to origin's branch, which must be behind it (no force).
+func PushTo(ctx context.Context, worktree, branch string) error {
+	_, err := Run(ctx, worktree, "push", "--quiet", "origin", "HEAD:refs/heads/"+branch)
 	return err
 }
 
