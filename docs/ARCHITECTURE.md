@@ -203,7 +203,10 @@ Raw `SDKMessage`s are also appended to a per-session JSONL file for debugging an
   github|gitlab` for self-hosted ones. Open PR commits leftovers, pushes the branch and opens the PR
   against the base branch. The PR text model (Settings › Models; Haiku by default) writes the title and
   description from the commits, changed files and summary, following Settings › Pull requests' title
-  and description rules (one call); the description can be turned off. If it fails, the title is the worker's one commit (else the thread
+  and description rules (one call); the description can be turned off. Settings › Pull requests also
+  picks Claude Code skills to follow (`prSkills`): the model runs without tools, so Solo reads each
+  skill's SKILL.md (frontmatter removed, 8 KB at most) from the branch's worktree or the user's
+  `~/.claude` and puts it in the prompt; a skill that is gone is skipped with a notice. If it fails, the title is the worker's one commit (else the thread
   title) and the body its summary. Open PR is a split button whose menu opens a draft; a draft gets
   Ready for review, and auto-merge turns on only once it's ready.
   With Settings › Git › Auto-merge, Solo also runs `gh pr merge --auto` (`glab mr merge --auto-merge`).
@@ -228,6 +231,19 @@ Raw `SDKMessage`s are also appended to a per-session JSONL file for debugging an
   directly, and Interrupt / Merge / Discard buttons.
 - **Composer button** (as in t3code): send; while the thread works, a red stop button, which turns into
   Steer once there is a message. A message sent then steers the turn and is tagged "Steered".
+- **"/" and "@" in a message box** (`gui/mention.go`, after t3code's composer): "/" at the start of a
+  word lists the skills and commands the conversation can run, as `core.Skills` finds them where Claude
+  Code does (`~/.claude/skills` and `commands`, the organization's synced skills as
+  `anthropic-skills:<name>`, plugins as `<plugin>:<name>` from `plugins/synced` and
+  `installed_plugins.json`, and the project's `.claude/skills` and `commands`). "@" lists Solo's
+  repositories and folders in Solo's conversation, and a thread's files and folders in a thread's
+  (`core.SearchPaths`: `git ls-files`, so ignored files are left out; fuzzy, 50 at most). Picking types
+  in `/name ` or `@path ` (quoted when it has a space); Claude Code runs the skill, and reads the file or
+  lists the folder, itself. The list opens over the caret. jamb doesn't say where a text area's caret
+  is, so the composer works it out from each edit, closes the list when a key or click moves the caret,
+  and places the caret after what it types in with the field's Move to end action. Up and Down in an
+  empty box bring back the messages sent there. A dropped file or folder that isn't an image is
+  mentioned as `@path`.
 - **Images:** paste, drop or attach images in any message box. They're copied into
   `<data>/attachments` (scaled to at most 2000 px and 3.5 MB) and sent as image blocks before the text.
   Messages to Solo also list the saved paths, so Solo can pass them on with `spawn_thread` or

@@ -25,6 +25,29 @@ var (
 func textWidth(ctx *ui.Context, s string, size float32, weight ui.FontWeight) float32 {
 	measureMu.Lock()
 	defer measureMu.Unlock()
+	face, k := faceFor(ctx, size, weight)
+	if face == nil {
+		return float32(len(s)) * k * 0.6 // no font to measure with: about Inter's average
+	}
+	return float32(font.MeasureString(face, s)) / 64
+}
+
+// lineHeight is the height of a line of text in the UI font at size, as jamb sets it by default: the
+// font's natural height.
+func lineHeight(ctx *ui.Context, size float32) float32 {
+	measureMu.Lock()
+	defer measureMu.Unlock()
+	face, k := faceFor(ctx, size, ui.FontRegular)
+	if face == nil {
+		return k * 1.25
+	}
+	m := face.Metrics()
+	return float32(m.Ascent+m.Descent) / 64
+}
+
+// faceFor is the UI font's face at size and weight, with the Text size setting applied, and that
+// size; the face is nil when there is no font. Call with measureMu held.
+func faceFor(ctx *ui.Context, size float32, weight ui.FontWeight) (font.Face, float32) {
 	if measureFonts == nil {
 		measureFonts = map[ui.FontWeight]*opentype.Font{}
 		for _, f := range Fonts() {
@@ -45,14 +68,14 @@ func textWidth(ctx *ui.Context, s string, size float32, weight ui.FontWeight) fl
 			f = measureFonts[ui.FontRegular]
 		}
 		if f == nil {
-			return float32(len(s)) * k.size * 0.6 // no font to measure with: about Inter's average
+			return nil, k.size
 		}
 		var err error
 		face, err = opentype.NewFace(f, &opentype.FaceOptions{Size: float64(k.size), DPI: 72, Hinting: font.HintingNone})
 		if err != nil {
-			return float32(len(s)) * k.size * 0.6
+			return nil, k.size
 		}
 		measureFaces[k] = face
 	}
-	return float32(font.MeasureString(face, s)) / 64
+	return face, k.size
 }

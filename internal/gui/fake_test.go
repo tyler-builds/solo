@@ -43,6 +43,55 @@ type fakeBackend struct {
 	opened      []string
 	nextID      int64
 	todos       []core.Todo
+	skills      []core.Skill   // for "/" and Settings; fakeSkills when nil
+	paths       []core.PathHit // a thread's files, for "@"; fakePaths when nil
+}
+
+// fakeSkills and fakePaths are what the composer's lists show unless a test sets others.
+var (
+	fakeSkills = []core.Skill{
+		{Name: "review", Description: "Review the current branch for bugs, risky changes and missing tests.", Source: "Personal"},
+		{Name: "release-notes", Description: "Write release notes from the pull requests merged since the last tag.", Command: true, Source: "Project"},
+		{Name: "pr-style", Description: "How our pull request titles and descriptions read.", Source: "Personal"},
+		{Name: "frontend-design:frontend-design", Description: "Create distinctive, production-grade frontend interfaces.", Source: "Plugin frontend-design"},
+		{Name: "anthropic-skills:pdf", Description: "Read, fill and make PDF files.", Source: "Organization"},
+	}
+	fakePaths = []core.PathHit{{Path: "internal", Dir: true}, {Path: "internal/auth", Dir: true},
+		{Path: "internal/auth/token.go"}, {Path: "internal/auth/token_test.go"}, {Path: "internal/auth/refresh.go"},
+		{Path: "cmd", Dir: true}, {Path: "cmd/api/main.go"}, {Path: "README.md"}, {Path: "go.mod"}}
+)
+
+func (f *fakeBackend) Skills(_ context.Context, threadID string) ([]core.Skill, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	src := f.skills
+	if src == nil {
+		src = fakeSkills
+	}
+	var out []core.Skill
+	for _, s := range src {
+		if threadID == "" && s.Command {
+			continue // Settings lists skills only
+		}
+		out = append(out, s)
+	}
+	return out, nil
+}
+
+func (f *fakeBackend) SearchPaths(_ context.Context, _ string, query string, limit int) ([]core.PathHit, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	src := f.paths
+	if src == nil {
+		src = fakePaths
+	}
+	var out []core.PathHit
+	for _, p := range src {
+		if _, ok := core.MatchScore(query, p.Path); ok && (query != "" || !strings.Contains(p.Path, "/")) && len(out) < limit {
+			out = append(out, p)
+		}
+	}
+	return out, nil
 }
 
 func (f *fakeBackend) Threads() []core.ThreadView {

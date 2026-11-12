@@ -860,6 +860,18 @@ func (c *Client) SearchMessages(ctx context.Context, query string, limit int) ([
 	return out, err
 }
 
+func (c *Client) Skills(ctx context.Context, threadID string) ([]core.Skill, error) {
+	var out []core.Skill
+	err := c.do(ctx, "skills", threadParams{Thread: threadID}, &out)
+	return out, err
+}
+
+func (c *Client) SearchPaths(ctx context.Context, threadID, query string, limit int) ([]core.PathHit, error) {
+	var out []core.PathHit
+	err := c.do(ctx, "searchPaths", pathParams{Thread: threadID, Query: query, Limit: limit}, &out)
+	return out, err
+}
+
 func (c *Client) Discard(ctx context.Context, threadID string) error {
 	return c.do(ctx, "discard", threadParams{Thread: threadID}, nil)
 }

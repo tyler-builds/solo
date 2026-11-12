@@ -231,21 +231,18 @@ Reply in this format and nothing else:
 TITLE: <one-line title>`
 
 // prText writes a pull request's title and description with the PR text model, following Settings'
-// rules; without a description when Settings says so. If the model fails, the title is the worker's
-// one commit's subject (or the thread's title) and the description its summary.
+// rules and skills; without a description when Settings says so. If the model fails, the title is the
+// worker's one commit's subject (or the thread's title) and the description its summary.
 func (c *Core) prText(ctx context.Context, v ThreadView, p PartView) (string, string) {
 	s := c.Settings()
-	var subjects []string // the worker's own commits, not Solo's commit of what it left uncommitted
-	if log, err := git.Run(ctx, p.Worktree, "log", "--format=%s", p.BaseCommit+"..HEAD"); err == nil {
-		for _, l := range strings.Split(strings.TrimSpace(log), "\n") {
-			if l != "" && !strings.HasPrefix(l, uncommittedPrefix) {
-				subjects = append(subjects, l)
-			}
-		}
+	pp := prPrompt(ctx, v, p, s)
+	if len(pp.missing) > 0 {
+		c.addNotice(v.ID, "warning", fmt.Sprintf("The PR text skips %s%s, which Solo couldn't find. Settings › Pull requests lists the skills there are.",
+			skillList(pp.missing), inRepo(v, p)))
 	}
 	title := v.Title
-	if len(subjects) == 1 {
-		title = subjects[0]
+	if len(pp.subjects) == 1 {
+		title = pp.subjects[0]
 	}
 	body := strings.TrimSpace(v.Summary)
 	if body == "" {
@@ -254,33 +251,10 @@ func (c *Core) prText(ctx context.Context, v ThreadView, p PartView) (string, st
 	if s.SkipPRDescription {
 		body = ""
 	}
-
-	rules := prRules(s)
-	var files []string
-	if fc, err := git.Changes(ctx, p.Worktree, p.BaseCommit); err == nil {
-		for i, f := range fc {
-			if i == 60 {
-				files = append(files, fmt.Sprintf("… and %d more", len(fc)-60))
-				break
-			}
-			files = append(files, fmt.Sprintf("%s %s (+%d −%d)", f.Status, f.Path, f.Added, f.Removed))
-		}
-	}
-	scope := ""
-	if v.MultiRepo() {
-		scope = fmt.Sprintf("\nThis pull request is the %s part of a change across %s; describe this repository's part.", p.Name, repoNames(partRepos(v.Parts)))
-	}
-	prompt := fmt.Sprintf("Write the pull request for this change.\n\n%s\n\nRepository: %s%s\nBranch: %s into %s\nTask title: %s\nTask:\n%s\n\nWhat the agent that made the change reported:\n%s\n\nCommits:\n%s\n\nFiles changed:\n%s",
-		rules, p.Name, scope, p.Branch, p.BaseBranch, v.Title, clipText(v.Prompt, 1500),
-		clipText(strings.TrimSpace(v.Summary), 3000), strings.Join(subjects, "\n"), strings.Join(files, "\n"))
-	system := prSystem
-	if s.SkipPRDescription {
-		system = prSystemTitle
-	}
 	pctx, cancel := context.WithTimeout(ctx, 75*time.Second)
 	defer cancel()
-	text, err := c.agent.Complete(pctx, agent.CompleteParams{Model: s.PRModel, Effort: s.PREffort, System: system,
-		Prompt: prompt, ClaudePath: agent.FindClaude(s.ClaudePath).Path, TimeoutMs: 70_000})
+	text, err := c.agent.Complete(pctx, agent.CompleteParams{Model: s.PRModel, Effort: s.PREffort, System: pp.system,
+		Prompt: pp.prompt, ClaudePath: agent.FindClaude(s.ClaudePath).Path, TimeoutMs: 70_000})
 	if err != nil {
 		c.addNotice(v.ID, "warning", "Couldn't write the PR text ("+err.Error()+"), so it uses the thread's summary.")
 		return title, body
@@ -296,6 +270,79 @@ func (c *Core) prText(ctx context.Context, v ThreadView, p PartView) (string, st
 		d = body
 	}
 	return t, d
+}
+
+// prRequest is what the PR text model is asked for one repository's part of a thread.
+type prRequest struct {
+	system, prompt string
+	subjects       []string // the worker's own commits' subjects
+	missing        []string // skills Settings names that weren't found
+}
+
+// prPrompt builds the PR text model's request. The model runs without tools, so the chosen skills'
+// instructions go in the prompt, read from the branch's worktree for a project's skills.
+func prPrompt(ctx context.Context, v ThreadView, p PartView, s Settings) prRequest {
+	var r prRequest
+	// The worker's own commits, not Solo's commit of what it left uncommitted.
+	if log, err := git.Run(ctx, p.Worktree, "log", "--format=%s", p.BaseCommit+"..HEAD"); err == nil {
+		for _, l := range strings.Split(strings.TrimSpace(log), "\n") {
+			if l != "" && !strings.HasPrefix(l, uncommittedPrefix) {
+				r.subjects = append(r.subjects, l)
+			}
+		}
+	}
+	rules := prRules(s)
+	skills, missing := skillRules(cmp.Or(p.Worktree, p.Repo), s.PRSkills)
+	r.missing = missing
+	rules += prSkillRules(skills)
+	var files []string
+	if fc, err := git.Changes(ctx, p.Worktree, p.BaseCommit); err == nil {
+		for i, f := range fc {
+			if i == 60 {
+				files = append(files, fmt.Sprintf("… and %d more", len(fc)-60))
+				break
+			}
+			files = append(files, fmt.Sprintf("%s %s (+%d −%d)", f.Status, f.Path, f.Added, f.Removed))
+		}
+	}
+	scope := ""
+	if v.MultiRepo() {
+		scope = fmt.Sprintf("\nThis pull request is the %s part of a change across %s; describe this repository's part.", p.Name, repoNames(partRepos(v.Parts)))
+	}
+	r.prompt = fmt.Sprintf("Write the pull request for this change.\n\n%s\n\nRepository: %s%s\nBranch: %s into %s\nTask title: %s\nTask:\n%s\n\nWhat the agent that made the change reported:\n%s\n\nCommits:\n%s\n\nFiles changed:\n%s",
+		rules, p.Name, scope, p.Branch, p.BaseBranch, v.Title, clipText(v.Prompt, 1500),
+		clipText(strings.TrimSpace(v.Summary), 3000), strings.Join(r.subjects, "\n"), strings.Join(files, "\n"))
+	r.system = prSystem
+	if s.SkipPRDescription {
+		r.system = prSystemTitle
+	}
+	return r
+}
+
+// prSkillRules is the part of the PR text model's prompt that gives the chosen skills' instructions,
+// or "" with none.
+func prSkillRules(skills []namedText) string {
+	if len(skills) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\n\nAlso follow these skills' instructions where they say how to write the pull request. You can't run tools or open\nfiles, so leave out any steps that need them.")
+	for _, sk := range skills {
+		fmt.Fprintf(&b, "\n\n<skill name=%q>\n%s\n</skill>", sk.name, sk.text)
+	}
+	return b.String()
+}
+
+// skillList names skills for a notice: "the skill /a", "the skills /a and /b", "the skills /a, /b and /c".
+func skillList(names []string) string {
+	q := make([]string, len(names))
+	for i, n := range names {
+		q[i] = "/" + n
+	}
+	if len(q) == 1 {
+		return "the skill " + q[0]
+	}
+	return "the skills " + strings.Join(q[:len(q)-1], ", ") + " and " + q[len(q)-1]
 }
 
 // Rules for pull request text when Settings has none.

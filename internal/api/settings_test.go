@@ -109,7 +109,7 @@ func TestSettingsPatchApplyRejects(t *testing.T) {
 func TestSettingsPatchCheckRemote(t *testing.T) {
 	isDir := func(p string) bool { return p == "/code" }
 	ok := SettingsPatch{"folders": []byte(`["/code"]`), "scanDepth": []byte(`4`), "workerModel": []byte(`"opus"`),
-		"mergeMethod": []byte(`"rebase"`), "showCosts": null}
+		"mergeMethod": []byte(`"rebase"`), "showCosts": null, "prSkills": []byte(`["pr-style","anthropic-skills:pdf"]`)}
 	if err := ok.CheckRemote(isDir); err != nil {
 		t.Errorf("a valid patch: %v", err)
 	}
@@ -128,6 +128,8 @@ func TestSettingsPatchCheckRemote(t *testing.T) {
 		"long commits":  {"commitRules": []byte(`"` + strings.Repeat("x", maxSettingText+1) + `"`)},
 		"long titles":   {"prTitleRules": []byte(`"` + strings.Repeat("x", maxSettingText+1) + `"`)},
 		"long descs":    {"prDescriptionRules": []byte(`"` + strings.Repeat("x", maxSettingText+1) + `"`)},
+		"many skills":   {"prSkills": []byte(`[` + strings.TrimSuffix(strings.Repeat(`"s",`, maxPRSkills+1), ",") + `]`)},
+		"skill newline": {"prSkills": []byte(`["a\nb"]`)},
 		"unknown":       {"x": []byte(`1`)},
 		"huge":          {"branchRules": []byte(`"` + strings.Repeat("x", maxPatchBytes) + `"`)},
 	} {

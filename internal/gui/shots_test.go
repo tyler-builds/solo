@@ -39,6 +39,14 @@ func TestShots(t *testing.T) {
 	}
 	// Text selected once the window is up, by its start: the Quote button floats by it.
 	selecting := map[string]string{"quote-select": "The settings migration is done"}
+	// Text typed in a composer (by its text area's key) once the window is up: the "/" and "@" lists.
+	composing := map[string][2]string{
+		"composer-slash":       {"orch-draft-area", "Before you merge, run /re"},
+		"composer-slash-lines": {"orch-draft-area", "Two things.\nFirst the docs, then a careful pass with /"},
+		"composer-at-solo":     {"orch-draft-area", "Compare the auth code in @"},
+		"composer-at":          {"draft-a1f3c9d2-oauth-area", "Also check @tok"},
+		"composer-at-narrow":   {"draft-a1f3c9d2-oauth-area", "Also check @tok"},
+	}
 	shots := []struct {
 		name  string
 		setup func(a *App, f *fakeBackend)
@@ -193,6 +201,11 @@ func TestShots(t *testing.T) {
 		}},
 		// Markdown in the composer, formatted: its syntax shows only where the caret is.
 		{"composer-markdown", func(a *App, f *fakeBackend) { a.orchDraft.Set(composerMarkdown) }},
+		{"composer-slash", func(a *App, f *fakeBackend) {}},
+		{"composer-slash-lines", func(a *App, f *fakeBackend) {}},
+		{"composer-at-solo", func(a *App, f *fakeBackend) {}},
+		{"composer-at", func(a *App, f *fakeBackend) { a.openThread("a1f3c9d2-oauth", "conversation") }},
+		{"composer-at-narrow", func(a *App, f *fakeBackend) { a.openThread("a1f3c9d2-oauth", "conversation") }},
 		{"history", func(a *App, f *fakeBackend) { a.settingsTab = "history"; a.settings.Set(true) }},
 		{"settings-repos", func(a *App, f *fakeBackend) { a.settingsTab = "repos"; a.settings.Set(true) }},
 		// Settings pages at full height, for review.
@@ -209,6 +222,7 @@ func TestShots(t *testing.T) {
 		{"tall-settings-prs", func(a *App, f *fakeBackend) {
 			f.settings.PRTitleRules = "Conventional Commit title with the ticket, like feat(auth): OW-123 refresh tokens."
 			f.settings.PRDescriptionRules = "Summary, Changes, Testing."
+			f.settings.PRSkills = []string{"pr-style", "anthropic-skills:pdf", "gone-skill"}
 			a.settingsTab = "prs"
 			a.settings.Set(true)
 		}},
@@ -308,6 +322,14 @@ func TestShots(t *testing.T) {
 			if prefix := selecting[sh.name]; prefix != "" {
 				selectSpan(t, u, prefix, 300)
 				u.Advance(100 * time.Millisecond)
+			}
+			if c, ok := composing[sh.name]; ok {
+				u.Get(c[0]).Focus()
+				u.Type(c[1])
+				for i := 0; i < 5; i++ {
+					u.Advance(100 * time.Millisecond)
+					time.Sleep(20 * time.Millisecond)
+				}
 			}
 			if text := typing[sh.name]; text != "" {
 				u.Type(text)

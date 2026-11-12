@@ -197,6 +197,15 @@ func TestMirrorOfTheRealEngine(t *testing.T) {
 	if files, err := client.Changes(ctx, v1.ID); err != nil || len(files) != 1 || files[0].Path != "a.txt" {
 		t.Errorf("changes: %v %v", files, err)
 	}
+	if hits, err := client.SearchPaths(ctx, v1.ID, "a.t", 5); err != nil || len(hits) == 0 || hits[0].Path != "a.txt" {
+		t.Errorf("searchPaths: %v %v", hits, err)
+	}
+	if _, err := client.Skills(ctx, v1.ID); err != nil {
+		t.Errorf("skills: %v", err)
+	}
+	if _, err := client.SearchPaths(ctx, "../etc", "x", 5); err == nil {
+		t.Error("searchPaths took a bad thread")
+	}
 	if diff, err := client.Diff(ctx, v1.ID); err != nil || len(diff) == 0 {
 		t.Errorf("diff: %q %v", diff, err)
 	}

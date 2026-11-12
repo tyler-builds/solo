@@ -28,6 +28,7 @@ const (
 	maxSettingPath  = 4096
 	maxFolders      = 64
 	maxRepoRules    = 256
+	maxPRSkills     = 32 // skills followed for pull request text
 	minScanDepth    = 1
 	maxScanDepth    = 6
 	minSessionLimit = -1
@@ -49,7 +50,7 @@ var remote = map[string]bool{
 	"workerEffort": true, "namingModel": true, "namingEffort": true, "branchRules": true, "repoBranchRules": true,
 	"prModel": true, "prEffort": true, "prRules": true, "skipPRDescription": true, "autoMerge": true,
 	"mergeMethod": true, "onChecksFail": true,
-	"commitRules": true, "prTitleRules": true, "prDescriptionRules": true,
+	"commitRules": true, "prTitleRules": true, "prDescriptionRules": true, "prSkills": true,
 }
 
 // DesktopOnly reports whether the setting with this JSON name can be changed at the machine only.
@@ -186,6 +187,14 @@ func (p SettingsPatch) CheckRemote(isDir func(path string) bool) error {
 	} {
 		if len(v) > maxSettingText {
 			return fmt.Errorf("%q is too long", name)
+		}
+	}
+	if len(s.PRSkills) > maxPRSkills {
+		return fmt.Errorf("at most %d skills for pull request text", maxPRSkills)
+	}
+	for _, n := range s.PRSkills {
+		if len(n) > maxSettingName || strings.ContainsAny(n, "\x00\r\n") {
+			return errors.New("a skill's name isn't valid")
 		}
 	}
 	for name, v := range map[string]string{
