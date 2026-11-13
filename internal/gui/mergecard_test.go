@@ -76,6 +76,7 @@ func mergeCardUI(t *testing.T, id string, w float32) (*App, *uitest.UI) {
 	a := New(f)
 	u := uitest.New(t, a.Root, uitest.Size(w, 900), uitest.Theme(dark), uitest.Bindings(Bindings()...))
 	t.Cleanup(u.Close)
+	started(a, u)
 	u.Settle()
 	return a, u
 }

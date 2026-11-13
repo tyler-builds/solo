@@ -27,9 +27,6 @@ func newChatRig(t *testing.T) *chatRig {
 	longChat(f)
 	a, u := newUI(t, f)
 	c := &chatRig{t, a, f, u}
-	// The app reads its backend once its window is up, off the UI thread. A test here sets what the app
-	// shows by hand, so it starts after that read: a late one would put the backend's state back.
-	u.WaitFor("the app's first read of its backend", func() bool { return a.refreshes > 0 })
 	c.settle()
 	return c
 }

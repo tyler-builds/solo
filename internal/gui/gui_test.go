@@ -31,7 +31,15 @@ func newUIWith(t *testing.T, f *fakeBackend, setup func(*App)) (*App, *uitest.UI
 	}
 	u := uitest.New(t, a.Root, uitest.Size(1440, 900), uitest.Theme(dark))
 	t.Cleanup(u.Close)
+	started(a, u)
 	return a, u
+}
+
+// started waits until the app has read its backend for the first time. The app does that once its
+// window is up, off the UI thread, and a test that then changed what the backend or the app holds
+// would race it: a read that was late put back what the test had changed. Every test starts after it.
+func started(a *App, u *uitest.UI) {
+	u.WaitFor("the app's first read of its backend", func() bool { return a.refreshes > 0 })
 }
 
 func waitSent(t *testing.T, f *fakeBackend, want string) {

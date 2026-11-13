@@ -16,6 +16,7 @@ func newPhoneUI(t *testing.T, f *fakeBackend) (*App, *uitest.UI) {
 	u := uitest.New(t, a.Root, uitest.Size(390, 844), uitest.Theme(dark),
 		uitest.Settings(ui.SystemSettings{Dark: true, CaptionButtons: ":", ReducedMotion: true, CaretWidth: 1}))
 	t.Cleanup(u.Close)
+	started(a, u)
 	u.Settle()
 	return a, u
 }
