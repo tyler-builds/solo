@@ -126,7 +126,11 @@ Raw `SDKMessage`s are also appended to a per-session JSONL file for debugging an
   had none, or it was discarded).
 - **Proactive updates:** when a worker finishes, fails, or asks a question, Go queues a synthetic
   `[thread update]` message. Updates are batched while the orchestrator is busy and delivered when
-  it's idle, so it reports without being asked. These render as small status chips, not user bubbles.
+  it's idle, so it reports without being asked. Solo's chat shows neither these nor Solo's steps as
+  rows: each exchange opens with a sentence or two that says what the threads reported and what Solo
+  did ("A and B have questions. Solo messaged C."), with the word for what happened in its status's
+  color and each thread's name a link to it, and a rule sets the exchanges apart (`gui/summary.go`).
+  The sentences are built from fixed wording, not by a model.
 - **To-do list:** `add_todo`, `update_todo`, `remove_todo`, `list_todos` (core/todos.go). Solo judges
   what's a todo; most have no thread. A todo linked to threads is ticked off when their work lands
   (a pull request opened or merged, a merge, or the thread marked done). Thread updates list the open
