@@ -35,6 +35,23 @@ func (l *statusLog) String() string {
 	return strings.Join(l.log, " ")
 }
 
+// waitFor waits for the log to say want, and fails the test if it doesn't: a change reaches the log a
+// moment after the thread shows it.
+func (l *statusLog) waitFor(t *testing.T, want string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		got := l.String()
+		if got == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("statuses %q, want %q", got, want)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 // readyWorker starts a worker that has changed a file, and waits for it to be ready.
 func readyWorker(t *testing.T, e *env) ThreadView {
 	t.Helper()
@@ -88,9 +105,7 @@ func TestBackgroundWorkThenWake(t *testing.T) {
 	if !strings.HasPrefix(v.Summary, "echo: wake Run benchmarks") || len(v.Background) != 0 {
 		t.Fatalf("after the wake: summary %q, background %+v", v.Summary, v.Background)
 	}
-	if got, want := log.String(), "idle>running running>background background>running running>idle"; got != want {
-		t.Fatalf("statuses %q, want %q", got, want)
-	}
+	log.waitFor(t, "idle>running running>background background>running running>idle")
 }
 
 // A command Claude stops itself ends inside its turn: the turn ends ready, and no turn follows.
@@ -112,9 +127,7 @@ func TestBackgroundWorkKilledByAgent(t *testing.T) {
 		t.Fatalf("background after the kill: %+v", v.Background)
 	}
 	time.Sleep(200 * time.Millisecond)
-	if got, want := log.String(), "background>running running>idle"; got != want {
-		t.Fatalf("statuses %q, want %q", got, want)
-	}
+	log.waitFor(t, "background>running running>idle")
 	items, _ := e.c.Items(ctx, v.ID, 0)
 	for _, it := range items {
 		if it.Kind == ItemTask {

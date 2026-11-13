@@ -1031,7 +1031,16 @@ func (c *Core) handConflicts(ctx context.Context, v ThreadView, p PartView, file
 func (c *Core) mergeResolved(id string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
+	// The merge that handed the conflicts over holds the thread until it has returned, which a worker
+	// that finishes at once can beat: wait for it, rather than give the merge up as busy.
 	_, err := c.MergeLocal(ctx, id)
+	for errors.Is(err, ErrBusy) && ctx.Err() == nil {
+		select {
+		case <-ctx.Done():
+		case <-time.After(20 * time.Millisecond):
+		}
+		_, err = c.MergeLocal(ctx, id)
+	}
 	var re *ResolvingError
 	if errors.As(err, &re) {
 		return // back to the worker, still resolving
