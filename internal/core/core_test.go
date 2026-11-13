@@ -1302,32 +1302,43 @@ func TestMergeConflictGoesToTheWorker(t *testing.T) {
 	if !errors.As(err, &re) {
 		t.Fatalf("want the conflict handed to the worker, got %v", err)
 	}
-	// The fake worker only echoes, so the conflict stays; after the second hand-off, it stops.
+	// The fake worker only echoes, so the conflict stays; after the second hand-off, it stops. Between
+	// its steps the thread is for a moment neither resolving nor in a turn, so wait for the outcome, the
+	// notice that it gave up, and not for that moment.
 	deadline := time.Now().Add(10 * time.Second)
+	asked, failed := 0, false
 	for {
 		v, _ = e.c.Thread(v.ID)
-		if !v.Resolving && !v.InTurn {
+		items, _ := e.c.Items(ctx, v.ID, 0)
+		asked, failed = 0, false
+		for _, it := range items {
+			var u UserData
+			if it.Kind == ItemUser && it.Decode(&u) == nil && strings.Contains(u.Text, "git merge main") {
+				asked++
+			}
+			var n NoticeData
+			if it.Kind == ItemNotice && it.Decode(&n) == nil && strings.Contains(n.Text, "still conflicts") {
+				failed = true
+			}
+		}
+		if failed && !v.Resolving && !v.InTurn && v.Status == StatusIdle {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("still resolving")
+			var notices []string
+			for _, it := range items {
+				var n NoticeData
+				if it.Kind == ItemNotice && it.Decode(&n) == nil {
+					notices = append(notices, n.Text)
+				}
+			}
+			t.Fatalf("still resolving: asked %d times, failure noticed %v, status %s, resolving %v, in a turn %v; notices: %q",
+				asked, failed, v.Status, v.Resolving, v.InTurn, notices)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	items, _ := e.c.Items(ctx, v.ID, 0)
-	asked, failed := 0, false
-	for _, it := range items {
-		var u UserData
-		if it.Kind == ItemUser && it.Decode(&u) == nil && strings.Contains(u.Text, "git merge main") {
-			asked++
-		}
-		var n NoticeData
-		if it.Kind == ItemNotice && it.Decode(&n) == nil && strings.Contains(n.Text, "still conflicts") {
-			failed = true
-		}
-	}
-	if asked != maxResolveTries || !failed || v.Status != StatusIdle {
-		t.Fatalf("asked %d times, failure noticed %v, status %s", asked, failed, v.Status)
+	if asked != maxResolveTries {
+		t.Fatalf("asked %d times, want %d", asked, maxResolveTries)
 	}
 }
 

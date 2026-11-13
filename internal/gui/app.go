@@ -143,6 +143,7 @@ type App struct {
 	watched            map[string]bool
 	wake               chan struct{} // wakes the refresher: something changed (see onChange)
 	quit               chan struct{} // closed by Close: the refresher stops
+	refreshes          int           // updates of the refresher the UI has taken (UI thread only)
 	unsub              func()
 	unsubRemote        func()
 	closing            sync.Once
@@ -325,6 +326,7 @@ func (a *App) refresh() <-chan struct{} {
 	}
 	post(func() {
 		defer close(applied)
+		a.refreshes++
 		if threads != nil {
 			// Each list is set only when it changed: a refresh reads them all, and most refreshes are
 			// for one thread's streaming text, which is none of these.
