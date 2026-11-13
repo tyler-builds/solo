@@ -30,6 +30,10 @@ VERSION=0.2.0 ./scripts/windows.sh    # dist/Solo-0.2.0-windows-amd64-setup.exe 
 uas add dist/Solo-x86_64.AppImage     # optional: install the AppImage with uas
 ```
 
+Settings › General shows the build's version: `VERSION` when it is set, as a release sets it, or else
+git's description of the commit, such as `0.6.0-3-gcb015ff` for three commits after 0.6.0
+(`scripts/version.sh`). The web client shows its own and the machine's.
+
 Both need Go and Bun; the AppImage also needs `mksquashfs`, and the Windows installer NSIS
 (`makensis`; without it only the zip is built). The app needs
 only Claude Code installed and signed in: the sidecar is a compiled binary with Bun inside, and Solo

@@ -130,6 +130,10 @@ func (c *Client) Status() Status {
 	return c.status
 }
 
+// HostVersion is the version of Solo on the machine, as it last said: "" before the first session, and
+// from a Solo too old to say.
+func (c *Client) HostVersion() string { return c.Status().Host.Version }
+
 func (c *Client) setStatus(f func(*Status)) {
 	c.mu.Lock()
 	before := c.status

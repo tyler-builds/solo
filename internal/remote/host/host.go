@@ -29,6 +29,7 @@ import (
 	"github.com/tyler-builds/solo/internal/remote/device"
 	"github.com/tyler-builds/solo/internal/remote/rpc"
 	"github.com/tyler-builds/solo/internal/remote/secure"
+	"github.com/tyler-builds/solo/internal/version"
 )
 
 // Config is what a Remote needs.
@@ -161,7 +162,7 @@ func New(cfg Config) (*Remote, error) {
 		Log:        cfg.Log,
 		Info: func() rpc.HostInfo {
 			home, _ := os.UserHomeDir()
-			return rpc.HostInfo{Name: cfg.Name, OS: goos, Home: home}
+			return rpc.HostInfo{Name: cfg.Name, OS: goos, Home: home, Version: version.String()}
 		},
 		IsDir: func(p string) bool {
 			fi, err := os.Stat(p)

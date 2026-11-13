@@ -34,7 +34,10 @@ fi
 echo "building solo"
 rm -rf "$appdir"
 mkdir -p "$appdir/usr/bin" "$appdir/usr/share/applications" "$appdir/usr/share/icons/hicolor/256x256/apps"
-CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o "$appdir/usr/bin/solo" ./cmd/solo
+# The version Settings shows (scripts/version.sh).
+CGO_ENABLED=0 go build -trimpath \
+	-ldflags "-s -w -X github.com/tyler-builds/solo/internal/version.Version=$(scripts/version.sh)" \
+	-o "$appdir/usr/bin/solo" ./cmd/solo
 cp bin/solo-agent "$appdir/usr/bin/solo-agent"
 
 cp cmd/solo/icon.png "$appdir/usr/share/icons/hicolor/256x256/apps/$app_id.png"

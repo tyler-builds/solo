@@ -300,7 +300,7 @@ func newRig(t *testing.T, m *mem, dev Device) *rig {
 	r := &rig{t: t, m: m, dev: dev}
 	r.h = NewHost(m, Options{FlushEvery: 5 * time.Millisecond, Lease: time.Second,
 		IsDir: func(p string) bool { return p == "/code" },
-		Info:  func() HostInfo { return HostInfo{Name: "box", OS: "linux", Home: "/home/u"} },
+		Info:  func() HostInfo { return HostInfo{Name: "box", OS: "linux", Home: "/home/u", Version: "1.2.3"} },
 		Audit: func(d Device, method, detail string, err error) {
 			r.amu.Lock()
 			r.audit = append(r.audit, fmt.Sprintf("%s %s %s %v", d.Name, method, detail, err))
