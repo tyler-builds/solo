@@ -26,6 +26,8 @@ engine=${CONTAINER:-$(command -v docker >/dev/null 2>&1 && echo docker || echo p
 jamb=$(cd "$root" && go list -m -f '{{.Dir}}' github.com/tyler-builds/jamb)
 modcache=$(go env GOMODCACHE)
 cache=${TINYGO_CACHE:-$HOME/.cache/jamb-tinygo}
+# The version the web client's Settings shows, read here: the container has neither git nor VERSION.
+version=$("$root/scripts/version.sh")
 tools=$(mktemp -d)
 trap 'rm -rf "$tools"' EXIT
 mkdir -p "$cache"
@@ -49,7 +51,7 @@ fi
 cp "$jamb/scripts/web/wasm-opt.sh" "$tools/wasm-opt.sh"
 chmod 755 "$tools/wasm-opt.sh"
 
-echo "== tinygo build cmd/solo-web"
+echo "== tinygo build cmd/solo-web $version"
 "$engine" run --rm --user "$user" --memory="${MEMORY:-3g}" --memory-swap="${MEMORY:-3g}" --security-opt label=disable \
 	-v "$root:/src:ro" -v "$modcache:/gomod:ro" -v "$out:/out" -v "$cache:/tmp/.cache" -v "$tools:/tools:ro" \
 	-e GOMODCACHE=/gomod -e GOPROXY=off -e GOFLAGS=-buildvcs=false \
@@ -57,6 +59,7 @@ echo "== tinygo build cmd/solo-web"
 	-e WASMOPT=/tools/wasm-opt.sh -e NAMES=/out/app.names \
 	-w /src "$image" \
 	tinygo build -target wasm -no-debug -scheduler=asyncify -panic-unwind=none -stack-size=1MB \
+	-ldflags "-X github.com/tyler-builds/solo/internal/version.Version=$version" \
 	-o /out/app.wasm ./cmd/solo-web
 "$engine" run --rm "$image" cat /usr/local/tinygo/targets/wasm_exec.js >"$out/wasm_exec.js"
 

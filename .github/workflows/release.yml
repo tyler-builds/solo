@@ -59,6 +59,8 @@ jobs:
 
       # What Solo deploys for remote access, the relay and the web client, built into the app.
       - name: Relay and web client
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: go mod download && ./scripts/bundle.sh
 
       - name: Linux AppImage

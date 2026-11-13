@@ -22,6 +22,7 @@ import (
 	"github.com/tyler-builds/jamb/ui"
 
 	"github.com/tyler-builds/solo/internal/core"
+	"github.com/tyler-builds/solo/internal/version"
 )
 
 // modelPicker shows a thread's model and effort in its message box, and changes them.
@@ -312,6 +313,26 @@ func settingRow(ctx *ui.Context, title, help string, control ui.Element) ui.Elem
 		Child(ui.Div().Row().Align(ui.Center).Gap(space2).Shrink(0).Child(control))
 }
 
+// versionRows say which Solo this is. A page that drives another machine's Solo has two versions: its
+// own, the web app's, and the machine's, which can be older or newer.
+func (a *App) versionRows(ctx *ui.Context) []ui.Element {
+	shown := func(v string) ui.Element {
+		return ui.Text(v).FontSize(13).TextColor(ctx.Theme().TextMuted).Selectable()
+	}
+	host, remote := a.b.(interface{ HostVersion() string })
+	if !remote {
+		return []ui.Element{settingRow(ctx, "Version", "This Solo.", shown(version.String()))}
+	}
+	machine := host.HostVersion()
+	if machine == "" {
+		machine = "Not reported" // a Solo from before it said
+	}
+	return []ui.Element{
+		settingRow(ctx, "Web app", "This page.", shown(version.String())),
+		settingRow(ctx, "Solo on "+cmp.Or(a.Machine, "the machine"), "The app this page drives.", shown(machine)),
+	}
+}
+
 // settingBlock is a setting whose control needs the full width, such as a text box, under its name.
 func settingBlock(ctx *ui.Context, title, help string, control ui.Element) ui.Element {
 	return ui.Div().Column().Gap(space2 + 2).PaddingX(space4).PaddingY(space3).
@@ -552,7 +573,8 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 					ui.Switch("Show costs", showCosts))),
 			settingsSection(ctx, "Apps", "", nil,
 				appRow("Editor", "Opens a thread's folder.", detected[0], "code {path}", editorCmd),
-				appRow("Terminal", "Opens a terminal in a thread's folder.", detected[1], "ptyxis --working-directory {path}", terminalCmd)))
+				appRow("Terminal", "Opens a terminal in a thread's folder.", detected[1], "ptyxis --working-directory {path}", terminalCmd)),
+			settingsSection(ctx, "About", "", nil, a.versionRows(ctx)...))
 
 		// Repositories: the folders to search, what the search found, and folders outside git.
 		var folderRows []ui.Element

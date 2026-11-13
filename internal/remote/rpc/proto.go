@@ -112,6 +112,8 @@ type HostInfo struct {
 	OS   string `json:"os"`
 	Home string `json:"home"`
 	Time int64  `json:"time"` // the machine's clock, in Unix milliseconds
+	// Version is the machine's Solo (version.String); empty from one too old to say.
+	Version string `json:"version,omitempty"`
 }
 
 // Bye ends a session.

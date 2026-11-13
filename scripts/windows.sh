@@ -32,6 +32,10 @@ cp cmd/solo/*.go cmd/solo/icon.png "$app/"
 jv=${version%%-*} # Windows version info takes MAJOR.MINOR.PATCH only, no pre-release suffix
 sed "s/\"version\": *\"[^\"]*\"/\"version\": \"$jv\"/" cmd/solo/jamb.json >"$app/jamb.json"
 cp "$work/solo-agent.exe" "$app/"
+# The version Settings shows (scripts/version.sh). jamb package links the app with its own flags, so
+# it is set by a file of the copy instead of by the linker.
+printf 'package main\n\nimport "github.com/tyler-builds/solo/internal/version"\n\nfunc init() { version.Version = "%s" }\n' \
+	"$(scripts/version.sh)" >"$app/version_set.go"
 installer=()
 if command -v makensis >/dev/null; then
 	installer=(--installer)

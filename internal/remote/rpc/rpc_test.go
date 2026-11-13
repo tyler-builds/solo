@@ -37,6 +37,9 @@ func TestMirrorFollowsTheMachine(t *testing.T) {
 	if st := r.c.Status(); !st.Connected || st.Host.Name != "box" || st.ReadOnly {
 		t.Errorf("status %+v", st)
 	}
+	if v := r.c.HostVersion(); v != "1.2.3" {
+		t.Errorf("the machine's version came as %q", v)
+	}
 	if !reflect.DeepEqual(r.c.RepoPaths(), m.repos) || !reflect.DeepEqual(r.c.PlainFolders(), m.plain) ||
 		asJSON(r.c.Todos(true)) != asJSON(m.todos) || asJSON(r.c.Settings()) != asJSON(m.Settings()) {
 		t.Error("the lists differ")
