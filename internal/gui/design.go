@@ -194,7 +194,9 @@ func shownStatus(v core.ThreadView) string {
 		if slices.ContainsFunc(open, func(pr *forge.PR) bool { return pr.Checks == forge.ChecksFailing }) {
 			return statusChecksFailed
 		}
-		if slices.ContainsFunc(open, func(pr *forge.PR) bool { return pr.Checks == forge.ChecksPending }) {
+		if slices.ContainsFunc(open, func(pr *forge.PR) bool {
+			return pr.Checks == forge.ChecksPending || pr.Checks == forge.ChecksWaiting
+		}) {
 			return statusChecksRunning
 		}
 		return statusInReview

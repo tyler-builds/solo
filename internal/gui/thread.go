@@ -388,7 +388,7 @@ func (a *App) repoChips(ctx *ui.Context, th core.ThreadView) []ui.Element {
 				c, tip = t.Danger, "Checks failed: "+strings.Join(checkNamesOf(pr.Failed), ", ")
 			case pr.Mergeable:
 				c, tip = t.Success, "Ready to merge"
-			case pr.Checks == forge.ChecksPending:
+			case pr.Checks == forge.ChecksPending || pr.Checks == forge.ChecksWaiting:
 				c, tip = t.Warning, "Waiting for checks"
 			case pr.Blocked != "":
 				tip = "Can't merge yet: " + pr.Blocked

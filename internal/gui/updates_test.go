@@ -86,6 +86,16 @@ func TestChecksOf(t *testing.T) {
 			forge.ChecksPassing, "Checks passed"},
 		{"no counts (GitLab)", []*forge.PR{pr(forge.ChecksPending, forge.CheckCounts{})},
 			forge.ChecksPending, "Checks running"},
+		{"just opened, none reported yet", []*forge.PR{pr(forge.ChecksWaiting, forge.CheckCounts{})},
+			forge.ChecksWaiting, "Waiting for checks"},
+		{"waiting in one repository, passed in another", []*forge.PR{
+			pr(forge.ChecksPassing, forge.CheckCounts{Total: 3, Passed: 3}), pr(forge.ChecksWaiting, forge.CheckCounts{})},
+			forge.ChecksWaiting, "Waiting for checks"},
+		{"waiting in one repository, running in another", []*forge.PR{
+			pr(forge.ChecksWaiting, forge.CheckCounts{}), pr(forge.ChecksPending, forge.CheckCounts{Total: 2, Pending: 2})},
+			forge.ChecksPending, "Checks: 2 running"},
+		{"none to run", []*forge.PR{pr(forge.ChecksNone, forge.CheckCounts{})},
+			forge.ChecksPassing, "Checks passed"},
 		{"summed across repositories", []*forge.PR{
 			pr(forge.ChecksPassing, forge.CheckCounts{Total: 3, Passed: 3}),
 			pr(forge.ChecksPending, forge.CheckCounts{Total: 5, Passed: 3, Pending: 2})},

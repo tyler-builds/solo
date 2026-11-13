@@ -6,10 +6,13 @@ import (
 	"cmp"
 	"context"
 	"fmt"
-	"github.com/tyler-builds/solo/internal/agent"
+	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
+
+	"github.com/tyler-builds/solo/internal/agent"
 
 	"github.com/tyler-builds/solo/internal/forge"
 	"github.com/tyler-builds/solo/internal/git"
@@ -114,6 +117,7 @@ func (c *Core) openOne(ctx context.Context, v ThreadView, p PartView, draft bool
 	if !draft {
 		pr = c.autoMerge(ctx, v.ID, client, p.Worktree, pr)
 	}
+	settleChecks(&pr, p.Worktree) // as applyPR records it
 	c.applyPR(v.ID, p.Repo, pr, PROpened)
 	return pr, body, nil
 }
@@ -412,6 +416,7 @@ func (c *Core) pushPR(ctx context.Context, v ThreadView, p PartView) {
 			c.addNotice(v.ID, "error", fmt.Sprintf("Couldn't push to %s #%d: %v", p.PR.Kind.Noun(), p.PR.Number, err))
 			return
 		}
+		c.restartChecks(v.ID, p.Repo)
 		c.addNotice(v.ID, "info", fmt.Sprintf("Pushed new commits to %s #%d%s.", p.PR.Kind.Noun(), p.PR.Number, inRepo(v, p)))
 		c.pokePRs()
 		return
@@ -430,6 +435,7 @@ func (c *Core) pushPR(ctx context.Context, v ThreadView, p PartView) {
 		c.addNotice(v.ID, "error", fmt.Sprintf("Couldn't push to %s #%d: %v", p.PR.Kind.Noun(), p.PR.Number, err))
 		return
 	}
+	c.restartChecks(v.ID, p.Repo)
 	c.addNotice(v.ID, "info", fmt.Sprintf("Pushed new commits to %s #%d%s.", p.PR.Kind.Noun(), p.PR.Number, inRepo(v, p)))
 	c.pokePRs()
 }
@@ -445,9 +451,19 @@ func (c *Core) pokePRs() {
 // settledPRPoll is how many times PRPoll the watcher waits while every open pull request is settled.
 const settledPRPoll = 4
 
+// freshPRPoll is the longest the watcher waits while a pull request's checks may still be on their
+// way (checksFresh), so they show up within seconds of the forge queueing them.
+const freshPRPoll = 10 * time.Second
+
+// checksGrace is how long after a pull request's head changed (it opened, or new commits were pushed)
+// a repository with CI set up may take to report checks on it. Until then no checks reported means
+// they aren't queued yet (ChecksWaiting); after, that none run (ChecksNone): its workflows don't run
+// on pull requests, say.
+const checksGrace = 2 * time.Minute
+
 // watchPRs follows open pull requests until Close: every PRPoll while one has checks running or
-// merges on its own, and settledPRPoll times as long while all are settled, since each check runs gh
-// or glab once per pull request.
+// merges on its own, settledPRPoll times as long while all are settled, since each check runs gh or
+// glab once per pull request, and at most every freshPRPoll while one's checks may still show up.
 func (c *Core) watchPRs() {
 	every := c.cfg.PRPoll
 	if every <= 0 {
@@ -464,27 +480,100 @@ func (c *Core) watchPRs() {
 		}
 		c.CheckPRs(context.Background())
 		c.sweepLanded()
-		next := every
-		if c.prsSettled() {
-			next *= settledPRPoll
-		}
-		timer.Reset(next)
+		timer.Reset(c.nextPRPoll(every))
 	}
 }
 
-// prsSettled reports whether no open pull request has checks running, unknown checks, or auto-merge
-// on: nothing about them is about to change on its own.
-func (c *Core) prsSettled() bool {
+// nextPRPoll is how long the watcher waits before checking pull requests again, given PRPoll: at most
+// freshPRPoll while an open pull request has no checks reported soon after its head changed, every
+// while one has checks running, unknown checks or auto-merge on, and settledPRPoll times every while
+// nothing about them is about to change on its own.
+func (c *Core) nextPRPoll(every time.Duration) time.Duration {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	settled := true
 	for _, t := range c.threads {
 		for _, p := range t.parts {
-			if p.prOpen() && (p.PR.AutoMerge || (p.PR.Checks != forge.ChecksPassing && p.PR.Checks != forge.ChecksFailing && p.PR.Checks != forge.ChecksNone)) {
-				return false
+			if !p.prOpen() {
+				continue
+			}
+			switch p.PR.Checks {
+			case forge.ChecksWaiting, forge.ChecksNone:
+				if checksFresh(*p.PR) {
+					return min(every, freshPRPoll)
+				}
+			}
+			if p.PR.AutoMerge || (p.PR.Checks != forge.ChecksPassing && p.PR.Checks != forge.ChecksFailing && p.PR.Checks != forge.ChecksNone) {
+				settled = false
 			}
 		}
 	}
-	return true
+	if settled {
+		return every * settledPRPoll
+	}
+	return every
+}
+
+// checksFresh reports whether a pull request's head changed less than checksGrace ago, so the forge
+// may not have reported its checks yet.
+func checksFresh(pr forge.PR) bool {
+	return !pr.ChecksSince.IsZero() && now().Sub(pr.ChecksSince) < checksGrace
+}
+
+// settleChecks decides what a pull request with no checks reported (ChecksWaiting) waits for: while
+// its checks may still be queued (checksFresh, in a repository with CI set up in dir) it keeps
+// waiting, and can't merge until they report; otherwise it has none (ChecksNone).
+func settleChecks(pr *forge.PR, dir string) {
+	if pr.Checks != forge.ChecksWaiting {
+		return
+	}
+	if pr.State == forge.StateOpen && checksFresh(*pr) && hasCI(dir, pr.Kind) {
+		pr.Mergeable = false
+		if pr.Blocked == "" {
+			pr.Blocked = "waiting for checks"
+		}
+		return
+	}
+	pr.Checks = forge.ChecksNone
+}
+
+// hasCI reports whether the checkout dir sets up CI on the forge: a GitHub Actions workflow, or a
+// GitLab pipeline.
+func hasCI(dir string, kind forge.Kind) bool {
+	if dir == "" {
+		return false
+	}
+	if kind == forge.GitLab {
+		_, err := os.Stat(filepath.Join(dir, ".gitlab-ci.yml"))
+		return err == nil
+	}
+	entries, err := os.ReadDir(filepath.Join(dir, ".github", "workflows"))
+	if err != nil {
+		return false
+	}
+	return slices.ContainsFunc(entries, func(e os.DirEntry) bool {
+		ext := filepath.Ext(e.Name())
+		return !e.IsDir() && (ext == ".yml" || ext == ".yaml")
+	})
+}
+
+// restartChecks records that new commits reached a repository's open pull request: its checks start
+// over, and may take a while to show up.
+func (c *Core) restartChecks(id, repo string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	t := c.threads[id]
+	if t == nil {
+		return
+	}
+	p := t.part(repo)
+	if p == nil || !p.prOpen() {
+		return
+	}
+	pr := *p.PR // a new value: views share the old one
+	pr.ChecksSince = now()
+	p.PR = &pr
+	_ = c.saveLocked(t)
 }
 
 // CheckPRs reads the state of every open pull request.
@@ -548,6 +637,11 @@ func (c *Core) applyPR(id, repo string, pr forge.PR, event string) {
 		c.mu.Unlock()
 		return
 	}
+	dir := p.Worktree
+	if dir == "" {
+		dir = p.Repo
+	}
+	settleChecks(&pr, dir)
 	var old forge.PR
 	if p.PR != nil {
 		old = *p.PR
