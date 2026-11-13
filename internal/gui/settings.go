@@ -689,7 +689,7 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 					ui.TextArea(prTitleRules).Placeholder("For example: Conventional Commit style with the ticket, like feat(auth): OW-123 refresh tokens before they expire. Under 70 characters.").
 						Label("Pull request title rules").MinRows(1).MaxHeight(ui.Px(140)).Width(ui.Full).Key("pr-title-rules")),
 				prDescBlock,
-				settingBlock(ctx, "Skills to follow", "Claude Code skills whose instructions the model follows too, with the rules above. It can't run tools, so a skill's scripts and other files aren't used.",
+				settingBlock(ctx, "Skills to follow", "Claude Code skills that write the text, with any rules above. With a skill chosen, a Claude Code agent loads it in the branch's worktree and runs its scripts, which can take a few minutes; it doesn't change the worktree.",
 					ui.Component(func(ctx *ui.Context) ui.Element { return a.prSkillsPicker(ctx, prSkills) }).Key("pr-skills")),
 				settingRow(ctx, "Model", "Applies the rules to the thread's commits, changes and summary.", helperPickers("Pull request text", prModel, prEffort))),
 			settingsSection(ctx, "Merging", "", nil,

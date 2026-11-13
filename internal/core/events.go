@@ -22,6 +22,16 @@ func (c *Core) onEvent(e agent.Event) {
 		return
 	}
 	c.mu.Lock()
+	if job := c.jobs[e.SessionID]; job != nil {
+		c.mu.Unlock()
+		if e.Kind == agent.EventTurnEnd || e.Kind == agent.EventExited {
+			select {
+			case job <- e:
+			default:
+			}
+		}
+		return
+	}
 	t := c.bySession[e.SessionID]
 	if t == nil || c.closed {
 		c.mu.Unlock()

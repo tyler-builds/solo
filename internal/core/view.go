@@ -315,8 +315,9 @@ type Settings struct {
 	PRTitleRules       string `json:"prTitleRules,omitempty"`
 	PRDescriptionRules string `json:"prDescriptionRules,omitempty"`
 	SkipPRDescription  bool   `json:"skipPRDescription,omitempty"`
-	// PRSkills name Claude Code skills (see Skill) whose instructions the PR text model follows too,
-	// with the rules above. None by default.
+	// PRSkills name Claude Code skills (see Skill) that write the pull request text, with the rules
+	// above: a Claude Code agent loads them in the branch's worktree and can run their scripts. None by
+	// default.
 	PRSkills []string `json:"prSkills,omitempty"`
 	// PRRules are the rules for titles and descriptions together, from before they were split. They
 	// are only read: normalize moves them to both PRTitleRules and PRDescriptionRules.

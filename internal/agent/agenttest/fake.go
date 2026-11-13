@@ -26,6 +26,8 @@
 //	kill                       stops every background command inside the turn, as Claude's TaskStop
 //	slowclose <ms>             completes; closing the session later takes ms (and holds up every other
 //	                           request meanwhile, as one busy sidecar would)
+//	Write the pull request …   in a session opened with skills: writes pull request text as Claude
+//	                           would with them (see skillTurn)
 //	anything else              completes with result "echo: <text> resume=<bool>"
 //
 // It does not import package agent, so agent's own tests can use it.
@@ -37,6 +39,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -69,6 +72,7 @@ func Command() (path string, env []string) {
 
 type fakeSession struct {
 	cwd       string
+	skills    []string // the skills the session may use (OpenParams.Skills)
 	resumed   bool
 	seq       int
 	interrupt chan struct{}
@@ -185,14 +189,15 @@ func run() {
 		id := *m.ID
 		reply := func(v any) { write(map[string]any{"id": id, "result": v}) }
 		var p struct {
-			SessionID string `json:"sessionId"`
-			Resume    bool   `json:"resume"`
-			Cwd       string `json:"cwd"`
-			UUID      string `json:"uuid"`
-			Text      string `json:"text"`
-			Model     string `json:"model"`
-			Prompt    string `json:"prompt"`
-			Steer     bool   `json:"steer"`
+			SessionID string   `json:"sessionId"`
+			Resume    bool     `json:"resume"`
+			Cwd       string   `json:"cwd"`
+			UUID      string   `json:"uuid"`
+			Text      string   `json:"text"`
+			Model     string   `json:"model"`
+			Prompt    string   `json:"prompt"`
+			Steer     bool     `json:"steer"`
+			Skills    []string `json:"skills"`
 			Images    []struct {
 				MediaType string `json:"mediaType"`
 			} `json:"images"`
@@ -203,7 +208,7 @@ func run() {
 			reply(map[string]any{"protocol": 1, "runtime": "fake"})
 		case "session.open":
 			mu.Lock()
-			sessions[p.SessionID] = &fakeSession{cwd: p.Cwd, resumed: p.Resume, interrupt: make(chan struct{}, 1), steer: make(chan steerMsg)}
+			sessions[p.SessionID] = &fakeSession{cwd: p.Cwd, skills: p.Skills, resumed: p.Resume, interrupt: make(chan struct{}, 1), steer: make(chan steerMsg)}
 			mu.Unlock()
 			reply(struct{}{})
 			event(p.SessionID, map[string]any{"kind": "init", "model": "fake-model", "cwd": p.Cwd, "claudeVersion": "0.0.0", "permissionMode": "fake"})
@@ -435,6 +440,12 @@ func turn(s *fakeSession, sid, uuid, text string, event func(string, map[string]
 		s.closeDelay = time.Duration(ms) * time.Millisecond
 		s.bgMu.Unlock()
 		result = "slow to close"
+	case "Write":
+		if len(s.skills) > 0 && strings.HasPrefix(text, "Write the pull request") {
+			result = skillTurn(s, sid, uuid, text, event)
+		} else {
+			result = fmt.Sprintf("echo: %s resume=%v", text, s.resumed)
+		}
 	case "fail":
 		status, errText = "failed", "scripted failure"
 	case "lose":
@@ -455,4 +466,60 @@ func turn(s *fakeSession, sid, uuid, text string, event func(string, map[string]
 		end["error"] = errText
 	}
 	event(sid, end)
+}
+
+// runCommand runs a command with sh in dir, as Claude's Bash tool does, with its tool use and result
+// events, and returns its output.
+func runCommand(sid, dir, command string, env []string, event func(string, map[string]any)) string {
+	toolID := fmt.Sprintf("toolu_%d", time.Now().UnixNano())
+	event(sid, map[string]any{"kind": "assistant", "messageId": "m-" + toolID, "blocks": []any{
+		map[string]any{"type": "tool_use", "id": toolID, "name": "Bash", "input": map[string]any{"command": command}},
+	}})
+	cmd := proc.Command("sh", "-c", command)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), env...)
+	out, err := cmd.CombinedOutput()
+	event(sid, map[string]any{"kind": "tool_result", "toolUseId": toolID, "text": string(out), "isError": err != nil})
+	return string(out)
+}
+
+// runLine finds the commands a SKILL.md gives as "Run `command`".
+var runLine = regexp.MustCompile("Run `([^`]+)`")
+
+// skillTurn writes pull request text as Claude would with the session's skills: it loads each from the
+// user's skills folder ($CLAUDE_CONFIG_DIR or ~/.claude) or the project's (.claude/skills under the
+// session's folder), runs the commands its SKILL.md gives as "Run `command`" in the session's folder
+// with CLAUDE_SKILL_DIR set to the skill's folder, and answers, after a line about what it did, with
+// the prompt's task title and the commands' output as the description.
+func skillTurn(s *fakeSession, sid, uuid, text string, event func(string, map[string]any)) string {
+	title := ""
+	for _, l := range strings.Split(text, "\n") {
+		if v, ok := strings.CutPrefix(l, "Task title: "); ok {
+			title = v
+		}
+	}
+	claude := os.Getenv("CLAUDE_CONFIG_DIR")
+	if claude == "" {
+		home, _ := os.UserHomeDir()
+		claude = filepath.Join(home, ".claude")
+	}
+	var outs []string
+	for _, name := range s.skills {
+		for _, dir := range []string{filepath.Join(claude, "skills", name), filepath.Join(s.cwd, ".claude", "skills", name)} {
+			body, err := os.ReadFile(filepath.Join(dir, "SKILL.md"))
+			if err != nil {
+				continue
+			}
+			toolID := fmt.Sprintf("toolu_%d", time.Now().UnixNano())
+			event(sid, map[string]any{"kind": "assistant", "messageId": "m-" + toolID, "blocks": []any{
+				map[string]any{"type": "tool_use", "id": toolID, "name": "Skill", "input": map[string]any{"skill": name}},
+			}})
+			event(sid, map[string]any{"kind": "tool_result", "toolUseId": toolID, "text": "Launching skill: " + name})
+			for _, m := range runLine.FindAllStringSubmatch(string(body), -1) {
+				outs = append(outs, strings.TrimSpace(runCommand(sid, s.cwd, m[1], []string{"CLAUDE_SKILL_DIR=" + dir}, event)))
+			}
+			break
+		}
+	}
+	return "I used the skills.\n\nTITLE: " + title + "\nDESCRIPTION:\n" + strings.Join(outs, "\n")
 }

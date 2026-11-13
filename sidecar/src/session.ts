@@ -305,6 +305,8 @@ export class Session {
       ...(p.additionalDirectories?.length ? { additionalDirectories: p.additionalDirectories } : {}),
       ...(p.tools ? { tools: p.tools } : {}),
       ...(p.disallowedTools?.length ? { disallowedTools: p.disallowedTools } : {}),
+      ...(p.skills ? { skills: p.skills } : {}),
+      ...(p.ephemeral ? { persistSession: false } : {}),
       ...claudeExecutable(p.claudePath),
       env: { ...process.env, ...p.env },
       abortController: abort,

@@ -32,8 +32,6 @@ import (
 const (
 	maxSkillEntries  = 500      // skills and commands listed
 	maxSkillHead     = 16 << 10 // bytes read of a file for its frontmatter
-	maxSkillFile     = 64 << 10 // bytes read of a skill for its instructions
-	maxSkillRules    = 8 << 10  // bytes of one skill's instructions given to the PR text model
 	maxCommandDepth  = 3        // folders under commands/
 	syncedSkillsName = "anthropic-skills"
 )
@@ -319,39 +317,26 @@ func readMarkdown(path string, limit int64) (front, body string, err error) {
 	return front, body, nil
 }
 
-// skillRules reads the instructions of the skills named, as found for a session in project, for the
-// PR text model, which can't run tools to load them itself: each skill's SKILL.md without its
-// frontmatter, cut at maxSkillRules. missing lists the names not found.
-func skillRules(project string, names []string) (rules []namedText, missing []string) {
+// skillPaths finds the SKILL.md of each skill named (not commands), as found for a session in project:
+// found has each one's name and path. missing lists the names not found.
+func skillPaths(project string, names []string) (found []namedText, missing []string) {
 	if len(names) == 0 {
 		return nil, nil
 	}
-	found := map[string]string{}
+	paths := map[string]string{}
 	for _, f := range findSkills(project) {
 		if !f.Command {
-			found[f.Name] = f.path
+			paths[f.Name] = f.path
 		}
 	}
 	for _, n := range names {
-		path, ok := found[n]
-		if !ok {
+		if path, ok := paths[n]; ok && isFile(path) {
+			found = append(found, namedText{n, path})
+		} else {
 			missing = append(missing, n)
-			continue
-		}
-		_, body, err := readMarkdown(path, maxSkillFile)
-		if err != nil {
-			missing = append(missing, n)
-			continue
-		}
-		body = strings.TrimSpace(body)
-		if len(body) > maxSkillRules {
-			body = strings.TrimSpace(clipText(body, maxSkillRules)) + "\n(The rest of this skill is cut.)"
-		}
-		if body != "" {
-			rules = append(rules, namedText{n, body})
 		}
 	}
-	return rules, missing
+	return found, missing
 }
 
 // namedText is a text and what it is called.
