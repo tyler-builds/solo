@@ -31,8 +31,8 @@ func waitingOnBackground(f *fakeBackend) core.ThreadView {
 }
 
 // A thread waiting on background work is shown at work, not ready: in the rail's Working group with
-// the background mark, counted apart in Solo's bar, and with what it waits on above its composer. Its
-// header and its merge card agree that it can't land yet, and say why.
+// the background mark, and with what it waits on above its composer. Its header and its merge card
+// agree that it can't land yet, and say why.
 func TestBackgroundWorkIsShownAndBlocksLanding(t *testing.T) {
 	f := demoBackend()
 	th := waitingOnBackground(f)
@@ -42,12 +42,6 @@ func TestBackgroundWorkIsShownAndBlocksLanding(t *testing.T) {
 
 	if !u.Get("rail-working").HasRole(access.RoleButton, th.Title) {
 		t.Fatal("the thread is not in the rail's Working group")
-	}
-	if !u.HasRole(access.RoleButton, "1 in background: open the newest") {
-		t.Fatal("Solo's bar doesn't count the thread waiting on background work")
-	}
-	if u.HasRole(access.RoleButton, "1 ready: open the newest") {
-		t.Fatal("Solo's bar still counts it ready")
 	}
 	if line := u.Get("background-line").Text(); !strings.Contains(line, "Waiting on background work · 4m 1") ||
 		!strings.Contains(line, "Run benchmarks on the finished branch") {

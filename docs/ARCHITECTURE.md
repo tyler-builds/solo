@@ -175,8 +175,8 @@ Raw `SDKMessage`s are also appended to a per-session JSONL file for debugging an
   with `run_in_background` or a background subagent still runs. The CLI sends
   `background_tasks_changed` with every live background task (replace semantics; ambient tasks are
   left out), which the sidecar forwards as a `background` event. A turn that completes with any left
-  ends `background`, not `idle`: shown at work (rail's Working group, an hourglass, "N in background"
-  in Solo's bar, the pinned line says what and for how long), landing disabled in the header and the
+  ends `background`, not `idle`: shown at work (rail's Working group, an hourglass, the pinned line
+  says what and for how long), landing disabled in the header and the
   merge card alike, `propose_merge` refused, and the orchestrator told it isn't finished. When a task
   finishes by itself (`task_notification` completed or failed) the list empties and the CLI starts a
   turn of its own to read it, so the thread stays `background` until that turn ends (30 s fallback if
