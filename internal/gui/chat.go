@@ -115,9 +115,14 @@ type row struct {
 	item   *core.Item
 	steps  []*core.Item // a run of tool calls and thoughts, shown folded
 	thread string       // the thread the folded steps act on, if they all act on one
-	quiet  bool         // in Solo's chat: the steps of one turn, folded into one muted line
 	live   *core.LiveBlock
 	busy   bool // the "working" line at the end of a running turn
+	// In Solo's chat (see summary.go): topic marks the first row of an exchange, which a rule sets apart
+	// from the one before; summary is the line that says in words what the threads in said reported and
+	// what Solo did in steps.
+	topic   bool
+	summary bool
+	said    []*core.Item
 }
 
 // isStep reports whether an item is part of the agent's working steps rather than its conversation.
@@ -157,9 +162,14 @@ func (a *App) transcript(ctx *ui.Context, v core.ThreadView, items []core.Item, 
 		return ui.Component(func(rctx *ui.Context) ui.Element {
 			a.markBuilt(rctx, scope, key, true)
 			rctx.OnDispose(func() { a.markBuilt(rctx, scope, key, false) })
+			col := ui.Div().Column().Width(ui.Full).MaxWidth(ui.Px(chatMaxWidth)).PaddingY(space1 + 2)
+			if r.topic {
+				// Solo's chat rules off each exchange from the one before.
+				col = col.PaddingTop(space3).
+					Child(ui.Div().Height(ui.Px(1)).Shrink(0).Background(rctx.Theme().Border).MarginBottom(space4).AccessHidden())
+			}
 			return ui.Div().Column().Align(ui.Center).PaddingX(gutter(rctx)).
-				Child(ui.Div().Column().Width(ui.Full).MaxWidth(ui.Px(chatMaxWidth)).PaddingY(space1 + 2).
-					Child(a.rowView(rctx, v, r)))
+				Child(col.Child(a.rowView(rctx, v, r)))
 		})
 	}).Handle(h).SelectionContainer().Key(scope + "-transcript").Label("Conversation").
 		Style(ui.Style{Grow: 1, Padding: ui.Edges{Top: space4, Bottom: space2}}).
@@ -303,14 +313,17 @@ func (a *App) transcriptRows(scope string, items []core.Item) []row {
 	} else {
 		rows = a.threadRows(items)
 	}
-	rows = a.mergeHandoffs(rows)
+	if scope == "orch" {
+		rows = a.summarized(a.mergeHandoffs(rows))
+	}
 	a.rows[scope] = &rowCache{first: first, n: len(items), threads: threads, rows: rows}
 	return rows[:len(rows):len(rows)]
 }
 
-// orchRows lays out Solo's chat one exchange at a time: each message to Solo, one quiet folded line
-// for everything Solo did while it worked, then its cards and its reply. Only Solo's last message of
-// a turn shows in full; what it said between steps folds in with them.
+// orchRows lays out Solo's chat one exchange at a time: each message to Solo, a row of everything Solo
+// did while it worked, then its cards and its reply. Only Solo's last message of a turn shows in full;
+// what it said between steps goes with them. The steps and the thread updates are then said in a
+// sentence (see summarized).
 func (a *App) orchRows(items []core.Item) []row {
 	rows := make([]row, 0, len(items)/2+4)
 	var seg []*core.Item
@@ -345,7 +358,7 @@ func (a *App) orchRows(items []core.Item) []row {
 		// Thoughts alone aren't worth a line. The key is the exchange's first item, so the line keeps
 		// its open state as steps arrive.
 		if worked {
-			rows = append(rows, row{key: fmt.Sprintf("g%d", seg[0].ID), steps: fold, thread: thread, quiet: true})
+			rows = append(rows, row{key: fmt.Sprintf("g%d", seg[0].ID), steps: fold, thread: thread})
 		}
 		rows = append(rows, rest...)
 		seg = nil
@@ -407,8 +420,8 @@ func (a *App) threadRows(items []core.Item) []row {
 	return rows
 }
 
-// mergeHandoffs folds the actions Solo took on a thread right after that thread's update into the
-// update's row, so one handoff reads as one line.
+// mergeHandoffs puts the actions Solo took on a thread right after that thread's update in the
+// update's row, so one handoff is one row. A handoff that ends in a merge card is the card alone.
 func (a *App) mergeHandoffs(rows []row) []row {
 	out := rows[:0:0]
 	for i := 0; i < len(rows); i++ {
@@ -433,7 +446,7 @@ func (a *App) mergeHandoffs(rows []row) []row {
 		out = append(out, r)
 	}
 	// A handoff that ends in a merge proposal for the same thread is said by the card alone: the
-	// actions fold into the card and the update line goes.
+	// update and the actions go.
 	final := out[:0:0]
 	for i := 0; i < len(out); i++ {
 		r := out[i]
@@ -444,7 +457,6 @@ func (a *App) mergeHandoffs(rows []row) []row {
 		if steps != nil && thread != "" && i+1 < len(out) {
 			next := out[i+1]
 			if next.item != nil && next.item.Kind == core.ItemProposal && next.item.Ref == thread {
-				next.steps = steps
 				final = append(final, next)
 				i++
 				continue
@@ -503,19 +515,8 @@ func (a *App) rowView(ctx *ui.Context, v core.ThreadView, r row) ui.Element {
 			return thinkingView(ctx, r.live.Text, true)
 		}
 		return a.md(ctx, r.live.Text, viewBases(v))
-	case r.steps != nil && r.item != nil && r.item.Kind == core.ItemProposal:
-		var d core.ProposalData
-		r.item.Decode(&d)
-		return a.proposalCard(ctx, d, r.steps)
-	case r.steps != nil && r.item != nil:
-		var d core.UserData
-		r.item.Decode(&d)
-		if us := a.parseUpdates(t, d.Text); len(us) == 1 {
-			return a.updateWithSteps(ctx, us[0], r.steps)
-		}
-		return a.updateView(ctx, d.Text)
-	case r.steps != nil && r.quiet:
-		return a.quietSteps(ctx, r.steps)
+	case r.summary:
+		return a.summaryView(ctx, r)
 	case r.steps != nil:
 		return a.stepsView(ctx, r.steps, r.thread)
 	}
@@ -587,7 +588,7 @@ func (a *App) stepView(ctx *ui.Context, it *core.Item, v core.ThreadView) ui.Ele
 	case core.ItemProposal:
 		var d core.ProposalData
 		it.Decode(&d)
-		return a.proposalCard(ctx, d, nil)
+		return a.proposalCard(ctx, d)
 	case core.ItemTurn:
 		var d core.TurnData
 		it.Decode(&d)
@@ -844,95 +845,6 @@ func (a *App) updateView(ctx *ui.Context, text string) ui.Element {
 	return col
 }
 
-// updateWithSteps is a thread's update together with what Solo did about it right after: one line,
-// with an "N actions" toggle that unfolds the actions under it.
-func (a *App) updateWithSteps(ctx *ui.Context, u update, steps []*core.Item) ui.Element {
-	return ui.Component(func(ctx *ui.Context) ui.Element {
-		t := ctx.Theme()
-		open := ui.Local(ctx, "open", false)
-		label := a.actionsLabel(steps)
-		toggle := ui.Div().Row().Align(ui.Center).Gap(space1).PaddingX(space2).Height(ui.Px(22)).Radius(radiusS).Shrink(0).
-			Cursor(ui.CursorPointer).Hover(ui.Style{Background: t.SurfaceActive}).
-			Role(access.RoleButton).Label("Show what Solo did").TabIndex(0).
-			OnClick(func() { open.Update(func(o bool) bool { return !o }) }).
-			Child(ui.Text(label).FontSize(12).TextColor(t.TextSubtle).NoWrap()).
-			Child(ui.Icon(map[bool]*icons.Icon{true: icons.ChevronDown, false: icons.ChevronRight}[open.Get()]).Size(12).Color(t.TextSubtle))
-		col := ui.Div().Column().Gap(2).Child(a.updateRow(ctx, u, toggle))
-		if open.Get() {
-			inner := unfoldedSteps(ctx)
-			for _, it := range steps {
-				inner = inner.Child(a.stepView(ctx, it, core.ThreadView{}))
-			}
-			col = col.Child(inner)
-		}
-		return col
-	})
-}
-
-// countSteps counts the folded steps worth naming: tool calls and words, not thoughts.
-func countSteps(steps []*core.Item) int {
-	n := 0
-	for _, it := range steps {
-		if it.Kind != core.ItemThinking {
-			n++
-		}
-	}
-	return n
-}
-
-// actionsLabel names what Solo did about a thread update: the one tool call, or how many steps.
-func (a *App) actionsLabel(steps []*core.Item) string {
-	var tools []*core.Item
-	for _, it := range steps {
-		if it.Kind == core.ItemTool {
-			tools = append(tools, it)
-		}
-	}
-	if n := countSteps(steps); n == 1 && len(tools) == 1 {
-		_, verb, _ := a.describeTool(itemTool(tools[0]))
-		return verb
-	} else if n == 1 {
-		return "1 action"
-	} else {
-		return fmt.Sprintf("%d actions", n)
-	}
-}
-
-// quietSteps is everything Solo did in one turn, folded into a single muted line above its reply.
-func (a *App) quietSteps(ctx *ui.Context, steps []*core.Item) ui.Element {
-	return ui.Component(func(ctx *ui.Context) ui.Element {
-		t := ctx.Theme()
-		open := ui.Local(ctx, "open", false)
-		failures := 0
-		for _, it := range steps {
-			if it.Kind == core.ItemTool && itemTool(it).IsError {
-				failures++
-			}
-		}
-		n := countSteps(steps)
-		label := fmt.Sprintf("%d steps", n)
-		if n == 1 {
-			label = "1 step"
-		}
-		head := lineRow().Align(ui.Center).Gap(space1).Height(ui.Px(22)).Radius(radiusS).
-			AlignSelf(ui.Start).Cursor(ui.CursorPointer).Hover(ui.Style{Background: t.SurfaceHover}).
-			Role(access.RoleButton).Label("Show what Solo did: " + label).TabIndex(0).
-			OnClick(func() { open.Update(func(o bool) bool { return !o }) }).
-			Child(ui.Text(label).FontSize(12).TextColor(t.TextSubtle).NoWrap()).
-			Child(ui.If(failures > 0, ui.Text(fmt.Sprintf("· %d failed", failures)).FontSize(12).TextColor(t.Danger).NoWrap())).
-			Child(ui.Icon(map[bool]*icons.Icon{true: icons.ChevronDown, false: icons.ChevronRight}[open.Get()]).Size(12).Color(t.TextSubtle))
-		col := ui.Div().Column().Gap(2).Child(head)
-		if open.Get() {
-			inner := unfoldedSteps(ctx)
-			for _, it := range steps {
-				inner = inner.Child(a.stepView(ctx, it, core.ThreadView{}))
-			}
-			col = col.Child(inner)
-		}
-		return col
-	})
-}
-
 func itemTool(it *core.Item) core.ToolData {
 	var d core.ToolData
 	it.Decode(&d)
@@ -1167,11 +1079,10 @@ func turnView(ctx *ui.Context, d core.TurnData) ui.Element {
 }
 
 // proposalCard is the orchestrator's recommendation to merge a thread, with the Merge button.
-func (a *App) proposalCard(ctx *ui.Context, d core.ProposalData, steps []*core.Item) ui.Element {
+func (a *App) proposalCard(ctx *ui.Context, d core.ProposalData) ui.Element {
 	return ui.Component(func(ctx *ui.Context) ui.Element {
 		t := ctx.Theme()
 		th, _ := a.thread(d.ThreadID)
-		open := ui.Local(ctx, "steps-open", false)
 		var actions *ui.DivElement
 		switch th.Status {
 		case core.StatusMerged, core.StatusDiscarded:
@@ -1214,41 +1125,14 @@ func (a *App) proposalCard(ctx *ui.Context, d core.ProposalData, steps []*core.I
 					return append(items, ui.MenuItem{Label: "Discard thread…", Icon: icons.Trash, OnClick: func() { a.confirmDiscard(th) }})
 				}))
 		}
-		if n := countSteps(steps); n > 0 {
-			label := fmt.Sprintf("%d steps by Solo", n)
-			if n == 1 {
-				label = "1 step by Solo"
-			}
-			tip := "What Solo did to check this thread"
-			if a.chatWidth(ctx) < 640 {
-				label = fmt.Sprintf("%d steps", n) // narrow: shorter, with its tooltip
-				if n == 1 {
-					label = "1 step"
-				}
-			}
-			actions = actions.Child(ui.Div().Grow(1)).
-				Child(ui.Div().Row().Align(ui.Center).Gap(space1).PaddingX(space2).Height(ui.Px(24)).Radius(radiusS).
-					Cursor(ui.CursorPointer).Hover(ui.Style{Background: t.SurfaceHover}).
-					Role(access.RoleButton).Label("Show " + tip).TabIndex(0).Shrink(0).Tooltip(tip).
-					OnClick(func() { open.Update(func(o bool) bool { return !o }) }).
-					Child(ui.Text(label).FontSize(12).TextColor(t.TextSubtle).NoWrap()).
-					Child(ui.Icon(map[bool]*icons.Icon{true: icons.ChevronDown, false: icons.ChevronRight}[open.Get()]).Size(12).Color(t.TextSubtle)))
-		}
 		if isCompact(ctx) {
-			actions.Wrap() // the steps go under the buttons there
+			actions.Wrap()
 		}
 		card := ui.Div().Column().Gap(space3).Padding(space4).Radius(radiusL).Background(t.Surface).Key("proposal-"+d.ThreadID).
 			Border(1, t.BorderStrong).
 			Child(a.proposalHeader(ctx, th)).
 			Child(a.md(ctx, d.Summary, a.threadBases(d.ThreadID))).
 			Child(actions)
-		if open.Get() {
-			inner := ui.Div().Column().Gap(2).PaddingTop(space2).BorderEdges(ui.Edges{Top: 1}, t.Border)
-			for _, it := range steps {
-				inner = inner.Child(a.stepView(ctx, it, core.ThreadView{}))
-			}
-			card = card.Child(inner)
-		}
 		return card
 	})
 }
