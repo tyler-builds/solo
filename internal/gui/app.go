@@ -25,7 +25,7 @@ import (
 )
 
 const (
-	railWidth       = 304
+	railWidth       = 320
 	railWidthNarrow = 248 // below narrowWindow, so the chat and a thread still fit side by side
 	narrowWindow    = 1200
 	// Below compactWindow, as on a phone, there is room for one conversation at a time: Solo's, or
@@ -662,8 +662,8 @@ func (a *App) Root(ctx *ui.Context) ui.Element {
 		Child(ui.Toaster().Key("toaster"))
 }
 
-// titleBar is the window's own title bar: a "go to a thread" box in the middle, and the window's buttons.
-// It carries no Solo mark: the orchestrator's header just below already shows the mark and the name.
+// titleBar is the window's own title bar: the Solo mark at its start, over the rail, a "go to a thread"
+// box in the middle, and the window's buttons.
 func (a *App) titleBar(ctx *ui.Context) ui.Element {
 	t := ctx.Theme()
 	if isCompact(ctx) {
@@ -692,6 +692,7 @@ func (a *App) titleBar(ctx *ui.Context) ui.Element {
 	trailing = append(trailing, ui.IconButton(icons.Settings).Ghost().Small().Label("Settings").Tooltip("Settings").
 		Key("open-settings").OnClick(func() { a.settings.Set(true) }))
 	return ui.TitleBar().Height(ui.Px(40)).
+		Child(ui.Div().PaddingLeft(space6).Child(brandMark(20))). // in line with the rail's headings
 		Center(find).
 		Trailing(trailing...)
 }
@@ -800,8 +801,8 @@ func inset(ctx *ui.Context, content ui.Element) *ui.DivElement {
 		Child(content)
 }
 
-// center holds the thread rail on the left, the orchestrator, and, when a thread is open, its panel on
-// the right: it slides in from the right edge to half the space (the user can drag the divider) and
+// center holds the thread rail on the left, in a panel of its own, the orchestrator, and, when a thread
+// is open, its panel on the right: it slides in from the right edge to half the space (the user can drag the divider) and
 // slides back out when closed.
 func (a *App) center(ctx *ui.Context) ui.Element {
 	t := ctx.Theme()
@@ -853,7 +854,8 @@ func (a *App) center(ctx *ui.Context) ui.Element {
 		main = ui.Div().Column().Size(ui.Full, ui.Full).PaddingRight(space2).Child(orch)
 	}
 	return ui.Div().Row().Size(ui.Full, ui.Full).
-		Child(ui.Div().Width(ui.Px(railW(ctx))).Height(ui.Full).Shrink(0).Child(ui.Component(a.rail))).
+		Child(ui.Div().Width(ui.Px(railW(ctx))).Height(ui.Full).Shrink(0).PaddingX(space2).PaddingBottom(space2).
+			Child(inset(ctx, ui.Component(a.rail)))).
 		Child(ui.Div().Column().Grow(1).Basis(ui.Px(0)).MinWidth(ui.Px(0)).Height(ui.Full).Child(main))
 }
 

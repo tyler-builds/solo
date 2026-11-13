@@ -130,7 +130,8 @@ func (a *App) rail(ctx *ui.Context) ui.Element {
 			list = list.Child(a.threadRow(ctx, th))
 		}
 	}
-	return ui.Div().Column().Size(ui.Full, ui.Full).Background(t.Panel).
+	// No background of its own: it shows its panel's in a window, and the drawer's in a compact one.
+	return ui.Div().Column().Size(ui.Full, ui.Full).
 		Child(ui.Component(a.todoList)).
 		Child(head).
 		Child(a.railFilterInput(ctx)).

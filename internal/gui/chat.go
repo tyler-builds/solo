@@ -53,7 +53,6 @@ func (a *App) orchestratorView(ctx *ui.Context) ui.Element {
 		body = a.transcript(ctx, v, items, "orch")
 	}
 	return ui.Div().Column().Grow(1).MinHeight(ui.Px(0)).
-		Child(a.orchestratorBar(ctx, v)).
 		Child(body).
 		Child(ui.Div().Column().Align(ui.Center).PaddingX(gutter(ctx)).PaddingBottom(gutter(ctx) - space2).Shrink(0).
 			Child(ui.Div().Column().Gap(space2).Width(ui.Full).MaxWidth(ui.Px(chatMaxWidth)).
@@ -64,8 +63,8 @@ func (a *App) orchestratorView(ctx *ui.Context) ui.Element {
 		Background(t.Background)
 }
 
-// orchState says what Solo is doing, beside its name: waiting for an answer, working, or waiting on
-// background work. It is empty when Solo is idle.
+// orchState says what Solo is doing, beside its name in a compact window's bar: waiting for an answer,
+// working, or waiting on background work. It is empty when Solo is idle.
 func (a *App) orchState(ctx *ui.Context, v core.ThreadView) *ui.DivElement {
 	t := ctx.Theme()
 	state := ui.Div().Row().Align(ui.Center).Gap(6).Shrink(1).MinWidth(ui.Px(0))
@@ -84,74 +83,6 @@ func (a *App) orchState(ctx *ui.Context, v core.ThreadView) *ui.DivElement {
 			Child(ui.Text("Waiting on " + bgLine(v)).FontSize(12).TextColor(t.TextMuted).Truncate().MinWidth(ui.Px(0)))
 	}
 	return state
-}
-
-func (a *App) orchestratorBar(ctx *ui.Context, v core.ThreadView) ui.Element {
-	t := ctx.Theme()
-	if isCompact(ctx) {
-		return nil // the window's bar names Solo and says what it is doing (compactBar)
-	}
-	return ui.Div().Row().Align(ui.Center).Gap(space3).PaddingX(space4).Height(ui.Px(52)).Shrink(0).
-		BorderEdges(ui.Edges{Bottom: 1}, t.Border).
-		Child(brandMark(20)).
-		Child(ui.Text("Solo").FontSize(14).Semibold().NoWrap()).
-		Child(a.orchState(ctx, v)).
-		Child(ui.Div().Grow(1)).
-		Child(a.threadsSummary(ctx))
-}
-
-// threadsSummary sums up the threads at the right of Solo's bar, as the rail groups them: how many
-// work, wait on background work, failed and are ready. Each opens the newest thread of its group.
-func (a *App) threadsSummary(ctx *ui.Context) ui.Element {
-	t := ctx.Theme()
-	type group struct {
-		title, status, label string
-		statuses             []string // the shown statuses it counts
-	}
-	// Questions have their own line above the composer, so they aren't counted again here. Threads
-	// waiting on background work sit in the rail's Working group, but are counted apart: they aren't
-	// busy, and they aren't ready either.
-	groups := []group{
-		{"Working", core.StatusRunning, "working", []string{core.StatusRunning, core.StatusStarting, core.StatusQueued}},
-		{"Waiting on background work", core.StatusBackground, "in background", []string{core.StatusBackground}},
-		{"Failed", core.StatusFailed, "failed", railStatuses("Failed")},
-		{"Ready", core.StatusIdle, "ready", railStatuses("Ready")},
-	}
-	row := ui.Div().Row().Align(ui.Center).Gap(space1).Shrink(0)
-	for _, g := range groups {
-		var in []core.ThreadView
-		for _, th := range a.threads.Get() {
-			if inRail(th) && slices.Contains(g.statuses, shownStatus(th)) {
-				in = append(in, th)
-			}
-		}
-		if len(in) == 0 {
-			continue
-		}
-		slices.SortStableFunc(in, func(x, y core.ThreadView) int { return y.UpdatedAt.Compare(x.UpdatedAt) })
-		text := fmt.Sprintf("%d %s", len(in), g.label)
-		shown := text
-		first := in[0].ID
-		row = row.Child(ui.Div().Row().Align(ui.Center).Gap(6).PaddingLeft(space2-2).PaddingRight(space2+2).
-			Height(ui.Px(24)).Radius(999).Border(1, t.Border).
-			Cursor(ui.CursorPointer).Hover(ui.Style{Background: t.SurfaceHover, BorderColor: t.BorderStrong}).
-			Role(access.RoleButton).Label(text + ": open the newest").TabIndex(0).
-			Tooltip(g.title + ": open the newest · Ctrl+J opens the next that needs you").
-			OnClick(func() { a.openThread(first, "conversation") }).
-			Child(statusMark(ctx, g.status)).
-			Child(ui.Text(shown).FontSize(12).TextColor(t.TextMuted).NoWrap()))
-	}
-	return row
-}
-
-// railStatuses are the shown statuses of the rail group with the title.
-func railStatuses(title string) []string {
-	for _, g := range railGroups {
-		if g.title == title {
-			return g.statuses
-		}
-	}
-	return nil
 }
 
 func (a *App) welcome(ctx *ui.Context) ui.Element {
@@ -248,12 +179,23 @@ func (a *App) transcript(ctx *ui.Context, v core.ThreadView, items []core.Item, 
 		}))
 	}
 	return view.
+		Child(ui.If(!isCompact(ctx), topFade(ctx))). // a compact window has its bar above the chat
 		Child(ui.Component(func(ctx *ui.Context) ui.Element {
 			return jumpControl(ctx, h, topJump(a.offscreenActions(rows, true)), true)
 		})).
 		Child(ui.Component(func(ctx *ui.Context) ui.Element {
 			return jumpControl(ctx, h, bottomJump(atEnd.Get(), a.offscreenActions(rows, false)), false)
 		}))
+}
+
+// topFade fades the top of Solo's chat into its panel, which has no bar above it: a message scrolling
+// away dissolves at the panel's edge rather than being cut by it. It is the shadow, in the panel's
+// color, of a strip just above the chat, where the panel clips the strip itself: nothing lies over the
+// rows, so they still take clicks and the wheel right up to the edge.
+func topFade(ctx *ui.Context) ui.Element {
+	const strip = 64 // tall enough that its shadow is solid along its edge
+	return ui.Div().Absolute().Left(-space8).Right(-space8).Top(-strip).Height(ui.Px(strip)).AccessHidden().
+		Shadow(ui.Shadow{Y: 16, Blur: 30, Color: ctx.Theme().Background})
 }
 
 // listHandle is the handle of the transcript list of scope ("orch", or "thread-" and its ID).

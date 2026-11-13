@@ -193,6 +193,8 @@ func (a Asset) mime() string {
 		return "image/svg+xml"
 	case ".png":
 		return "image/png"
+	case ".ico":
+		return "image/x-icon"
 	}
 	return "application/octet-stream"
 }

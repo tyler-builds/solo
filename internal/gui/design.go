@@ -1,13 +1,11 @@
 package gui
 
 // Solo's design system, after uas (~/code/uas/internal/gui/design.go): neutral near-black or white
-// surfaces with hairline borders, and crimson kept for the brand mark and links. Primary actions are
+// surfaces with hairline borders, and the indigo of the brand mark kept for links. Primary actions are
 // high-contrast neutral (white on dark, near-black on light), so no action reads as a warning.
-// Danger is a deeper, pure red, so failures stay apart from the pinker brand.
 // Pages use these tokens and components rather than raw sizes and colors.
 
 import (
-	"bytes"
 	"embed"
 	_ "embed"
 	"fmt"
@@ -60,8 +58,8 @@ var darkPalette = palette{
 	background: "#0e0e10", panel: "#08080a", surface: "#19191d", surfaceHover: "#202025", surfaceActive: "#2a2a30",
 	border: "#222227", borderStrong: "#313137",
 	text: "#f2f2f4", textMuted: "#acacb6", textSubtle: "#85858f",
-	accent: "#ececf0", accentHover: "#ffffff", accentActive: "#d0d0d6", accentText: "#0e0e10", link: "#ff94aa",
-	brand:   "#ff5a80",
+	accent: "#ececf0", accentHover: "#ffffff", accentActive: "#d0d0d6", accentText: "#0e0e10", link: "#9ca5ff",
+	brand:   "#7b86ff",
 	success: "#3ecf8e", warning: "#f5b544", danger: "#e03e3e", info: "#7aa7ff",
 	scrollbar: "#2e2e34", scrim: "#000000b3",
 }
@@ -70,8 +68,8 @@ var lightPalette = palette{
 	background: "#ffffff", panel: "#efeff2", surface: "#ffffff", surfaceHover: "#e8e8ec", surfaceActive: "#dfdfe5",
 	border: "#e3e3e8", borderStrong: "#d4d4db",
 	text: "#0c0c0e", textMuted: "#4f4f58", textSubtle: "#6c6c76",
-	accent: "#18181b", accentHover: "#2c2c31", accentActive: "#3f3f46", accentText: "#ffffff", link: "#bb1a43",
-	brand:   "#d6214f",
+	accent: "#18181b", accentHover: "#2c2c31", accentActive: "#3f3f46", accentText: "#ffffff", link: "#4450d6",
+	brand:   "#5560e8",
 	success: "#15803d", warning: "#a94e07", danger: "#b91c1c", info: "#2459c7",
 	scrollbar: "#d0d0d6", scrim: "#0c0c0e59",
 }
@@ -84,8 +82,7 @@ func codeColor(t *ui.Theme) ui.Color {
 	return ui.Hex("#0b7a6c")
 }
 
-// workingColor marks work in progress: a calm blue, so a running thread never reads as an error or
-// as the crimson of the brand and primary actions.
+// workingColor marks work in progress: a calm blue, so a running thread never reads as an error.
 func workingColor(t *ui.Theme) ui.Color { return ui.Hex(pal(t).info) }
 
 func pal(t *ui.Theme) palette {
@@ -100,7 +97,7 @@ func Themes() (light, dark *ui.Theme) {
 	light, dark = buildTheme(ui.LightTheme(), lightPalette), buildTheme(ui.DarkTheme(), darkPalette)
 	for _, t := range []*ui.Theme{light, dark} {
 		// Inline code is colored, without a box: a box per word reads as a row of chips.
-		// Teal, so code never reads as an error or as the crimson brand.
+		// Teal, so code never reads as an error or as a link.
 		ui.SetThemeStyle(t, markdown.Style{InlineCode: ui.Style{TextColor: codeColor(t), Background: t.Background}})
 	}
 	return light, dark
@@ -357,16 +354,14 @@ func chip(ctx *ui.Context, label string) *ui.DivElement {
 		Child(ui.Text(label).FontSize(12).TextColor(t.TextMuted).NoWrap())
 }
 
-// The Solo logo: an open ring with one bead in its gap (one agent keeping the work in orbit) on a
-// crimson tile. brand/solo.svg is also the desktop icon, which keeps a margin around the tile; in the
-// app the tile fills the box. Regenerate cmd/solo/icon.png after changing it:
-//
-//	magick -background none -density 576 internal/gui/brand/solo.svg -resize 256x256 PNG32:cmd/solo/icon.png
+// The Solo logo: three indigo petals fanning out from an amber dot, on a dark tile. The desktop icon
+// (cmd/solo/icon.png) and the web client's icons (cmd/solo-web/web: favicon.ico, icon.svg and
+// apple-touch-icon.png) are the same drawing: replace them together with brand/solo.svg.
 //
 //go:embed brand/solo.svg
 var logoSVG []byte
 
-var logo = ui.MustSVG(bytes.Replace(logoSVG, []byte(`viewBox="0 0 128 128"`), []byte(`viewBox="8 8 112 112"`), 1))
+var logo = ui.MustSVG(logoSVG)
 
 // BrandMark is Solo's mark, for screens outside this package (the web client's).
 func BrandMark(size float32) ui.Element { return brandMark(size) }
@@ -409,7 +404,7 @@ func Fonts() []Font {
 	return out
 }
 
-// statusMark is a thread status's mark: a pulsing crimson dot while it works, a check when it is ready,
+// statusMark is a thread status's mark: a pulsing blue dot while it works, a check when it is ready,
 // and a plain dot otherwise (amber, red, or grey), so no two states look alike.
 func statusMark(ctx *ui.Context, status string) *ui.DivElement {
 	t := ctx.Theme()
