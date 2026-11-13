@@ -209,6 +209,42 @@ func TestThreadHeaderChecksWhenNone(t *testing.T) {
 	}
 }
 
+// A pull request just opened, with no checks reported yet, waits for them: under Waiting for checks,
+// its header and merge card say so rather than that they passed, and it can't merge. Once they're
+// queued they run.
+func TestWaitingForChecksJustOpened(t *testing.T) {
+	a, f, u := checksUI(t)
+	waiting := &forge.PR{Kind: forge.GitHub, Number: 204, URL: "https://github.com/acme/api/pull/4", State: forge.StateOpen,
+		Checks: forge.ChecksWaiting, Blocked: "waiting for checks"}
+	const id = "k3k4k5k6-waiting"
+	f.mu.Lock()
+	f.threads = append(f.threads, checksThread(id, "Trim the audit log", waiting))
+	f.mu.Unlock()
+	a.setThreads(f.Threads())
+	a.railQuery.Set("audit")
+	u.Settle()
+	if got := railGroupOf(t, u, id); got != "Waiting for checks" {
+		t.Errorf("a pull request waiting for its checks is under %q, want Waiting for checks", got)
+	}
+	th, _ := a.thread(id)
+	if cs, ok := mergeChecks(th); !ok || cs.checks != forge.ChecksWaiting || cs.text != "Waiting for checks" {
+		t.Errorf("merge card checks %+v, want waiting for checks", cs)
+	}
+	if th.CanMerge {
+		t.Error("can merge before its checks started")
+	}
+	openChecksThread(a, u, id)
+	key := "thread-checks-" + id
+	if got := u.Get(key).Text(); got != "Waiting for checks" {
+		t.Errorf("header checks %q, want Waiting for checks", got)
+	}
+
+	setChecks(a, f, u, id, forge.CheckCounts{Total: 3, Pending: 3})
+	if got := u.Get(key).Text(); got != "3 running" {
+		t.Errorf("once queued, the header says %q, want 3 running", got)
+	}
+}
+
 func TestChecksTally(t *testing.T) {
 	for _, c := range []struct {
 		counts forge.CheckCounts

@@ -1717,8 +1717,8 @@ func (a *App) cardWhere(ctx *ui.Context, where *ui.DivElement, th core.ThreadVie
 			Child(ui.Text(th.Title).FontSize(12).Medium().Truncate()))
 }
 
-// checksBadge says where a merge's checks stand: passed (or none required), running with how many
-// are done, or failed. A local merge has none to wait for, so it shows as passed. nil before a pull
+// checksBadge says where a merge's checks stand: waiting for them to start, passed (or none
+// required), running with how many are done, or failed. A local merge has none to wait for, so it shows as passed. nil before a pull
 // request is opened, and once the thread has landed.
 func checksBadge(ctx *ui.Context, th core.ThreadView) ui.Element {
 	t := ctx.Theme()
@@ -1752,8 +1752,8 @@ func mergeChecks(th core.ThreadView) (checksState, bool) {
 	return checksState{}, false
 }
 
-// checksLook is the icon and color of where checks stand: a check, a timer while they run, a cross
-// once one fails.
+// checksLook is the icon and color of where checks stand: a dashed circle, muted, until they start,
+// a check, a timer while they run, a cross once one fails.
 func checksLook(ctx *ui.Context, checks string) (*icons.Icon, ui.Color) {
 	t := ctx.Theme()
 	switch checks {
@@ -1761,13 +1761,15 @@ func checksLook(ctx *ui.Context, checks string) (*icons.Icon, ui.Color) {
 		return icons.CircleX, t.Danger
 	case forge.ChecksPending:
 		return icons.Timer, t.Warning
+	case forge.ChecksWaiting:
+		return icons.CircleDashed, t.TextMuted
 	}
 	return icons.CircleCheck, t.Success
 }
 
 // checksState is where a merge's checks stand, as its card says it.
 type checksState struct {
-	checks    string // forge.ChecksPassing, ChecksPending or ChecksFailing
+	checks    string // forge.ChecksPassing, ChecksWaiting, ChecksPending or ChecksFailing
 	text, tip string
 	// n sums the checks of every pull request; counted is false when a forge gave none to sum.
 	n       forge.CheckCounts
@@ -1793,12 +1795,13 @@ func (s checksState) tally() string {
 }
 
 // checksOf sums up the checks of a thread's open pull requests: "Checks: 6/7 passed · 1 running"
-// while they run, "Checks failed: 1 of 7" once one fails (failure wins over running), "Checks passed"
-// when done. A forge that reports no counts (GitLab's one pipeline) gets the plain words.
+// while they run, "Checks failed: 1 of 7" once one fails (failure wins over running), "Waiting for
+// checks" while one's checks haven't started yet (a pull request just opened), "Checks passed" when
+// done. A forge that reports no counts (GitLab's one pipeline) gets the plain words.
 func checksOf(prs []*forge.PR) checksState {
 	var n forge.CheckCounts
 	var failed []string
-	pending, counted := false, true
+	pending, waiting, counted := false, false, true
 	for _, pr := range prs {
 		n.Total += pr.Counts.Total
 		n.Passed += pr.Counts.Passed
@@ -1812,8 +1815,10 @@ func checksOf(prs []*forge.PR) checksState {
 			}
 		case forge.ChecksPending:
 			pending = true
+		case forge.ChecksWaiting:
+			waiting = true
 		}
-		if pr.Checks != forge.ChecksNone && pr.Counts.Total == 0 {
+		if pr.Checks != forge.ChecksNone && pr.Checks != forge.ChecksWaiting && pr.Counts.Total == 0 {
 			counted = false // checks, but no counts to sum
 		}
 	}
@@ -1838,6 +1843,8 @@ func checksOf(prs []*forge.PR) checksState {
 			s.tip = fmt.Sprintf("Waiting for the required checks: %d of %d still running", n.Pending, n.Total)
 		}
 		return s
+	case waiting:
+		return checksState{checks: forge.ChecksWaiting, text: "Waiting for checks", tip: "The checks haven't started yet", n: n, counted: counted}
 	case n.Total == 0 && !slices.ContainsFunc(prs, func(pr *forge.PR) bool { return pr.Checks == forge.ChecksPassing }):
 		return checksState{checks: forge.ChecksPassing, text: "Checks passed", tip: "No checks are required"}
 	}

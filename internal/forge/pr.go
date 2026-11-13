@@ -2,6 +2,8 @@
 // (through glab), using the user's own CLI and its sign-in.
 package forge
 
+import "time"
+
 // Kind is a forge.
 type Kind string
 
@@ -25,9 +27,12 @@ type Check struct {
 	URL  string `json:"url,omitempty"`
 }
 
-// Checks states.
+// Checks states. ChecksWaiting is a pull request the forge reports no checks on yet: right after it
+// opens or gets new commits, a forge takes a few seconds to queue the checks that run on it, so no
+// checks may still mean some are on their way. Solo's core settles it to ChecksNone once none can be.
 const (
 	ChecksNone    = "none"
+	ChecksWaiting = "waiting"
 	ChecksPending = "pending"
 	ChecksPassing = "passing"
 	ChecksFailing = "failing"
@@ -56,7 +61,7 @@ type PR struct {
 	URL    string  `json:"url"`
 	Number int     `json:"number"`
 	State  string  `json:"state"`  // StateOpen, StateMerged or StateClosed
-	Checks string  `json:"checks"` // ChecksNone, ChecksPending, ChecksPassing or ChecksFailing
+	Checks string  `json:"checks"` // ChecksNone, ChecksWaiting, ChecksPending, ChecksPassing or ChecksFailing
 	Failed []Check `json:"failed,omitempty"`
 	// Counts says how many checks passed, failed and are still running.
 	Counts    CheckCounts `json:"counts,omitzero"`
@@ -67,4 +72,7 @@ type PR struct {
 	Blocked   string `json:"blocked,omitempty"`
 	// Head is the branch it merges from, as the forge reports it ("" before Solo read it).
 	Head string `json:"head,omitempty"`
+	// ChecksSince is when its head last changed, so its checks started over: when it opened, or new
+	// commits were pushed to it. Zero when not known.
+	ChecksSince time.Time `json:"checksSince,omitzero"`
 }

@@ -275,7 +275,7 @@ func (c *Client) Open(ctx context.Context, dir, base, head, title, body string, 
 		return PR{}, fmt.Errorf("couldn't find the %s's address in: %s", c.Kind.Noun(), lastLines(out, 3))
 	}
 	n, _ := strconv.Atoi(m[1])
-	pr := PR{Kind: c.Kind, URL: m[0], Number: n, State: StateOpen, Checks: ChecksPending, Draft: draft}
+	pr := PR{Kind: c.Kind, URL: m[0], Number: n, State: StateOpen, Checks: ChecksWaiting, Draft: draft, ChecksSince: time.Now()}
 	if v, err := c.View(ctx, dir, pr); err == nil {
 		pr = v
 	}
@@ -354,7 +354,7 @@ func (c *Client) View(ctx context.Context, dir string, pr PR) (PR, error) {
 		return c.viewGitLab(ctx, dir, pr)
 	}
 	out, err := c.run(ctx, dir, "pr", "view", pr.URL, "--json",
-		"number,url,state,isDraft,statusCheckRollup,autoMergeRequest,mergeStateStatus,reviewDecision,headRefName")
+		"number,url,state,isDraft,statusCheckRollup,autoMergeRequest,mergeStateStatus,reviewDecision,headRefName,createdAt")
 	if err != nil {
 		return pr, err
 	}
@@ -368,6 +368,7 @@ func (c *Client) View(ctx context.Context, dir string, pr PR) (PR, error) {
 		ReviewDecision   string          `json:"reviewDecision"`
 		Head             string          `json:"headRefName"`
 		Rollup           []rollupEntry   `json:"statusCheckRollup"`
+		Created          time.Time       `json:"createdAt"`
 	}
 	if err := json.Unmarshal([]byte(out), &v); err != nil {
 		return pr, fmt.Errorf("reading gh's answer: %w", err)
@@ -379,6 +380,9 @@ func (c *Client) View(ctx context.Context, dir string, pr PR) (PR, error) {
 	}
 	pr.AutoMerge = len(v.AutoMergeRequest) > 0 && string(v.AutoMergeRequest) != "null"
 	pr.Draft = v.IsDraft
+	if v.Created.After(pr.ChecksSince) {
+		pr.ChecksSince = v.Created
+	}
 	failed, counts := tallyChecks(v.Rollup)
 	pr.Failed, pr.Counts = failed, counts
 	switch {
@@ -388,8 +392,8 @@ func (c *Client) View(ctx context.Context, dir string, pr PR) (PR, error) {
 		pr.Checks = ChecksPending
 	case len(v.Rollup) > 0:
 		pr.Checks = ChecksPassing
-	default:
-		pr.Checks = ChecksNone
+	default: // none reported yet: none run, or GitHub hasn't queued them yet
+		pr.Checks = ChecksWaiting
 	}
 	pr.Mergeable, pr.Blocked = false, ""
 	switch v.MergeStateStatus {
@@ -405,7 +409,7 @@ func (c *Client) View(ctx context.Context, dir string, pr PR) (PR, error) {
 		switch {
 		case pr.Checks == ChecksFailing:
 			pr.Blocked = "checks failed"
-		case pr.Checks == ChecksPending:
+		case pr.Checks == ChecksPending || pr.Checks == ChecksWaiting:
 			pr.Blocked = "waiting for checks"
 		case v.ReviewDecision == "REVIEW_REQUIRED" || v.ReviewDecision == "CHANGES_REQUESTED":
 			pr.Blocked = "waiting for review"
@@ -463,13 +467,14 @@ func (c *Client) viewGitLab(ctx context.Context, dir string, pr PR) (PR, error) 
 		return pr, err
 	}
 	var v struct {
-		IID                 int    `json:"iid"`
-		WebURL              string `json:"web_url"`
-		State               string `json:"state"`
-		Draft               bool   `json:"draft"`
-		MergeWhenPipeline   bool   `json:"merge_when_pipeline_succeeds"`
-		DetailedMergeStatus string `json:"detailed_merge_status"`
-		Source              string `json:"source_branch"`
+		IID                 int       `json:"iid"`
+		WebURL              string    `json:"web_url"`
+		State               string    `json:"state"`
+		Draft               bool      `json:"draft"`
+		MergeWhenPipeline   bool      `json:"merge_when_pipeline_succeeds"`
+		DetailedMergeStatus string    `json:"detailed_merge_status"`
+		Source              string    `json:"source_branch"`
+		Created             time.Time `json:"created_at"`
 		HeadPipeline        *struct {
 			Status string `json:"status"`
 			WebURL string `json:"web_url"`
@@ -485,8 +490,11 @@ func (c *Client) viewGitLab(ctx context.Context, dir string, pr PR) (PR, error) 
 	}
 	pr.AutoMerge = v.MergeWhenPipeline
 	pr.Draft = v.Draft
+	if v.Created.After(pr.ChecksSince) {
+		pr.ChecksSince = v.Created
+	}
 	pr.Failed, pr.Counts = nil, CheckCounts{}
-	pr.Checks = ChecksNone
+	pr.Checks = ChecksWaiting // no pipeline yet: none runs, or GitLab hasn't created it yet
 	if p := v.HeadPipeline; p != nil {
 		switch p.Status {
 		case "success":
