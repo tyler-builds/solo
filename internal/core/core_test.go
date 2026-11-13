@@ -461,8 +461,14 @@ func TestDoneRestoreAndDiscardCleanup(t *testing.T) {
 	if err := e.c.Send(ctx, v.ID, "write b.txt more"); err != nil {
 		t.Fatal(err)
 	}
-	// With changes that haven't landed it can still be marked done, after the user confirms.
-	if v = counted(v.ID); v.Changed != 1 || !v.CanMerge || !v.CanDone || !v.Unlanded {
+	// With changes that haven't landed it can still be marked done, after the user confirms. The thread
+	// is idle until the message's turn begins, so wait for what the turn leaves, and not for idle.
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		if v, _ = e.c.Thread(v.ID); v.Status == StatusIdle && !v.InTurn && v.Changed == 1 {
+			break
+		}
+	}
+	if v.Changed != 1 || !v.CanMerge || !v.CanDone || !v.Unlanded {
 		t.Fatalf("after more work %+v", v)
 	}
 

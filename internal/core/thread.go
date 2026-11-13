@@ -1031,6 +1031,10 @@ func (c *Core) handConflicts(ctx context.Context, v ThreadView, p PartView, file
 func (c *Core) mergeResolved(id string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
+	// Whether the thread can merge goes by its count of changed files, which the turn that just ended
+	// is having counted again, and which a count that ran into a merge's commit can have left at none:
+	// count before merging.
+	c.recount(id)
 	// The merge that handed the conflicts over holds the thread until it has returned, which a worker
 	// that finishes at once can beat: wait for it, rather than give the merge up as busy.
 	_, err := c.MergeLocal(ctx, id)
@@ -1369,9 +1373,22 @@ func cleanBranchName(s string) string {
 // actions, finds each repository's forge, pushes new commits to open pull requests, and looks for work
 // that landed outside Solo (findPRs, findLanded).
 func (c *Core) countChanges(id string) {
+	if !c.recount(id) {
+		return
+	}
+	// Work that landed outside Solo's merge and PR buttons (landed.go).
+	lctx, lcancel := context.WithTimeout(context.Background(), time.Minute)
+	defer lcancel()
+	c.findPRs(lctx, id)
+	c.findLanded(lctx, id)
+}
+
+// recount counts the files a worker's branches change and records the counts; false when there was
+// nothing to count, or it couldn't.
+func (c *Core) recount(id string) bool {
 	v, ok := c.Thread(id)
 	if !ok || !v.IsWorker || !v.HasWorktree || Finished(v.Status) {
-		return
+		return false
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -1382,12 +1399,12 @@ func (c *Core) countChanges(id string) {
 			continue
 		}
 		if _, err := os.Stat(p.Worktree); err != nil {
-			return // being removed
+			return false // being removed
 		}
 		files, err := git.Changes(ctx, p.Worktree, p.BaseCommit)
 		if err != nil {
 			c.log.Warn("core: counting changes", "thread", id, "repo", p.Repo, "err", err)
-			return
+			return false
 		}
 		counts[p.Repo], kinds[p.Repo] = len(files), c.forgeFor(p.Repo)
 		if p.PR != nil && p.PR.State == forge.StateOpen && !v.InTurn {
@@ -1398,7 +1415,7 @@ func (c *Core) countChanges(id string) {
 	t := c.threads[id]
 	if t == nil {
 		c.mu.Unlock()
-		return
+		return false
 	}
 	changed := false
 	for _, p := range t.parts {
@@ -1413,11 +1430,7 @@ func (c *Core) countChanges(id string) {
 		nv, _ := c.Thread(id)
 		c.notify(Change{Kind: ChangeThread, ThreadID: id, PrevStatus: nv.Status, Status: nv.Status})
 	}
-	// Work that landed outside Solo's merge and PR buttons (landed.go).
-	lctx, lcancel := context.WithTimeout(context.Background(), time.Minute)
-	defer lcancel()
-	c.findPRs(lctx, id)
-	c.findLanded(lctx, id)
+	return true
 }
 
 // removeAttachments deletes the images of a discarded thread's messages that no other thread uses

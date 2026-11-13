@@ -242,7 +242,9 @@ func TestDropMentionsFiles(t *testing.T) {
 	f := demoBackend()
 	a, u := newUI(t, f)
 	a.openThread("a1f3c9d2-oauth", "conversation")
-	u.Frame()
+	// The drop goes where the composer is: wait until the panel has slid in, and it is all on screen.
+	u.WaitFor("the panel to slide in", func() bool { return a.panelAnim.Peek() == 1 })
+	u.Settle()
 	th, _ := a.thread("a1f3c9d2-oauth")
 	dir := th.WorktreePath
 	if dir == "" {

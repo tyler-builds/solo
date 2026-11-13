@@ -28,6 +28,7 @@ func TestSettingsShowTheVersion(t *testing.T) {
 		_, dark := Themes()
 		u := uitest.New(t, a.Root, uitest.Size(1440, 1400), uitest.Theme(dark))
 		t.Cleanup(u.Close)
+		started(a, u)
 		a.settings.Set(true)
 		u.Settle()
 		return u.Get("settings-page-general").Text()
