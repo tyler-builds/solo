@@ -281,7 +281,7 @@ func TestThreadPanelShowsWorkingOnce(t *testing.T) {
 }
 
 // A command that Claude Code also tracks as a task shows once, as the command; a task that runs on in
-// the background after its command returned keeps a row of its own.
+// the background after its command returned is a step of its own, which the line of steps names.
 func TestForegroundTaskShowsAsItsCommand(t *testing.T) {
 	f := demoBackend()
 	id := "a7a7a7a7-subs"
@@ -296,8 +296,8 @@ func TestForegroundTaskShowsAsItsCommand(t *testing.T) {
 	if u.HasName("Measure baseline interlude durations") {
 		t.Fatal("the foreground task has a row besides its command")
 	}
-	if !u.HasName("Serve the demo game") {
-		t.Fatal("the background task has no row")
+	if line := u.Get("thread-" + id + "-transcript").Text(); !strings.Contains(line, "Serve the demo game") {
+		t.Fatalf("the background task is not named: %q", line)
 	}
 }
 

@@ -130,9 +130,6 @@ func isStep(it *core.Item) bool {
 	return it.Kind == core.ItemTool || it.Kind == core.ItemThinking || it.Kind == core.ItemTask
 }
 
-// minFold is the shortest run of steps folded into one row.
-const minFold = 3
-
 // transcript renders a thread's items, its streaming text, and a working indicator, newest at the bottom.
 func (a *App) transcript(ctx *ui.Context, v core.ThreadView, items []core.Item, scope string) ui.Element {
 	rows := a.transcriptRows(scope, items)
@@ -379,22 +376,15 @@ func (a *App) orchRows(items []core.Item) []row {
 	return rows
 }
 
-// threadRows lays out a thread's transcript: its steps fold in runs between messages.
+// threadRows lays out a thread's transcript: its steps fold in runs between messages. Every run folds,
+// a single step too, so what a thread did always reads as the same kind of line.
 func (a *App) threadRows(items []core.Item) []row {
 	rows := make([]row, 0, len(items)+4)
 	var run []*core.Item
 	runThread := ""
 	flush := func() {
-		min := minFold
-		if runThread != "" {
-			min = 2
-		}
-		if len(run) >= min {
+		if len(run) > 0 {
 			rows = append(rows, row{key: fmt.Sprintf("g%d", run[0].ID), steps: run, thread: runThread})
-		} else {
-			for _, it := range run {
-				rows = append(rows, row{key: fmt.Sprintf("i%d", it.ID), item: it})
-			}
 		}
 		run, runThread = nil, ""
 	}
@@ -617,6 +607,15 @@ func (a *App) stepsView(ctx *ui.Context, steps []*core.Item, threadID string) ui
 		latest := ""
 		tools := 0
 		for _, it := range steps {
+			if it.Kind == core.ItemTask {
+				// A task that runs on in the background: the line names it, and turns while it runs.
+				var d core.TaskData
+				it.Decode(&d)
+				tools++
+				running = running || d.Status == "running" || d.Status == "pending" || d.Status == ""
+				latest = d.Description
+				continue
+			}
 			if it.Kind != core.ItemTool {
 				continue
 			}
@@ -638,9 +637,16 @@ func (a *App) stepsView(ctx *ui.Context, steps []*core.Item, threadID string) ui
 		if running {
 			state = ui.ProgressRing().Size(ui.RingSmall).Label("Running")
 		}
-		label := fmt.Sprintf("%d steps", len(steps))
+		noun := "step"
 		if threadID != "" {
-			label = fmt.Sprintf("%d actions", len(steps))
+			noun = "action"
+		}
+		label := fmt.Sprintf("%d %ss", len(steps), noun)
+		if len(steps) == 1 {
+			label = "1 " + noun
+		}
+		if tools == 0 {
+			latest = "Thought" // a run of thoughts alone
 		}
 		var failedText ui.Element = ui.Div()
 		if failures > 0 {
