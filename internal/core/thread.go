@@ -70,6 +70,9 @@ type thread struct {
 	// linked to a part; prScanned is set once its saved transcript was searched for them, after a load.
 	prHints   []string
 	prScanned bool
+	// repost: new commits reached its open pull request since its merge card was posted, so the card
+	// is posted anew at the end of Solo's conversation (repostCards).
+	repost bool
 }
 
 // DescribeBackground names background work in a line: `command "Run benchmarks", running 4m`; several
@@ -1396,6 +1399,7 @@ func (c *Core) recount(id string) bool {
 	defer cancel()
 	counts := map[string]int{}
 	kinds := map[string]forge.Kind{}
+	pushed := false
 	for _, p := range v.Parts {
 		if p.Worktree == "" || p.BaseCommit == "" {
 			continue
@@ -1409,9 +1413,12 @@ func (c *Core) recount(id string) bool {
 			return false
 		}
 		counts[p.Repo], kinds[p.Repo] = len(files), c.forgeFor(p.Repo)
-		if p.PR != nil && p.PR.State == forge.StateOpen && !v.InTurn {
-			c.pushPR(ctx, v, p)
+		if p.PR != nil && p.PR.State == forge.StateOpen && !v.InTurn && c.pushPR(ctx, v, p) {
+			pushed = true
 		}
+	}
+	if pushed {
+		c.cardStale(id)
 	}
 	c.mu.Lock()
 	t := c.threads[id]
