@@ -156,6 +156,12 @@ without waiting.
 - **Resume.** A machine's run is an epoch, and each change a revision. A device that reconnects says what
   it holds; in the same epoch it is sent the threads that changed since, and a transcript only if its
   revision moved. A new epoch starts it over.
+- **The machine's time.** The machine's times (when a turn or background work began) are stamped by its
+  clock, so the welcome and each `sync` carry that clock, and the UI measures against the machine's time
+  as the device estimates it (`Client.Now`), not the device's own clock. That clock can be minutes off,
+  and in a page it falls behind while the device sleeps: under TinyGo it is `Date.now()` at load plus
+  `performance.now()`. Within a session the estimate only moves forward to a later reading; a new session
+  starts it over.
 - **Requests run once.** Each has a random ID. A device whose connection drops sends it again on the
   next, and the machine answers from what the first run returned. A request that changes something runs
   to its end even when the device goes.

@@ -90,7 +90,9 @@ func DescribeBackground(bg []BackgroundTask) string {
 }
 
 // roughDuration is a duration to the second under a minute, else to the minute: "40s", "4m", "1h12m".
+// A negative one, which a right clock never gives, is "0s".
 func roughDuration(d time.Duration) string {
+	d = max(d, 0)
 	switch {
 	case d < time.Minute:
 		return fmt.Sprintf("%ds", int(d.Seconds()))

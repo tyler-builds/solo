@@ -55,8 +55,6 @@ type Status struct {
 	Synced    bool // and the client shows the machine as it is
 	ReadOnly  bool // this device may look and not change
 	Host      HostInfo
-	// Offset is the machine's clock minus this device's, when they last spoke.
-	Offset time.Duration
 }
 
 // ClientOptions configure a Client.
@@ -67,6 +65,8 @@ type ClientOptions struct {
 	OnStatus func(Status)
 	// Limit is how many of a transcript's newest items to hold when the UI hasn't said (default 200).
 	Limit int
+	// Now is this device's clock (time.Now), which Client.Now measures the machine's time against.
+	Now func() time.Time
 }
 
 // Client is an api.Backend over a connection to a machine. It keeps a mirror of the machine's state,
@@ -99,6 +99,45 @@ type Client struct {
 	touched map[string]time.Time
 	limit   int
 	lease   chan struct{} // wakes the session's lease keeper
+	clock   machineClock
+}
+
+// machineClock tells the machine's time by this device's clock. The machine's times (when a turn
+// began) are stamped by its clock, and a device's clock can be off from it by minutes either way. In
+// a browser it can also fall behind while the page runs: under TinyGo a page's clock is Date.now() as
+// the page loaded plus performance.now(), which never takes up a correction to the device's clock and,
+// in browsers that pause it while the device sleeps, loses the time the page was asleep.
+//
+// So the machine says its time in the welcome and in each sync, and the client keeps the latest
+// reading with this device's clock at the time: the machine's time now is that reading plus how long
+// this device has counted since. A reading is how the machine's clock stood when it sent the message,
+// so it can only be behind the machine's time when it arrives: within a session the estimate only
+// moves forward to a later reading (a slow message leaves it where it is, a clock that lost time while
+// the device slept catches up), and a new session starts it over.
+type machineClock struct {
+	machine time.Time // the machine's time at the reading, zero before the first
+	local   time.Time // this device's clock then
+}
+
+// now is the machine's time when this device's clock reads local.
+func (k machineClock) now(local time.Time) time.Time {
+	if k.machine.IsZero() {
+		return local
+	}
+	return k.machine.Add(local.Sub(k.local))
+}
+
+// read takes in the machine's time, in Unix milliseconds, from a message that arrived when this
+// device's clock read local. With fresh set it replaces what was known (a new session); otherwise it
+// is kept only if it is later than the current estimate.
+func (k *machineClock) read(ms int64, local time.Time, fresh bool) {
+	if ms <= 0 {
+		return
+	}
+	m := time.UnixMilli(ms)
+	if fresh || k.machine.IsZero() || m.After(k.now(local)) {
+		k.machine, k.local = m, local
+	}
 }
 
 // transcript is a thread's items as the client holds them.
@@ -114,6 +153,9 @@ func NewClient(opts ClientOptions) *Client {
 	if opts.Limit <= 0 {
 		opts.Limit = 200
 	}
+	if opts.Now == nil {
+		opts.Now = time.Now
+	}
 	return &Client{opts: opts, threads: map[string]core.ThreadView{}, live: map[string][]core.LiveBlock{},
 		items: map[string]*transcript{}, settings: core.DefaultSettings(), pending: map[string][]core.PendingQuestion{},
 		subs: map[int]func(core.Change){}, up: make(chan struct{}), calls: map[string]chan Envelope{},
@@ -122,12 +164,22 @@ func NewClient(opts ClientOptions) *Client {
 
 var _ api.Backend = (*Client)(nil)
 var _ api.Watcher = (*Client)(nil)
+var _ api.Clock = (*Client)(nil)
 
 // Status returns where the client stands with its machine.
 func (c *Client) Status() Status {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.status
+}
+
+// Now is the machine's time, as well as this device can tell it: see machineClock. Before the first
+// session it is this device's own.
+func (c *Client) Now() time.Time {
+	local := c.opts.Now()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.clock.now(local)
 }
 
 // HostVersion is the version of Solo on the machine, as it last said: "" before the first session, and
@@ -206,6 +258,10 @@ func (c *Client) Run(link Link) error {
 			if json.Unmarshal(e.P, &sy) != nil {
 				return errProtocol
 			}
+			local := c.opts.Now()
+			c.mu.Lock()
+			c.clock.read(sy.Time, local, false)
+			c.mu.Unlock()
 			return c.apply(sy)
 		case e.T == kindRes:
 			c.mu.Lock()
@@ -235,7 +291,9 @@ func (c *Client) Run(link Link) error {
 
 // welcome starts a session: it keeps the mirror when the machine resumes it, and drops it otherwise.
 func (c *Client) welcome(s *session, w Welcome) {
+	local := c.opts.Now()
 	c.mu.Lock()
+	c.clock.read(w.Host.Time, local, true)
 	if !w.Resumed || w.Epoch != c.epoch {
 		c.epoch, c.rev = w.Epoch, 0
 		c.threads, c.sorted = map[string]core.ThreadView{}, nil
@@ -247,7 +305,6 @@ func (c *Client) welcome(s *session, w Welcome) {
 	c.mu.Unlock()
 	c.setStatus(func(st *Status) {
 		st.Connected, st.Synced, st.ReadOnly, st.Host = true, false, w.ReadOnly, w.Host
-		st.Offset = time.UnixMilli(w.Host.Time).Sub(time.Now())
 	})
 }
 

@@ -538,9 +538,11 @@ func bgLine(v core.ThreadView) string {
 	return s
 }
 
-// elapsed formats a running duration: "45s", "2m 14s", "1h 05m".
-func elapsed(since time.Time) string {
-	d := time.Since(since).Round(time.Second)
+// elapsed formats how long something has run, from since until now: "45s", "2m 14s", "1h 05m". now is
+// App.now, the clock since was stamped by. A since after now, which a right clock never gives, shows as
+// "0s" rather than a negative time.
+func elapsed(since, now time.Time) string {
+	d := max(now.Sub(since).Round(time.Second), 0)
 	switch {
 	case d < time.Minute:
 		return fmt.Sprintf("%ds", int(d.Seconds()))

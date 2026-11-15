@@ -6,6 +6,7 @@ package api
 import (
 	"context"
 	"image"
+	"time"
 
 	"github.com/tyler-builds/solo/internal/agent"
 	"github.com/tyler-builds/solo/internal/core"
@@ -83,4 +84,12 @@ type Backend interface {
 // block.
 type Watcher interface {
 	Watch(threadIDs []string)
+}
+
+// Clock is a backend on another machine, whose clock may differ from this one's. The engine's times
+// (when a turn or background work began, when a thread changed) are the machine's, so the UI measures
+// them against Now, the machine's time, rather than its own clock. Now is called on the UI thread and
+// must not block. A backend that isn't a Clock shares this process's clock.
+type Clock interface {
+	Now() time.Time
 }
