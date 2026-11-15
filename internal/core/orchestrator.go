@@ -32,6 +32,14 @@ func (c *Core) SetRecap(f func(t ThreadView) string) {
 	c.mu.Unlock()
 }
 
+// SetSoloBusy sets how Core tells that thread updates are on their way to Solo, so a merge card it
+// posts anew by itself waits for Solo to answer them (repostCards).
+func (c *Core) SetSoloBusy(f func() bool) {
+	c.mu.Lock()
+	c.soloBusy = f
+	c.mu.Unlock()
+}
+
 // EnsureOrchestrator creates the orchestrator thread if it doesn't exist, and returns it.
 func (c *Core) EnsureOrchestrator() (ThreadView, error) {
 	c.mu.Lock()
@@ -121,7 +129,13 @@ func (c *Core) AddProposal(workerID, summary string) error {
 	if v.Status == StatusBackground {
 		return fmt.Errorf("thread %q is still waiting on work it runs in the background (%s); it carries on when that finishes, so propose landing after its next turn ends", v.Title, DescribeBackground(v.Background))
 	}
-	if !v.CanMerge && !v.CanOpenPR {
+	// An open pull request takes a card even while it can't merge yet (the forge working out whether it
+	// can after new commits, checks running): the card's Merge button says why it waits.
+	prOpen := slices.ContainsFunc(v.Parts, func(p PartView) bool {
+		return p.Changed != 0 && p.PR != nil && p.PR.State == forge.StateOpen
+	})
+	settled := !v.InTurn && !Active(v.Status) && v.Status != StatusQueued && !Finished(v.Status)
+	if !v.CanMerge && !v.CanOpenPR && !(prOpen && settled) {
 		return fmt.Errorf("thread %q can't be merged while it is %s", v.Title, v.Status)
 	}
 	failing := false
@@ -129,6 +143,9 @@ func (c *Core) AddProposal(workerID, summary string) error {
 		failing = failing || (p.PR != nil && p.PR.State == forge.StateOpen && p.PR.Checks == forge.ChecksFailing)
 	}
 	c.mu.Lock()
+	if t := c.threads[workerID]; t != nil {
+		t.repost = false // this card is the fresh one
+	}
 	err := c.postProposalLocked(ProposalData{ThreadID: workerID, Title: v.Title, Summary: summary, ChecksFailed: failing})
 	c.mu.Unlock()
 	if err != nil {
@@ -204,6 +221,86 @@ func (c *Core) proposalChecksLocked(threadID, event string) (bool, error) {
 		}
 	}
 	d.ChecksFailed = false
+	d.Title = t.row.Title
+	return true, c.postProposalLocked(d)
+}
+
+// cardStale notes that new commits reached the thread's open pull request, so its merge card, if it
+// has one, is posted anew with the same summary at the end of Solo's conversation, where the user sees
+// it, in place of the one the conversation has moved past (repostCards).
+func (c *Core) cardStale(threadID string) {
+	c.mu.Lock()
+	if t := c.threads[threadID]; t != nil {
+		t.repost = true
+	}
+	c.mu.Unlock()
+	c.repostCards()
+}
+
+// repostCards posts anew the merge cards cardStale marked, once Solo is between turns with no thread
+// updates on their way to it. The commits are pushed when a thread's turn ends, which Solo hears about
+// and usually answers; waiting puts the card after that answer rather than above it. The end of Solo's
+// turn calls it again.
+func (c *Core) repostCards() {
+	c.mu.Lock()
+	busy := c.soloBusy
+	stale := false
+	for _, t := range c.threads {
+		stale = stale || t.repost
+	}
+	idle := c.soloIdleLocked()
+	c.mu.Unlock()
+	if !stale || !idle || (busy != nil && busy()) {
+		return
+	}
+	c.mu.Lock()
+	if !c.soloIdleLocked() {
+		c.mu.Unlock()
+		return
+	}
+	changed := false
+	for id, t := range c.threads {
+		if !t.repost {
+			continue
+		}
+		t.repost = false
+		ok, err := c.repostCardLocked(t)
+		if err != nil {
+			c.log.Error("core: posting a merge proposal anew", "thread", id, "err", err)
+		}
+		changed = changed || ok
+	}
+	c.mu.Unlock()
+	if changed {
+		c.notify(Change{Kind: ChangeItems, ThreadID: OrchestratorID})
+	}
+}
+
+// soloIdleLocked reports whether Solo is between turns: none running or about to, and no question
+// waiting on the user's answer.
+func (c *Core) soloIdleLocked() bool {
+	o := c.threads[OrchestratorID]
+	if o == nil {
+		return true
+	}
+	s := o.row.Status
+	return !o.inTurn && s != StatusStarting && s != StatusRunning && s != StatusWaiting
+}
+
+// repostCardLocked posts the thread's merge card anew, with its summary, while one of its pull
+// requests is still open; false when it has no card or nothing left open.
+func (c *Core) repostCardLocked(t *thread) (bool, error) {
+	if Finished(t.row.Status) || !slices.ContainsFunc(t.parts, (*part).prOpen) {
+		return false, nil
+	}
+	items, err := c.db.ItemsByRef(context.Background(), OrchestratorID, ItemProposal, t.row.ID)
+	if err != nil || len(items) == 0 {
+		return false, err
+	}
+	var d ProposalData
+	if err := json.Unmarshal(items[len(items)-1].Data, &d); err != nil {
+		return false, err
+	}
 	d.Title = t.row.Title
 	return true, c.postProposalLocked(d)
 }

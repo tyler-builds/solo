@@ -64,6 +64,7 @@ type Orchestrator struct {
 	mu       sync.Mutex
 	pending  []string // thread updates not yet delivered (saved)
 	timer    *time.Timer
+	sending  bool   // deliver is sending updates
 	failures int    // deliveries failed in a row
 	paused   bool   // proactive updates are off (SetUpdates)
 	carry    string // a recap for the next message, after NewConversation or a rotation (saved)
@@ -98,6 +99,7 @@ func New(c *core.Core, dataDir string, log *slog.Logger) (*Orchestrator, error) 
 	c.SetOrchestratorSpec(o.openParams)
 	c.SetToolHandler(o.handleTool)
 	c.SetRecap(o.recap)
+	c.SetSoloBusy(o.busy)
 	c.State(carryKey, &o.carry)
 	c.State(pendingKey, &o.pending)
 	c.State(notesKey, &o.notes)
@@ -497,6 +499,13 @@ func (o *Orchestrator) onAnswer(ch core.Change) {
 	o.note(n)
 }
 
+// busy reports whether thread updates are on their way to Solo: waiting to be sent, or being sent.
+func (o *Orchestrator) busy() bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return !o.paused && (o.timer != nil || o.sending)
+}
+
 // schedule delivers pending updates after UpdateDelay, once the orchestrator is between turns.
 func (o *Orchestrator) schedule() {
 	o.mu.Lock()
@@ -519,7 +528,13 @@ func (o *Orchestrator) deliver() {
 	// The saved copy keeps these lines until they are delivered.
 	lines := o.pending
 	o.pending = nil
+	o.sending = true
 	o.mu.Unlock()
+	defer func() {
+		o.mu.Lock()
+		o.sending = false
+		o.mu.Unlock()
+	}()
 	o.rotateIfIdle(context.Background())
 
 	var b strings.Builder

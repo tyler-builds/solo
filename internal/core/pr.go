@@ -605,41 +605,43 @@ func (c *Core) mergePR(ctx context.Context, v ThreadView, p PartView) error {
 	return nil
 }
 
-// pushPR pushes new commits on one repository's branch to its open pull request. A pull request the
-// thread opened from another branch is pushed to only while its worktree is on that branch; its base
-// branch's pull request (basePR) gets the commits made since on top of that branch.
-func (c *Core) pushPR(ctx context.Context, v ThreadView, p PartView) {
+// pushPR pushes new commits on one repository's branch to its open pull request, and reports whether
+// it pushed any. A pull request the thread opened from another branch is pushed to only while its
+// worktree is on that branch; its base branch's pull request (basePR) gets the commits made since on
+// top of that branch.
+func (c *Core) pushPR(ctx context.Context, v ThreadView, p PartView) bool {
 	head := p.Branch
 	if p.PR.Head != "" && p.PR.Head == p.BaseBranch && p.PR.Head != p.Branch {
 		if git.InRemoteBranch(ctx, p.Worktree, p.BaseBranch) {
-			return
+			return false
 		}
 		if err := git.PushTo(ctx, p.Worktree, p.BaseBranch); err != nil {
 			c.addNotice(v.ID, "error", fmt.Sprintf("Couldn't push to %s #%d: %v", p.PR.Kind.Noun(), p.PR.Number, err))
-			return
+			return false
 		}
 		c.restartChecks(v.ID, p.Repo)
 		c.addNotice(v.ID, "info", fmt.Sprintf("Pushed new commits to %s #%d%s.", p.PR.Kind.Noun(), p.PR.Number, inRepo(v, p)))
 		c.pokePRs()
-		return
+		return true
 	}
 	if p.PR.Head != "" && p.PR.Head != p.Branch {
 		if git.CurrentBranch(ctx, p.Worktree) != p.PR.Head {
-			return
+			return false
 		}
 		head = p.PR.Head
 	}
 	ahead, err := git.Run(ctx, p.Worktree, "rev-list", "--count", head+"@{upstream}.."+head)
 	if err == nil && strings.TrimSpace(ahead) == "0" {
-		return
+		return false
 	}
 	if err := git.Push(ctx, p.Worktree, head); err != nil {
 		c.addNotice(v.ID, "error", fmt.Sprintf("Couldn't push to %s #%d: %v", p.PR.Kind.Noun(), p.PR.Number, err))
-		return
+		return false
 	}
 	c.restartChecks(v.ID, p.Repo)
 	c.addNotice(v.ID, "info", fmt.Sprintf("Pushed new commits to %s #%d%s.", p.PR.Kind.Noun(), p.PR.Number, inRepo(v, p)))
 	c.pokePRs()
+	return true
 }
 
 // pokePRs asks the watcher to check pull requests now.

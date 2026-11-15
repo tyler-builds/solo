@@ -321,7 +321,11 @@ func (c *Core) onEvent(e agent.Event) {
 	c.notify(changes...)
 	if e.Kind == agent.EventTurnEnd || e.Kind == agent.EventExited || settledBg {
 		c.schedule()
-		go c.countChanges(id)
+		if id == OrchestratorID {
+			c.repostCards() // after the subscribers heard, so Solo has queued what it answers next
+		} else {
+			go c.countChanges(id)
+		}
 	}
 }
 
