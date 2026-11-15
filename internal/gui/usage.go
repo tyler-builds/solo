@@ -112,7 +112,7 @@ func percent(used float64) int { return int(used*100 + 0.5) }
 func (a *App) usagePanel(ctx *ui.Context) ui.Element {
 	t := ctx.Theme()
 	limits := a.rate.Get()
-	now := time.Now()
+	now := a.now()
 	box := ui.Div().Column().Gap(6).PaddingX(space4).PaddingY(space3).Shrink(0)
 	rows := 0
 	for _, e := range limits {

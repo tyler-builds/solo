@@ -222,7 +222,7 @@ func groupHeader(ctx *ui.Context, title string, n int, status string) ui.Element
 func (a *App) threadRow(ctx *ui.Context, th core.ThreadView) ui.Element {
 	t := ctx.Theme()
 	selected := a.openID.Get() == th.ID
-	when, whenColor := rowTime(ctx, th)
+	when, whenColor := a.rowTime(ctx, th)
 	// The mark and the group carry the state; the line stays neutral.
 	line, lineColor := a.activityLine(th), t.TextMuted
 	repo := repoLabel(th)
@@ -253,7 +253,7 @@ func (a *App) threadRow(ctx *ui.Context, th core.ThreadView) ui.Element {
 // so it takes little room.
 func (a *App) workingRow(ctx *ui.Context, th core.ThreadView) ui.Element {
 	t := ctx.Theme()
-	when, whenColor := rowTime(ctx, th)
+	when, whenColor := a.rowTime(ctx, th)
 	row := ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space2 + 2).Height(ui.Px(28)).Radius(radiusM).
 		Cursor(ui.CursorPointer).Hover(ui.Style{Background: t.SurfaceHover}).
 		Role(access.RoleButton).Label(th.Title).TabIndex(0).Key("card-" + th.ID).
@@ -277,15 +277,16 @@ func (a *App) workingRow(ctx *ui.Context, th core.ThreadView) ui.Element {
 
 // rowTime is a rail row's time: how long its turn has run, how long its background work has run while
 // it waits on it, or else how long ago it changed.
-func rowTime(ctx *ui.Context, th core.ThreadView) (string, ui.Color) {
+func (a *App) rowTime(ctx *ui.Context, th core.ThreadView) (string, ui.Color) {
 	t := ctx.Theme()
+	now := a.now()
 	switch {
 	case th.InTurn && !th.TurnStarted.IsZero():
-		return elapsed(th.TurnStarted), t.TextMuted
+		return elapsed(th.TurnStarted, now), t.TextMuted
 	case th.Status == core.StatusBackground && !bgSince(th).IsZero():
-		return elapsed(bgSince(th)), t.TextMuted
+		return elapsed(bgSince(th), now), t.TextMuted
 	}
-	return shortAgo(th.UpdatedAt), t.TextSubtle
+	return shortAgo(th.UpdatedAt, now), t.TextSubtle
 }
 
 // rowEnd is the end of a rail row's first line: its time, or a Done button for a thread with nothing
@@ -475,9 +476,9 @@ func stripMarkdown(s string) string {
 	return strings.TrimLeft(r.Replace(s), "-* ")
 }
 
-// shortAgo is a compact time since t: "now", "4m", "3h", "2d".
-func shortAgo(t time.Time) string {
-	d := time.Since(t)
+// shortAgo is a compact time from t until now (App.now): "now", "4m", "3h", "2d".
+func shortAgo(t, now time.Time) string {
+	d := now.Sub(t)
 	switch {
 	case d < time.Minute:
 		return "now"

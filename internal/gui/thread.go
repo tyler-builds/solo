@@ -91,7 +91,7 @@ func (a *App) landAction(ctx *ui.Context, th core.ThreadView, short bool) ui.Ele
 	}
 	busy := core.Active(th.Status) || th.Status == core.StatusQueued
 	if busy && th.IsWorker && !th.InPlace && (th.Changed > 0 || len(openPRs(th)) > 0) {
-		return landBlocked(th)
+		return a.landBlocked(th)
 	}
 	if !th.CanOpenPR && !th.CanMerge && !th.CanMarkReady && len(openPRs(th)) == 0 {
 		return nil
@@ -101,24 +101,24 @@ func (a *App) landAction(ctx *ui.Context, th core.ThreadView, short bool) ui.Ele
 
 // landBlocked is the landing button of a thread that can't land now, disabled, its tooltip saying why:
 // Open PR, or Merge, as it will be once it can.
-func landBlocked(th core.ThreadView) ui.Element {
+func (a *App) landBlocked(th core.ThreadView) ui.Element {
 	label, icon := "Merge", icons.GitMerge
 	if th.Forge != forge.None && len(openPRs(th)) == 0 {
 		label, icon = "Open "+th.Forge.Noun(), icons.GitPullRequestArrow
 	}
-	return ui.Button(label).Icon(icon).Secondary().Small().Disabled(true).Tooltip(landBlockedReason(th)).
+	return ui.Button(label).Icon(icon).Secondary().Small().Disabled(true).Tooltip(landBlockedReason(th, a.now())).
 		Key("land-blocked-" + th.ID)
 }
 
-// landBlockedReason says why a thread can't land now.
-func landBlockedReason(th core.ThreadView) string {
+// landBlockedReason says why a thread can't land now (App.now).
+func landBlockedReason(th core.ThreadView, now time.Time) string {
 	switch {
 	case th.Status == core.StatusBackground:
 		what := "Background work is still running"
 		if l := bgLine(th); l != "" {
 			what += ": " + l
 			if s := bgSince(th); !s.IsZero() {
-				what += " (" + elapsed(s) + ")"
+				what += " (" + elapsed(s, now) + ")"
 			}
 		}
 		return what + ". The thread carries on when it finishes; land it after that."
@@ -662,10 +662,11 @@ func (a *App) threadPanel(ctx *ui.Context) ui.Element {
 // thread waiting on background work says what it waits on, for how long.
 func (a *App) workingLine(ctx *ui.Context, th core.ThreadView) ui.Element {
 	t := ctx.Theme()
+	now := a.now()
 	if !th.InTurn && th.Status == core.StatusBackground {
 		text := "Waiting on background work"
 		if s := bgSince(th); !s.IsZero() {
-			text += " · " + elapsed(s)
+			text += " · " + elapsed(s, now)
 		}
 		what := bgLine(th)
 		if what == "" {
@@ -673,7 +674,7 @@ func (a *App) workingLine(ctx *ui.Context, th core.ThreadView) ui.Element {
 		}
 		tip := "Its turn ended, but work it started in the background still runs. It carries on when that finishes."
 		for _, b := range th.Background {
-			tip += "\n• " + b.Description + " (" + b.Kind() + ", " + elapsed(b.Started) + ")"
+			tip += "\n• " + b.Description + " (" + b.Kind() + ", " + elapsed(b.Started, now) + ")"
 		}
 		return ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space3).Height(ui.Px(30)).Radius(radiusM).
 			Background(t.Surface).Border(1, t.Border).Tooltip(tip).Key("background-line").
@@ -689,7 +690,7 @@ func (a *App) workingLine(ctx *ui.Context, th core.ThreadView) ui.Element {
 	}
 	text := "Working"
 	if !th.TurnStarted.IsZero() {
-		text += " · " + elapsed(th.TurnStarted)
+		text += " · " + elapsed(th.TurnStarted, now)
 	}
 	step := "Thinking"
 	if th.Step != nil {
@@ -698,7 +699,7 @@ func (a *App) workingLine(ctx *ui.Context, th core.ThreadView) ui.Element {
 		step = th.Retry
 	}
 	return ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space3).Height(ui.Px(30)).Radius(radiusM).
-		Background(t.Surface).Border(1, t.Border).
+		Background(t.Surface).Border(1, t.Border).Key("working-line").
 		Child(statusMark(ctx, core.StatusRunning)).
 		Child(ui.Text(text).FontSize(12).Semibold().TextColor(t.Text).NoWrap()).
 		Child(ui.Div().Grow(1).MinWidth(ui.Px(0)).
