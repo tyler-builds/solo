@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"path/filepath"
 	"testing"
@@ -72,5 +73,46 @@ func TestThreadsAndItems(t *testing.T) {
 	}
 	if items, _ := s.Items(context.Background(), "t1", 0); len(items) != 0 {
 		t.Fatalf("items not deleted with thread: %d", len(items))
+	}
+}
+
+// A thread's scratch mode is saved, and a database from before the column gets it.
+func TestThreadScratch(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "solo.db")
+	old, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := old.Exec(`CREATE TABLE threads (id TEXT PRIMARY KEY, kind TEXT NOT NULL, session_id TEXT NOT NULL,
+		has_transcript INTEGER NOT NULL DEFAULT 0, title TEXT NOT NULL, repo_path TEXT NOT NULL DEFAULT '',
+		worktree_path TEXT NOT NULL DEFAULT '', branch TEXT NOT NULL DEFAULT '', base_branch TEXT NOT NULL DEFAULT '',
+		base_commit TEXT NOT NULL DEFAULT '', model TEXT NOT NULL DEFAULT '', status TEXT NOT NULL,
+		summary TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT '', prompt TEXT NOT NULL DEFAULT '',
+		cost_usd REAL NOT NULL DEFAULT 0, context_tokens INTEGER NOT NULL DEFAULT 0,
+		created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+		INSERT INTO threads(id, kind, session_id, title, status, created_at, updated_at) VALUES ('old', 'worker', 's0', 'Old', 'idle', 1, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	old.Close()
+
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	now := time.Now().Truncate(time.Millisecond)
+	if err := s.SaveThread(&Thread{ID: "t1", Kind: KindWorker, SessionID: "s1", Title: "Bench", Status: "idle", Scratch: true, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Threads()
+	if err != nil || len(got) != 2 || got[0].ID != "old" || got[0].Scratch || !got[1].Scratch {
+		t.Fatalf("threads %+v %v", got, err)
+	}
+	got[1].Scratch = false
+	if err := s.SaveThread(got[1]); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ = s.Threads(); got[1].Scratch {
+		t.Fatal("scratch still on after turning it off")
 	}
 }

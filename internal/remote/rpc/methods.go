@@ -71,6 +71,10 @@ type (
 		Model  string `json:"model"`
 		Effort string `json:"effort"`
 	}
+	scratchParams struct {
+		Thread string `json:"thread"`
+		On     bool   `json:"on"`
+	}
 	searchParams struct {
 		Query string `json:"query"`
 		Limit int    `json:"limit"`
@@ -360,6 +364,16 @@ func init() {
 				return nil, nil, "", err
 			}
 			return nil, nil, a.Thread, c.h.b.SetThreadModel(ctx, a.Thread, a.Model, a.Effort)
+		}},
+		"setScratch": {write: true, run: func(ctx context.Context, c *conn, p json.RawMessage, _ []byte) (any, []byte, string, error) {
+			a, err := decode[scratchParams](p)
+			if err == nil {
+				err = checkID("thread", a.Thread)
+			}
+			if err != nil {
+				return nil, nil, "", err
+			}
+			return nil, nil, a.Thread, c.h.b.SetScratch(ctx, a.Thread, a.On)
 		}},
 		"search": {run: func(ctx context.Context, c *conn, p json.RawMessage, _ []byte) (any, []byte, string, error) {
 			a, err := decode[searchParams](p)

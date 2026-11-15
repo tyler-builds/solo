@@ -30,7 +30,10 @@ type Thread struct {
 	PR            string    // its pull request, as JSON (see forge.PR); "" when none
 	Parts         string    // every repository it works in, as JSON (see core.Part); "" for old rows
 	Effort        string    // its effort level; "" for the default (Settings)
-	CostUSD       float64
+	// Scratch: the user started it only to try or test something and doesn't mean to land it, so
+	// nothing about landing it asks for their attention (see core.Core.SetScratch).
+	Scratch bool
+	CostUSD float64
 	// CostBase is what earlier Claude sessions cost; CostUSD adds the current session's running total.
 	CostBase      float64
 	ContextTokens int

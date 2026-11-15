@@ -239,6 +239,8 @@ type WorkerSpec struct {
 	Effort string   // empty: Settings.WorkerEffort
 	Base   string   // branch to start from; empty: the repository's current branch
 	Images []string // image files to send with the prompt
+	// Scratch: the user started it only to try or test something, not to land it (SetScratch).
+	Scratch bool
 }
 
 // CreateWorker creates a worker thread and starts it.
@@ -291,6 +293,7 @@ func (c *Core) CreateWorker(ctx context.Context, spec WorkerSpec) (ThreadView, e
 		Status:       StatusQueued,
 		Prompt:       spec.Prompt,
 		PromptImages: images,
+		Scratch:      spec.Scratch,
 		CreatedAt:    ts,
 		UpdatedAt:    ts,
 	}}
