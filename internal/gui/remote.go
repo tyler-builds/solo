@@ -252,7 +252,7 @@ func (a *App) remotePage(ctx *ui.Context) ui.Element {
 		case d.Online:
 			seen = "connected now"
 		case !d.LastSeen.IsZero():
-			seen = "last here " + doneAgo(d.LastSeen)
+			seen = "last here " + doneAgo(d.LastSeen, a.now())
 		}
 		icon, shade := icons.Smartphone, t.TextSubtle
 		if d.Online {
@@ -263,7 +263,7 @@ func (a *App) remotePage(ctx *ui.Context) ui.Element {
 			Child(ui.Icon(icon).Size(16).Color(shade)).
 			Child(ui.Div().Column().Gap(2).Grow(1).MinWidth(ui.Px(0)).
 				Child(ui.Text(name).FontSize(13).Medium().TextColor(t.Text).Truncate()).
-				Child(caption(ctx, "Added "+doneAgo(d.Added)+" · "+seen).Truncate())).
+				Child(caption(ctx, "Added "+doneAgo(d.Added, a.now())+" · "+seen).Truncate())).
 			Child(ui.Select(access, ui.Option[bool]{Value: false, Label: "Full access"}, ui.Option[bool]{Value: true, Label: "Can only look"}).
 				Width(ui.Px(140)).Label("Access for "+name).
 				OnChange(func(ro bool) { go func() { fail("Couldn't change its access", rm.SetReadOnly(id, ro)) }() })).

@@ -608,6 +608,7 @@ func (c *conn) flush(first bool) error {
 		if !first && sy.empty() {
 			continue
 		}
+		sy.Time = time.Now().UnixMilli()
 		p, err := json.Marshal(sy)
 		if err != nil {
 			return err

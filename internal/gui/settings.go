@@ -785,7 +785,7 @@ func (a *App) historyList(ctx *ui.Context) ui.Element {
 			Child(mark).
 			Child(ui.Div().Column().Gap(2).Grow(1).MinWidth(ui.Px(0)).
 				Child(ui.Text(th.Title).FontSize(13).Medium().TextColor(t.Text).Truncate()).
-				Child(caption(ctx, repoLabel(th)+" · "+statusLabel(th)+" "+doneAgo(th.DoneAt)).Truncate())).
+				Child(caption(ctx, repoLabel(th)+" · "+statusLabel(th)+" "+doneAgo(th.DoneAt, a.now())).Truncate())).
 			Child(ui.Div().Shrink(0).Child(ui.Button("Restore").Icon(icons.RotateCcw).Secondary().Small().
 				Tooltip("Back to your list").OnClick(func() { a.restore(id) }))))
 	}
@@ -812,9 +812,9 @@ func (a *App) confirmDialog(ctx *ui.Context) ui.Element {
 		OnClose(func() { a.confirm.Set(nil) }).Key("confirm")
 }
 
-// doneAgo says when a thread was marked done, after its status: "Merged 20h ago".
-func doneAgo(t time.Time) string {
-	if s := shortAgo(t); s != "now" {
+// doneAgo says how long before now (App.now) a thread was marked done, after its status: "Merged 20h ago".
+func doneAgo(t, now time.Time) string {
+	if s := shortAgo(t, now); s != "now" {
 		return s + " ago"
 	}
 	return "just now"

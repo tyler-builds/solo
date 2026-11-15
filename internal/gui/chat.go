@@ -1105,7 +1105,7 @@ func (a *App) proposalCard(ctx *ui.Context, d core.ProposalData) ui.Element {
 			// button saying why.
 			land := a.landAction(ctx, th, false)
 			if land == nil {
-				land = landBlocked(th)
+				land = a.landBlocked(th)
 			}
 			actions = ui.Div().Row().Align(ui.Center).Gap(space2).
 				Child(land).

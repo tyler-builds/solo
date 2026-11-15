@@ -45,6 +45,16 @@ type fakeBackend struct {
 	todos       []core.Todo
 	skills      []core.Skill   // for "/" and Settings; fakeSkills when nil
 	paths       []core.PathHit // a thread's files, for "@"; fakePaths when nil
+	// machineNow is the time on the machine, for a backend on another one (api.Clock); nil for this
+	// process's clock.
+	machineNow func() time.Time
+}
+
+func (f *fakeBackend) Now() time.Time {
+	if f.machineNow != nil {
+		return f.machineNow()
+	}
+	return time.Now()
 }
 
 // fakeSkills and fakePaths are what the composer's lists show unless a test sets others.

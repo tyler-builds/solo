@@ -587,6 +587,17 @@ func (a *App) notify(v ui.ToastVariant, title, msg string) {
 	}
 }
 
+// now is the time to measure the engine's times against (when a turn began, when a thread changed):
+// the machine's, which is this process's own clock unless the backend is on another machine
+// (api.Clock). On this machine the reading keeps its monotonic clock, so a running time can't jump
+// when the wall clock is set.
+func (a *App) now() time.Time {
+	if c, ok := a.b.(api.Clock); ok {
+		return c.Now()
+	}
+	return time.Now()
+}
+
 // watchShown tells a backend that fetches transcripts (api.Watcher) which conversations are on screen:
 // Solo's, and the open thread's. Call in a render.
 func (a *App) watchShown() {
@@ -1003,7 +1014,7 @@ func (a *App) paletteItems(query string) []ui.PaletteItem {
 		id := th.ID
 		detail := repoLabel(th) + " · " + statusLabel(th)
 		if th.InTurn && !th.TurnStarted.IsZero() {
-			detail += " · " + elapsed(th.TurnStarted)
+			detail += " · " + elapsed(th.TurnStarted, a.now())
 		}
 		return ui.PaletteItem{
 			Key: id, Label: th.Title, Detail: detail, Icon: statusIcon(shownStatus(th)),
@@ -1050,7 +1061,7 @@ func (a *App) paletteItems(query string) []ui.PaletteItem {
 				id, worker := h.ThreadID, th.IsWorker
 				out = append(out, ui.PaletteItem{
 					Key: fmt.Sprintf("msg-%d", h.ItemID), Label: h.Snippet, Icon: icons.MessageSquare,
-					Detail:   where + " · " + shortAgo(h.At),
+					Detail:   where + " · " + shortAgo(h.At, a.now()),
 					Keywords: words, // the text matched; the snippet may hold only part of it
 					Run: func() {
 						if worker {

@@ -125,6 +125,9 @@ type Bye struct {
 // Sync is state that changed on the machine. A device applies the state, then announces the changes.
 type Sync struct {
 	Rev uint64 `json:"rev"` // the machine's revision once this is applied
+	// Time is the machine's clock as it sent this, in Unix milliseconds, so a device keeps measuring
+	// the machine's times against it (see Client.Now); 0 from a machine too old to say.
+	Time int64 `json:"time,omitempty"`
 
 	Threads []core.ThreadView `json:"threads,omitempty"` // new or changed, without their live text
 	Live    []LiveUpdate      `json:"live,omitempty"`

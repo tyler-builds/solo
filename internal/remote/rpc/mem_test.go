@@ -297,6 +297,12 @@ type rig struct {
 
 func newRig(t *testing.T, m *mem, dev Device) *rig {
 	t.Helper()
+	return newRigWith(t, m, dev, ClientOptions{})
+}
+
+// newRigWith is newRig with the client's options (its Random is set here).
+func newRigWith(t *testing.T, m *mem, dev Device, opts ClientOptions) *rig {
+	t.Helper()
 	r := &rig{t: t, m: m, dev: dev}
 	r.h = NewHost(m, Options{FlushEvery: 5 * time.Millisecond, Lease: time.Second,
 		IsDir: func(p string) bool { return p == "/code" },
@@ -306,7 +312,8 @@ func newRig(t *testing.T, m *mem, dev Device) *rig {
 			r.audit = append(r.audit, fmt.Sprintf("%s %s %s %v", d.Name, method, detail, err))
 			r.amu.Unlock()
 		}})
-	r.c = NewClient(ClientOptions{Random: countingReader{}})
+	opts.Random = countingReader{}
+	r.c = NewClient(opts)
 	t.Cleanup(func() {
 		r.h.Close()
 		if r.device != nil {
