@@ -60,6 +60,7 @@ type Core struct {
 	tools      ToolHandler
 	orchSpec   func() agent.OpenParams
 	recap      func(ThreadView) string
+	soloBusy   func() bool            // whether thread updates are on their way to Solo (SetSoloBusy)
 	rateLimits map[string]agent.Event // the latest event of each kind of limit (usage.go)
 	closed     bool
 	forges     map[string]forge.Kind // by repository

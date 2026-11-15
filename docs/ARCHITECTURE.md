@@ -120,8 +120,9 @@ Raw `SDKMessage`s are also appended to a per-session JSONL file for debugging an
   line counting those left out), `get_thread(id)` (status, last summary, files changed,
   pending question; for a done thread, what reopening it brings back), `read_thread(id, tail)`,
   `spawn_thread(repo, title, prompt, model?, base?)`, `message_thread(id, text)`,
-  `interrupt_thread(id)`, `get_diff(id)`, `propose_merge(id, summary)` (renders a Merge card; only
-  you can press it), `answer_question(id, answer)`, `reopen_thread(id)` (Restore from History when
+  `interrupt_thread(id)`, `get_diff(id)`, `propose_merge(id, summary)` (renders a Merge card in place of the
+  thread's earlier one; only you can press it; a thread whose PR is open gets one even while the PR
+  can't merge yet, and the card's button says why), `answer_question(id, answer)`, `reopen_thread(id)` (Restore from History when
   the user asks: its kept branch, or a new one from the base branch's head when its work landed, it
   had none, or it was discarded).
 - **Proactive updates:** when a worker finishes, fails, or asks a question, Go queues a synthetic
@@ -221,7 +222,12 @@ Raw `SDKMessage`s are also appended to a per-session JSONL file for debugging an
   With Settings › Git › Auto-merge, Solo also runs `gh pr merge --auto` (`glab mr merge --auto-merge`).
   A watcher polls open PRs every 30 s: failed checks (sent to Solo to have the thread fix them, or just
   shown, per the setting), passed checks, closed, merged (the thread closes and its worktree goes).
-  New commits a thread makes are pushed to its PR at the end of each turn.
+  New commits a thread makes are pushed to its PR at the end of each turn. A thread with a merge card
+  then gets it posted anew, with the same summary, at the end of Solo's chat (the old one goes), so it
+  isn't left far up the conversation. The card waits until Solo is between turns with no thread
+  update on its way, which puts it after Solo's answer to the turn that made the commits. The card is
+  also posted anew when checks that failed pass again. Nothing is re-posted when nothing was pushed,
+  the thread has no card, or none of its PRs is still open.
 - Multi-repository threads: one task across repositories (client, API, database) is one thread with
   a part per repository (`core.Part`: worktree, branch, base, PR; stored as JSON in `threads.parts`,
   the first mirrored into the single-repository columns). Every repository gets a worktree on the same

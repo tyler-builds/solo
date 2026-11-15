@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -765,6 +766,158 @@ func TestPullRequestFlow(t *testing.T) {
 	}
 }
 
+// New commits pushed to an open pull request post the thread's merge card anew at the end of Solo's
+// chat, with its summary, once Solo is between turns with no updates on their way to it.
+func TestPushRepostsCard(t *testing.T) {
+	gh := fakeGH(t)
+	e := newEnv(t)
+	ctx := context.Background()
+	run := func(dir string, args ...string) string {
+		t.Helper()
+		out, err := git.Run(ctx, dir, args...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	origin := filepath.Join(e.root, "origin.git")
+	run(e.root, "clone", "-q", "--bare", e.repo, origin)
+	run(e.repo, "remote", "add", "origin", origin)
+	run(e.repo, "config", "solo.forge", "github")
+	var busy atomic.Bool
+	e.c.SetSoloBusy(busy.Load)
+	events := make(chan string, 20)
+	e.c.Subscribe(func(ch Change) {
+		if ch.PREvent != "" {
+			events <- ch.PREvent
+		}
+	})
+	waitEvent := func(want string) {
+		t.Helper()
+		for {
+			select {
+			case got := <-events:
+				if got == want {
+					return
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatalf("no %s event", want)
+			}
+		}
+	}
+	if _, err := e.c.EnsureOrchestrator(); err != nil {
+		t.Fatal(err)
+	}
+	v, err := e.c.CreateWorker(ctx, WorkerSpec{Repo: "proj", Title: "Add hello", Prompt: "write hello.txt hi"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	v = waitStatus(t, e.c, v.ID, StatusIdle)
+	for deadline := time.Now().Add(5 * time.Second); (v.Changed < 0 || v.Forge == "") && time.Now().Before(deadline); v, _ = e.c.Thread(v.ID) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	setView(t, gh, "OPEN", "BLOCKED")
+	if _, err := e.c.OpenPR(ctx, v.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	waitEvent(PROpened)
+
+	cards := func() (all []Item, last Item) {
+		t.Helper()
+		items, err := e.c.Items(ctx, OrchestratorID, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, it := range items {
+			if it.Kind == ItemProposal && it.Ref == v.ID {
+				all = append(all, it)
+			}
+		}
+		if len(items) > 0 {
+			last = items[len(items)-1]
+		}
+		return all, last
+	}
+	n := 0
+	push := func() {
+		t.Helper()
+		n++
+		os.WriteFile(filepath.Join(v.WorktreePath, fmt.Sprintf("more%d.txt", n)), []byte("more"), 0o644)
+		run(v.WorktreePath, "add", "-A")
+		run(v.WorktreePath, "commit", "-q", "-m", fmt.Sprintf("more %d", n))
+		e.c.countChanges(v.ID)
+	}
+	// reposted waits for the thread's one card to be a new one, the last item in Solo's chat.
+	reposted := func(old Item) Item {
+		t.Helper()
+		for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+			all, last := cards()
+			if len(all) == 1 && all[0].ID != old.ID && last.ID == all[0].ID {
+				if !strings.Contains(string(last.Data), "ship it") {
+					t.Fatalf("summary not kept: %s", last.Data)
+				}
+				return last
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("card not posted anew: %d cards, last item %+v", len(all), last)
+			}
+		}
+	}
+	unmoved := func(old Item, when string) {
+		t.Helper()
+		if all, _ := cards(); len(all) != 1 || all[0].ID != old.ID {
+			t.Fatalf("%s: cards %+v, want the one card %d left in place", when, all, old.ID)
+		}
+	}
+
+	// A push with no card posts none.
+	push()
+	if all, _ := cards(); len(all) != 0 {
+		t.Fatalf("a card appeared for a thread that had none: %+v", all)
+	}
+	// Solo can propose a thread whose pull request is open but can't merge yet.
+	if v, _ = e.c.Thread(v.ID); v.CanMerge || v.CanOpenPR {
+		t.Fatalf("want an open PR that can't merge yet: %+v", v)
+	}
+	if err := e.c.AddProposal(v.ID, "ship it"); err != nil {
+		t.Fatal(err)
+	}
+	card, _ := cards()
+
+	// While Solo has an update on its way, the card waits; it moves after Solo's next turn.
+	busy.Store(true)
+	push()
+	head := run(v.WorktreePath, "rev-parse", "HEAD")
+	if remote := run(e.repo, "ls-remote", "origin", v.Branch); !strings.HasPrefix(remote, head) {
+		t.Fatalf("new commit not pushed: remote %q, local %s", remote, head)
+	}
+	unmoved(card[0], "Solo busy")
+	busy.Store(false)
+	if err := e.c.Send(ctx, OrchestratorID, "what's new?"); err != nil {
+		t.Fatal(err)
+	}
+	waitStatus(t, e.c, OrchestratorID, StatusIdle)
+	c := reposted(card[0])
+
+	// Nothing new to push: the card stays.
+	e.c.addNotice(OrchestratorID, "info", "the conversation moves on")
+	e.c.countChanges(v.ID)
+	unmoved(c, "nothing pushed")
+
+	// Solo idle: the card moves as the commits are pushed.
+	push()
+	c = reposted(c)
+
+	// Closed: no more pushes, and the card stays where it is.
+	setView(t, gh, "CLOSED", "UNKNOWN")
+	e.c.CheckPRs(ctx)
+	waitEvent(PRClosed)
+	e.c.addNotice(OrchestratorID, "info", "the conversation moves on")
+	push()
+	e.c.cardStale(v.ID)
+	unmoved(c, "PR closed")
+}
+
 func TestDraftPullRequest(t *testing.T) {
 	gh := fakeGH(t)
 	// gh pr ready is logged with the merges.
@@ -953,6 +1106,41 @@ func TestMultiRepoThread(t *testing.T) {
 		if run(repos[r], "ls-remote", "origin", v.Parts[0].Branch) == "" {
 			t.Fatalf("%s's branch not pushed", r)
 		}
+	}
+
+	// One card for the thread; new commits in both repositories post it anew once, at the end.
+	if _, err := e.c.EnsureOrchestrator(); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.c.AddProposal(v.ID, "ship it"); err != nil {
+		t.Fatal(err)
+	}
+	cards := func() (all []Item, last Item) {
+		items, _ := e.c.Items(ctx, OrchestratorID, 0)
+		for _, it := range items {
+			if it.Kind == ItemProposal && it.Ref == v.ID {
+				all = append(all, it)
+			}
+		}
+		return all, items[len(items)-1]
+	}
+	before, _ := cards()
+	e.c.addNotice(OrchestratorID, "info", "the conversation moves on")
+	for _, name := range []string{"api", "db"} {
+		wt := filepath.Join(dir, name)
+		os.WriteFile(filepath.Join(wt, "more.txt"), []byte("more"), 0o644)
+		run(wt, "add", "-A")
+		run(wt, "commit", "-q", "-m", "more")
+	}
+	e.c.countChanges(v.ID)
+	for _, name := range []string{"api", "db"} {
+		if head := run(filepath.Join(dir, name), "rev-parse", "HEAD"); !strings.HasPrefix(run(repos[name], "ls-remote", "origin", v.Parts[0].Branch), head) {
+			t.Fatalf("%s's new commit not pushed", name)
+		}
+	}
+	if all, last := cards(); len(before) != 1 || len(all) != 1 || all[0].ID == before[0].ID || last.ID != all[0].ID ||
+		!strings.Contains(string(last.Data), "ship it") {
+		t.Fatalf("card after pushing to both PRs: %d cards (was %+v), last item %+v", len(all), before, last)
 	}
 
 	// Merging one repository leaves the thread open; when the other merges, it closes.

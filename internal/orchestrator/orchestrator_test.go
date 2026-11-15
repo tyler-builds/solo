@@ -820,3 +820,90 @@ func TestRecentClosed(t *testing.T) {
 		t.Fatalf("32 days: %v", ids(got))
 	}
 }
+
+// New commits pushed to a thread's open pull request post its merge card anew after Solo answers the
+// update about the turn that made them, so the card is the last thing in the chat.
+func TestPushedCommitsMoveTheCardAfterSolosAnswer(t *testing.T) {
+	c, o := setup(t)
+	ctx := context.Background()
+	run := func(dir string, args ...string) string {
+		t.Helper()
+		out, err := git.Run(ctx, dir, args...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	repo := filepath.Join(c.Settings().Folders[0], "web")
+	origin := repo + ".git"
+	run(repo, "clone", "-q", "--bare", repo, origin)
+	run(repo, "remote", "add", "origin", origin)
+	run(repo, "config", "solo.forge", "github")
+	gh := t.TempDir()
+	os.WriteFile(filepath.Join(gh, "gh"), []byte(`#!/bin/sh
+case "$1 $2" in
+"pr create") echo "https://github.com/acme/web/pull/7" ;;
+"pr view") echo '{"number":7,"url":"https://github.com/acme/web/pull/7","state":"OPEN","isDraft":false,"autoMergeRequest":null,"mergeStateStatus":"BLOCKED","reviewDecision":"","statusCheckRollup":[]}' ;;
+*) exit 1 ;;
+esac
+`), 0o755)
+	t.Setenv("PATH", gh+string(os.PathListSeparator)+os.Getenv("PATH"))
+	c.RescanRepos()
+
+	idle := func(id string) func() bool {
+		return func() bool { v, _ := c.Thread(id); return v.Status == core.StatusIdle && !v.InTurn }
+	}
+	call(t, o, "spawn_thread", map[string]any{"repo": "web", "title": "Hello", "prompt": "write hello.txt hi"})
+	eventually(t, "worker counted", func() bool { v := onlyWorker(c); return idle(v.ID)() && v.Forge != "" && v.Changed > 0 })
+	w := onlyWorker(c)
+	eventually(t, "Solo answered the update", func() bool { return len(syntheticMessages(c)) == 1 && idle(core.OrchestratorID)() })
+	if _, err := c.OpenPR(ctx, w.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	call(t, o, "propose_merge", map[string]any{"id": w.ID, "summary": "Adds hello."})
+	cards := func() (all []core.Item, items []core.Item) {
+		items, _ = c.Items(ctx, core.OrchestratorID, 0)
+		for _, it := range items {
+			if it.Kind == core.ItemProposal && it.Ref == w.ID {
+				all = append(all, it)
+			}
+		}
+		return all, items
+	}
+	old, _ := cards()
+
+	// The thread commits during a turn; its end pushes the commit while the update about it is on its
+	// way to Solo.
+	w, _ = c.Thread(w.ID)
+	os.WriteFile(filepath.Join(w.WorktreePath, "more.txt"), []byte("more"), 0o644)
+	run(w.WorktreePath, "add", "-A")
+	run(w.WorktreePath, "commit", "-q", "-m", "more")
+	call(t, o, "message_thread", map[string]any{"id": w.ID, "text": "done?"})
+	head := run(w.WorktreePath, "rev-parse", "HEAD")
+	eventually(t, "commit pushed", func() bool {
+		out, _ := git.Run(ctx, repo, "ls-remote", "origin", w.Branch)
+		return strings.HasPrefix(out, head)
+	})
+	eventually(t, "card posted anew", func() bool {
+		all, _ := cards()
+		return len(all) == 1 && all[0].ID != old[0].ID
+	})
+	all, items := cards()
+	var update, reply int64
+	for _, it := range items {
+		var d core.UserData
+		if it.Kind == core.ItemUser && it.Decode(&d) == nil && strings.Contains(d.Text, "finished its turn. Summary: echo: done?") {
+			update = it.ID
+		}
+		if it.Kind == core.ItemAssistant && update != 0 && reply == 0 {
+			reply = it.ID
+		}
+	}
+	if update == 0 || reply == 0 || all[0].ID < reply || items[len(items)-1].ID != all[0].ID {
+		t.Fatalf("card %d, update %d, Solo's answer %d, last item %+v", all[0].ID, update, reply, items[len(items)-1])
+	}
+	var d core.ProposalData
+	if all[0].Decode(&d); d.Summary != "Adds hello." {
+		t.Fatalf("summary %q", d.Summary)
+	}
+}
