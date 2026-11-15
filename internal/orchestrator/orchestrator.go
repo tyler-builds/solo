@@ -330,8 +330,8 @@ func (o *Orchestrator) onChange(ch core.Change) {
 		}
 		return
 	}
-	if ch.ExperimentSet {
-		o.onExperiment(ch)
+	if ch.ScratchSet {
+		o.onScratch(ch)
 		return
 	}
 	if ch.PrevStatus == ch.Status && ch.PREvent == "" {
@@ -371,15 +371,15 @@ func (o *Orchestrator) onChange(ch core.Change) {
 			}
 		case core.PRChecksPassed:
 			line = fmt.Sprintf("%s: checks passed on %s.", label(v), noun)
-			if v.Experiment {
-				line += experimentNote
+			if v.Scratch {
+				line += scratchNote
 			}
 		case core.PRClosed:
 			line = fmt.Sprintf("%s: %s was closed without merging.", label(v), noun)
 		case core.PRChecksFailed:
 			line = fmt.Sprintf("%s: checks failed on %s: %s.", label(v), noun, failedChecks(pr.Failed))
-			if v.Experiment {
-				line += experimentNote
+			if v.Scratch {
+				line += scratchNote
 			} else if o.c.Settings().OnChecksFail == core.ChecksNotify {
 				line += " The user handles failed checks themselves: tell them, and don't ask the thread to fix it."
 			} else {
@@ -408,8 +408,8 @@ func (o *Orchestrator) onChange(ch core.Change) {
 		line = fmt.Sprintf("%s finished its turn. Summary: %s", label(v), clip(oneLine(v.Summary), 600))
 		if v.Resolving {
 			line = fmt.Sprintf("%s resolved the conflicts its merge had; Solo is merging it now, so don't propose it again.", label(v))
-		} else if v.Experiment && !v.InPlace {
-			line += experimentNote
+		} else if v.Scratch && !v.InPlace {
+			line += scratchNote
 		}
 	case core.StatusBackground:
 		line = fmt.Sprintf("%s ended its turn but isn't finished: it waits on work it runs in the background (%s), "+
@@ -436,22 +436,22 @@ func (o *Orchestrator) onChange(ch core.Change) {
 	o.queue(line)
 }
 
-// experimentNote ends a thread update about an experiment thread (store.Thread.Experiment).
-const experimentNote = " It's an experiment: the user doesn't mean to land it, so there is nothing to land. Report what it found or did; don't propose a merge or have it fix checks."
+// scratchNote ends a thread update about a scratch thread (store.Thread.Scratch).
+const scratchNote = " It's a scratch thread: the user doesn't mean to land it, so there is nothing to land. Report what it found or did; don't propose a merge or have it fix checks."
 
-// onExperiment notes, for Solo's next message, that the user turned a thread's experiment mode on or
-// off themselves (set_experiment tells Solo when it does). It starts no turn.
-func (o *Orchestrator) onExperiment(ch core.Change) {
-	if ch.ExperimentBy != core.FromUser {
+// onScratch notes, for Solo's next message, that the user turned a thread's scratch mode on or
+// off themselves (set_scratch tells Solo when it does). It starts no turn.
+func (o *Orchestrator) onScratch(ch core.Change) {
+	if ch.ScratchBy != core.FromUser {
 		return
 	}
 	v, ok := o.c.Thread(ch.ThreadID)
 	if !ok || v.Kind != store.KindWorker {
 		return
 	}
-	n := fmt.Sprintf("[Solo: the user made %s an experiment: they don't mean to land it, and its merge card, if it had one, is gone. Report what it finds; don't propose a merge.]", label(v))
-	if !v.Experiment {
-		n = fmt.Sprintf("[Solo: the user made %s a normal thread again, no longer an experiment: propose_merge it when its work looks right.]", label(v))
+	n := fmt.Sprintf("[Solo: the user made %s a scratch thread: they don't mean to land it, and its merge card, if it had one, is gone. Report what it finds; don't propose a merge.]", label(v))
+	if !v.Scratch {
+		n = fmt.Sprintf("[Solo: the user made %s a normal thread again, no longer scratch: propose_merge it when its work looks right.]", label(v))
 	}
 	o.note(n)
 }

@@ -120,8 +120,8 @@ func (c *Core) AddProposal(workerID, summary string) error {
 	if !ok {
 		return fmt.Errorf("no thread %s", workerID)
 	}
-	if v.Experiment {
-		return experimentError(v)
+	if v.Scratch {
+		return scratchError(v)
 	}
 	if v.NoChanges || (v.Changed == 0 && !Finished(v.Status)) {
 		return fmt.Errorf("thread %q changed no files; there is nothing to merge", v.Title)
@@ -288,10 +288,10 @@ func (c *Core) soloIdleLocked() bool {
 }
 
 // repostCardLocked posts the thread's merge card anew, with its summary, while one of its pull
-// requests is still open; false when it has no card, nothing left open, or it is an experiment, which
-// the user doesn't mean to land (SetExperiment).
+// requests is still open; false when it has no card, nothing left open, or it is a scratch thread, which
+// the user doesn't mean to land (SetScratch).
 func (c *Core) repostCardLocked(t *thread) (bool, error) {
-	if t.row.Experiment || Finished(t.row.Status) || !slices.ContainsFunc(t.parts, (*part).prOpen) {
+	if t.row.Scratch || Finished(t.row.Status) || !slices.ContainsFunc(t.parts, (*part).prOpen) {
 		return false, nil
 	}
 	items, err := c.db.ItemsByRef(context.Background(), OrchestratorID, ItemProposal, t.row.ID)

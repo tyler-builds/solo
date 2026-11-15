@@ -70,8 +70,8 @@ func (a *App) landControl(ctx *ui.Context, th core.ThreadView, short bool) ui.El
 				"The thread is merging it in, then Solo merges.")
 	}
 	e := a.landButton(ctx, th, short)
-	if th.Experiment {
-		// The user doesn't mean to land an experiment, but may change their mind: the button stays,
+	if th.Scratch {
+		// The user doesn't mean to land a scratch thread, but may change their mind: the button stays,
 		// without the emphasis that asks for it.
 		switch b := e.(type) {
 		case *ui.ButtonElement:
@@ -100,7 +100,7 @@ func (a *App) landAction(ctx *ui.Context, th core.ThreadView, short bool) ui.Ele
 		return a.landControl(ctx, th, short) // it merges by itself once the conflicts are resolved
 	}
 	busy := core.Active(th.Status) || th.Status == core.StatusQueued
-	if busy && th.Experiment {
+	if busy && th.Scratch {
 		return nil // nothing it is meant to land, so nothing to wait for
 	}
 	if busy && th.IsWorker && !th.InPlace && (th.Changed > 0 || len(openPRs(th)) > 0) {
@@ -547,8 +547,8 @@ func (a *App) threadPanel(ctx *ui.Context) ui.Element {
 	if l != nil {
 		land = append(land, l)
 	}
-	// An experiment's landing button is a quiet one, so Done stays beside it.
-	if th.CanDone && !asksToLand(th) && (l == nil || th.Experiment) {
+	// A scratch thread's landing button is a quiet one, so Done stays beside it.
+	if th.CanDone && !asksToLand(th) && (l == nil || th.Scratch) {
 		land = append(land, ui.Button("Done").Icon(icons.Check).Primary().Small().
 			Tooltip("Take it out of your list. Settings › History can restore it.").
 			OnClick(func() { a.markDone(th) }))
@@ -580,7 +580,7 @@ func (a *App) threadPanel(ctx *ui.Context) ui.Element {
 					items = append(items, ui.MenuItem{Label: "Done", Icon: icons.Check, OnClick: func() { a.markDone(th) }})
 				}
 				if th.IsWorker && !th.InPlace {
-					items = append(items, a.experimentItem(th))
+					items = append(items, a.scratchItem(th))
 				}
 				if th.Dir != "" {
 					dir := th.Dir
@@ -619,8 +619,8 @@ func (a *App) threadPanel(ctx *ui.Context) ui.Element {
 				Child(subtle(ctx, "not in git")))
 		}
 	}
-	if th.Experiment && !th.InPlace {
-		meta = meta.Child(experimentLabel(ctx))
+	if th.Scratch && !th.InPlace {
+		meta = meta.Child(scratchLabel(ctx))
 	}
 	if a.cfg.Get().ShowCosts && th.CostUSD > 0 {
 		meta = meta.Child(subtle(ctx, fmt.Sprintf("$%.2f", th.CostUSD)))
@@ -788,25 +788,25 @@ func (a *App) confirmDiscard(th core.ThreadView) {
 	})
 }
 
-// experimentItem is the thread menu's item that turns its experiment mode on or off
-// (store.Thread.Experiment).
-func (a *App) experimentItem(th core.ThreadView) ui.MenuItem {
-	id, on := th.ID, !th.Experiment
-	label, icon, what := "Mark as experiment", icons.FlaskConical, "Marking it an experiment"
-	if th.Experiment {
-		label, icon, what = "Not an experiment", icons.FlaskConicalOff, "Making it a normal thread"
+// scratchItem is the thread menu's item that turns its scratch mode on or off
+// (store.Thread.Scratch).
+func (a *App) scratchItem(th core.ThreadView) ui.MenuItem {
+	id, on := th.ID, !th.Scratch
+	label, icon, what := "Mark as scratch", icons.NotebookPen, "Marking it as a scratch thread"
+	if th.Scratch {
+		label, icon, what = "Not scratch", icons.FolderGit2, "Making it a normal thread"
 	}
 	return ui.MenuItem{Label: label, Icon: icon, OnClick: func() {
-		a.run(what, func(ctx context.Context) error { return a.b.SetExperiment(ctx, id, on) })
+		a.run(what, func(ctx context.Context) error { return a.b.SetScratch(ctx, id, on) })
 	}}
 }
 
-// experimentLabel marks an experiment in its header, as "not in git" marks a folder outside git.
-func experimentLabel(ctx *ui.Context) ui.Element {
-	return ui.Div().Key("experiment-label").
-		Tooltip("An experiment: you're trying something out, not landing it, so Solo proposes no merge and it never waits on you to land it. " +
-			"It still has its branch, and you can land it if you change your mind. More › Not an experiment turns this off.").
-		Child(subtle(ctx, "experiment"))
+// scratchLabel marks a scratch thread in its header, as "not in git" marks a folder outside git.
+func scratchLabel(ctx *ui.Context) ui.Element {
+	return ui.Div().Key("scratch-label").
+		Tooltip("A scratch thread: you're trying something out, not landing it, so Solo proposes no merge and it never waits on you to land it. " +
+			"It still has its branch, and you can land it if you change your mind. More › Not scratch turns this off.").
+		Child(subtle(ctx, "scratch"))
 }
 
 // discardText says what discarding a thread loses.

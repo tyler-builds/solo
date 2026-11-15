@@ -119,13 +119,13 @@ Raw `SDKMessage`s are also appended to a per-session JSONL file for debugging an
   capped at the 20 newest from the last 30 days unless `limit` (max 100) or `days` asks for more, with a
   line counting those left out), `get_thread(id)` (status, last summary, files changed,
   pending question; for a done thread, what reopening it brings back), `read_thread(id, tail)`,
-  `spawn_thread(repo, title, prompt, model?, base?, experiment?)`, `message_thread(id, text)`,
+  `spawn_thread(repo, title, prompt, model?, base?, scratch?)`, `message_thread(id, text)`,
   `interrupt_thread(id)`, `get_diff(id)`, `propose_merge(id, summary)` (renders a Merge card in place of the
   thread's earlier one; only you can press it; a thread whose PR is open gets one even while the PR
   can't merge yet, and the card's button says why), `answer_question(id, answer)`, `reopen_thread(id)` (Restore from History when
   the user asks: its kept branch, or a new one from the base branch's head when its work landed, it
-  had none, or it was discarded), `set_experiment(id, on)` (turns a thread's experiment mode on or
-  off when the user asks; see Worker threads › Experiments).
+  had none, or it was discarded), `set_scratch(id, on)` (turns a thread's scratch mode on or
+  off when the user asks; see Worker threads › Scratch threads).
 - **Proactive updates:** when a worker finishes, fails, or asks a question, Go queues a synthetic
   `[thread update]` message. Updates are batched while the orchestrator is busy and delivered when
   it's idle, so it reports without being asked. Solo's chat shows neither these nor Solo's steps as
@@ -205,20 +205,20 @@ Raw `SDKMessage`s are also appended to a per-session JSONL file for debugging an
   lost; **Discard** is what deletes work. Discarding marks it done too. **Restore** recreates the
   worktree at the same path (on the branch if it survived, else a new one from the base branch's head),
   so the Claude session resumes.
-- **Experiments** (`threads.experiment`, `core.Core.SetExperiment`): a thread the user started only to
+- **Scratch threads** (`threads.scratch`, `core.Core.SetScratch`): a thread the user started only to
   try or test something (a benchmark, a spike) and doesn't mean to land. Solo starts one with
-  `spawn_thread(..., experiment: true)` or turns the mode on or off with `set_experiment(id, on)`,
-  only when the user says so; the user does it from the thread's More menu (an "experiment" label
-  shows in its header, beside where "not in git" would). Nothing about landing asks for attention:
-  `propose_merge` refuses it, turning the mode on deletes its merge card, it doesn't count toward
-  "needs you" (rail, the bar's count, Solo's chat pill, next-thread), failed checks on a PR it already
-  has raise no notification, and an idle one reads as Finished, as an in-place thread does. A
-  question or a failure still needs the user. Thread updates, `get_thread` and `list_threads` tell Solo
-  it is an experiment with nothing to land, and the user turning the mode on or off is noted for Solo's
-  next message. It is not another way of working: it keeps its worktree and branch, its worker may
-  commit, Done and Discard do what they do for any thread (Done keeps an unlanded branch, but doesn't
-  ask first), and the header's Open PR / Merge stays, as a secondary button, so the user can still
-  land it.
+  `spawn_thread(..., scratch: true)` or turns the mode on or off with `set_scratch(id, on)`, only
+  when the user says so; the user does it from the thread's More menu ("Mark as scratch", "Not
+  scratch"), and a "scratch" label shows in its header, beside where "not in git" would. Nothing
+  about landing asks for attention: `propose_merge` refuses it, turning the mode on deletes its merge
+  card, it doesn't count toward "needs you" (rail, the bar's count, Solo's chat pill, next-thread),
+  failed checks on a PR it already has raise no notification, and an idle one reads as Finished, as
+  an in-place thread does. A question or a failure still needs the user. Thread updates, `get_thread`
+  and `list_threads` tell Solo it is a scratch thread with nothing to land, and the user turning the
+  mode on or off is noted for Solo's next message. It is not another way of working: it keeps its
+  worktree and branch, its worker may commit, Done and Discard do what they do for any thread (Done
+  keeps an unlanded branch, but doesn't ask first), and the header's Open PR / Merge stays, as a
+  secondary button, so the user can still land it.
 - Pull requests (`internal/forge`): the forge comes from origin's host, or `git config solo.forge
   github|gitlab` for self-hosted ones. Open PR commits leftovers, pushes the branch and opens the PR
   against the base branch. The PR text model (Settings › Models; Haiku by default) writes the title and
@@ -242,7 +242,7 @@ Raw `SDKMessage`s are also appended to a per-session JSONL file for debugging an
   isn't left far up the conversation. The card waits until Solo is between turns with no thread
   update on its way, which puts it after Solo's answer to the turn that made the commits. The card is
   also posted anew when checks that failed pass again. Nothing is re-posted when nothing was pushed,
-  the thread has no card, none of its PRs is still open, or it is an experiment.
+  the thread has no card, none of its PRs is still open, or it is a scratch thread.
 - Multi-repository threads: one task across repositories (client, API, database) is one thread with
   a part per repository (`core.Part`: worktree, branch, base, PR; stored as JSON in `threads.parts`,
   the first mirrored into the single-repository columns). Every repository gets a worktree on the same

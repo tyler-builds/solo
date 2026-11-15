@@ -452,7 +452,7 @@ func (a *App) runBusy(id, what string, f func(ctx context.Context) error) {
 }
 
 // markDone takes a thread out of the rail into History, with an Undo. A thread whose changes haven't
-// landed asks first, saying its branch is kept; an experiment doesn't (asksToLand).
+// landed asks first, saying its branch is kept; a scratch thread doesn't (asksToLand).
 func (a *App) markDone(th core.ThreadView) {
 	if asksToLand(th) {
 		a.confirm.Set(&confirmation{
@@ -987,7 +987,7 @@ func (a *App) nextAttention() {
 	rank := map[string]int{core.StatusWaiting: 0, core.StatusFailed: 1, core.StatusIdle: 2}
 	var list []core.ThreadView
 	for _, th := range a.threads.Peek() {
-		if _, ok := rank[th.Status]; ok && th.IsWorker && (th.Status != core.StatusIdle || !th.Experiment) {
+		if _, ok := rank[th.Status]; ok && th.IsWorker && (th.Status != core.StatusIdle || !th.Scratch) {
 			list = append(list, th)
 		}
 	}

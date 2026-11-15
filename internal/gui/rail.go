@@ -195,10 +195,10 @@ func (a *App) repoMenu(ctx *ui.Context) ui.Element {
 	})
 }
 
-// needsUser reports whether a thread waits on the user: a question, a failure, or work to review. An
-// experiment (store.Thread.Experiment) has no work to review: only a question or a failure.
+// needsUser reports whether a thread waits on the user: a question, a failure, or work to review. A
+// scratch thread (store.Thread.Scratch) has no work to review: only a question or a failure.
 func needsUser(th core.ThreadView) bool {
-	if th.Experiment {
+	if th.Scratch {
 		return th.Status == core.StatusWaiting || th.Status == core.StatusFailed
 	}
 	if th.PR != nil && th.PR.State == forge.StateOpen {
@@ -209,8 +209,8 @@ func needsUser(th core.ThreadView) bool {
 }
 
 // asksToLand reports whether marking a thread done asks first because its changes haven't landed:
-// not for an experiment, which the user never meant to land (its branch is kept all the same).
-func asksToLand(th core.ThreadView) bool { return th.Unlanded && !th.Experiment }
+// not for a scratch thread, which the user never meant to land (its branch is kept all the same).
+func asksToLand(th core.ThreadView) bool { return th.Unlanded && !th.Scratch }
 
 func groupHeader(ctx *ui.Context, title string, n int, status string) ui.Element {
 	t := ctx.Theme()

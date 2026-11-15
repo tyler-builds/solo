@@ -13,10 +13,10 @@ import (
 	"github.com/tyler-builds/solo/internal/git"
 )
 
-// An experiment is a thread the user doesn't mean to land: Solo can't propose it, turning the mode on
+// A scratch thread is one the user doesn't mean to land: Solo can't propose it, turning the mode on
 // takes its card away, turning it off brings normal landing back, and the mode survives a restart. Its
 // branch and what Done does with it don't change.
-func TestExperimentThread(t *testing.T) {
+func TestScratchThread(t *testing.T) {
 	e := newEnv(t)
 	ctx := context.Background()
 	if _, err := e.c.EnsureOrchestrator(); err != nil {
@@ -52,29 +52,29 @@ func TestExperimentThread(t *testing.T) {
 		return v
 	}
 
-	v, err := e.c.CreateWorker(ctx, WorkerSpec{Repo: "proj", Title: "Bench GPUs", Prompt: "write bench.txt results", Experiment: true})
+	v, err := e.c.CreateWorker(ctx, WorkerSpec{Repo: "proj", Title: "Bench GPUs", Prompt: "write bench.txt results", Scratch: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	v = counted(e.c, v.ID)
 	// It works as any thread does: a worktree, a branch and changes it could still land.
-	if !v.Experiment || !v.HasWorktree || v.Branch == "" || v.Changed != 1 || !v.CanMerge {
-		t.Fatalf("experiment %+v", v)
+	if !v.Scratch || !v.HasWorktree || v.Branch == "" || v.Changed != 1 || !v.CanMerge {
+		t.Fatalf("scratch %+v", v)
 	}
 	err = e.c.AddProposal(v.ID, "ship it")
-	if err == nil || !strings.Contains(err.Error(), "experiment") || !strings.Contains(err.Error(), "nothing to propose") {
-		t.Fatalf("proposing an experiment: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "scratch") || !strings.Contains(err.Error(), "nothing to propose") {
+		t.Fatalf("proposing a scratch thread: %v", err)
 	}
 	if n := cards(v.ID); n != 0 {
-		t.Fatalf("%d cards for an experiment", n)
+		t.Fatalf("%d cards for a scratch thread", n)
 	}
 
 	// Off: a normal thread again, which Solo proposes.
-	if err := e.c.SetExperiment(ctx, v.ID, false); err != nil {
+	if err := e.c.SetScratch(ctx, v.ID, false); err != nil {
 		t.Fatal(err)
 	}
-	if v, _ = e.c.Thread(v.ID); v.Experiment {
-		t.Fatal("still an experiment")
+	if v, _ = e.c.Thread(v.ID); v.Scratch {
+		t.Fatal("still a scratch thread")
 	}
 	if err := e.c.AddProposal(v.ID, "ship it"); err != nil {
 		t.Fatal(err)
@@ -87,16 +87,16 @@ func TestExperimentThread(t *testing.T) {
 	mu.Lock()
 	seen = nil
 	mu.Unlock()
-	if v, err = e.c.SetExperimentFromOrchestrator(v.ID, true); err != nil || !v.Experiment {
+	if v, err = e.c.SetScratchFromOrchestrator(v.ID, true); err != nil || !v.Scratch {
 		t.Fatalf("set from Solo: %+v %v", v, err)
 	}
 	if n := cards(v.ID); n != 0 {
-		t.Fatalf("%d cards left after making it an experiment", n)
+		t.Fatalf("%d cards left after making it a scratch thread", n)
 	}
 	mu.Lock()
 	var set, items bool
 	for _, ch := range seen {
-		set = set || (ch.ThreadID == v.ID && ch.ExperimentSet && ch.ExperimentBy == FromOrchestrator)
+		set = set || (ch.ThreadID == v.ID && ch.ScratchSet && ch.ScratchBy == FromOrchestrator)
 		items = items || (ch.Kind == ChangeItems && ch.ThreadID == OrchestratorID)
 	}
 	mu.Unlock()
@@ -108,17 +108,17 @@ func TestExperimentThread(t *testing.T) {
 	e.c.Close()
 	c2 := e.open(t)
 	v2, ok := c2.Thread(v.ID)
-	if !ok || !v2.Experiment {
+	if !ok || !v2.Scratch {
 		t.Fatalf("after restart %+v", v2)
 	}
 	if err := c2.AddProposal(v.ID, "ship it"); err == nil {
-		t.Fatal("proposed an experiment after a restart")
+		t.Fatal("proposed a scratch thread after a restart")
 	}
 
 	// Done keeps its unlanded branch, as for any thread.
 	v2 = counted(c2, v.ID)
 	if !v2.Unlanded {
-		t.Fatalf("experiment's changes aren't unlanded: %+v", v2)
+		t.Fatalf("the scratch thread's changes aren't unlanded: %+v", v2)
 	}
 	if err := c2.Done(ctx, v.ID); err != nil {
 		t.Fatal(err)
@@ -128,9 +128,9 @@ func TestExperimentThread(t *testing.T) {
 	}
 }
 
-// New commits pushed to an experiment's open pull request bring no merge card back: turning the mode
+// New commits pushed to a scratch thread's open pull request bring no merge card back: turning the mode
 // on removed its card, and one that got past that (posted as the mode was turned on) isn't posted anew.
-func TestExperimentPushPostsNoCard(t *testing.T) {
+func TestScratchPushPostsNoCard(t *testing.T) {
 	gh := fakeGH(t)
 	e := newEnv(t)
 	ctx := context.Background()
@@ -192,7 +192,7 @@ func TestExperimentPushPostsNoCard(t *testing.T) {
 		}
 	}
 
-	if err := e.c.SetExperiment(ctx, v.ID, true); err != nil {
+	if err := e.c.SetScratch(ctx, v.ID, true); err != nil {
 		t.Fatal(err)
 	}
 	push()
@@ -212,6 +212,6 @@ func TestExperimentPushPostsNoCard(t *testing.T) {
 	push()
 	e.c.cardStale(v.ID)
 	if all := cards(); len(all) != 1 || all[0].ID != stray[0].ID {
-		t.Fatalf("an experiment's card was posted anew: %+v, was %+v", all, stray)
+		t.Fatalf("a scratch thread's card was posted anew: %+v, was %+v", all, stray)
 	}
 }

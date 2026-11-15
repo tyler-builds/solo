@@ -71,7 +71,7 @@ type (
 		Model  string `json:"model"`
 		Effort string `json:"effort"`
 	}
-	experimentParams struct {
+	scratchParams struct {
 		Thread string `json:"thread"`
 		On     bool   `json:"on"`
 	}
@@ -365,15 +365,15 @@ func init() {
 			}
 			return nil, nil, a.Thread, c.h.b.SetThreadModel(ctx, a.Thread, a.Model, a.Effort)
 		}},
-		"setExperiment": {write: true, run: func(ctx context.Context, c *conn, p json.RawMessage, _ []byte) (any, []byte, string, error) {
-			a, err := decode[experimentParams](p)
+		"setScratch": {write: true, run: func(ctx context.Context, c *conn, p json.RawMessage, _ []byte) (any, []byte, string, error) {
+			a, err := decode[scratchParams](p)
 			if err == nil {
 				err = checkID("thread", a.Thread)
 			}
 			if err != nil {
 				return nil, nil, "", err
 			}
-			return nil, nil, a.Thread, c.h.b.SetExperiment(ctx, a.Thread, a.On)
+			return nil, nil, a.Thread, c.h.b.SetScratch(ctx, a.Thread, a.On)
 		}},
 		"search": {run: func(ctx context.Context, c *conn, p json.RawMessage, _ []byte) (any, []byte, string, error) {
 			a, err := decode[searchParams](p)

@@ -345,7 +345,7 @@ func (b *Backend) OpenPRFor(context.Context, string, string, bool) ([]forge.PR, 
 }
 func (b *Backend) MergeRepo(context.Context, string, string) (string, error)    { return "", errSample }
 func (b *Backend) SetThreadModel(context.Context, string, string, string) error { return errSample }
-func (b *Backend) SetExperiment(context.Context, string, bool) error            { return errSample }
+func (b *Backend) SetScratch(context.Context, string, bool) error               { return errSample }
 func (b *Backend) SearchMessages(context.Context, string, int) ([]core.SearchHit, error) {
 	return nil, nil
 }

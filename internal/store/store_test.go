@@ -76,8 +76,8 @@ func TestThreadsAndItems(t *testing.T) {
 	}
 }
 
-// A thread's experiment mode is saved, and a database from before the column gets it.
-func TestThreadExperiment(t *testing.T) {
+// A thread's scratch mode is saved, and a database from before the column gets it.
+func TestThreadScratch(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "solo.db")
 	old, err := sql.Open("sqlite", "file:"+path)
 	if err != nil {
@@ -101,18 +101,18 @@ func TestThreadExperiment(t *testing.T) {
 	}
 	defer s.Close()
 	now := time.Now().Truncate(time.Millisecond)
-	if err := s.SaveThread(&Thread{ID: "t1", Kind: KindWorker, SessionID: "s1", Title: "Bench", Status: "idle", Experiment: true, CreatedAt: now, UpdatedAt: now}); err != nil {
+	if err := s.SaveThread(&Thread{ID: "t1", Kind: KindWorker, SessionID: "s1", Title: "Bench", Status: "idle", Scratch: true, CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
 	got, err := s.Threads()
-	if err != nil || len(got) != 2 || got[0].ID != "old" || got[0].Experiment || !got[1].Experiment {
+	if err != nil || len(got) != 2 || got[0].ID != "old" || got[0].Scratch || !got[1].Scratch {
 		t.Fatalf("threads %+v %v", got, err)
 	}
-	got[1].Experiment = false
+	got[1].Scratch = false
 	if err := s.SaveThread(got[1]); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ = s.Threads(); got[1].Experiment {
-		t.Fatal("experiment still on after turning it off")
+	if got, _ = s.Threads(); got[1].Scratch {
+		t.Fatal("scratch still on after turning it off")
 	}
 }

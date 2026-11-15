@@ -221,12 +221,12 @@ func (f *fakeBackend) SetThreadModel(_ context.Context, id, model, effort string
 	}
 	return nil
 }
-func (f *fakeBackend) SetExperiment(_ context.Context, id string, on bool) error {
+func (f *fakeBackend) SetScratch(_ context.Context, id string, on bool) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for i := range f.threads {
 		if f.threads[i].ID == id {
-			f.threads[i].Experiment = on
+			f.threads[i].Scratch = on
 		}
 	}
 	return nil

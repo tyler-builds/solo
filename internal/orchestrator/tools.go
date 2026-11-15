@@ -83,7 +83,7 @@ var toolSpecs = []agent.ToolSpec{
 			"base":{"type":"string","description":"Optional branch to start from; default is the repository's current branch."},
 			"images":{"type":"array","items":{"type":"string"},"description":"Optional paths of image files to send with it, such as the attached images the user gave you."},
 			"todo":{"type":"string","description":"Optional ID of a todo (from add_todo or list_todos) that this thread's work finishes: the app ticks it off when the work lands. Leave it out when the thread does only part of the todo."},
-			"experiment":{"type":"boolean","description":"Start it as an experiment: the user only wants to try or test something (a benchmark, a spike) and doesn't mean to land it through git. It still gets its worktree and branch, but nothing asks the user to land it, and you never propose a merge for it. Only when the user says so."}},
+			"scratch":{"type":"boolean","description":"Start it as a scratch thread: the user only wants to try or test something (a benchmark, a spike) and doesn't mean to land it through git. It still gets its worktree and branch, but nothing asks the user to land it, and you never propose a merge for it. Only when the user says so."}},
 			"required":["repo","title","prompt"]}`),
 	},
 	{
@@ -116,12 +116,12 @@ var toolSpecs = []agent.ToolSpec{
 		InputSchema: schema(`{"type":"object","properties":{"id":{"type":"string","description":"Thread ID or short ID."}},"required":["id"]}`),
 	},
 	{
-		Name: "set_experiment",
-		Description: "Turn a worker's experiment mode on or off. An experiment is a thread the user only wants to try or test something with, not land: no merge card, and the app doesn't ask the user to land it. " +
+		Name: "set_scratch",
+		Description: "Turn a worker's scratch mode on or off. A scratch thread is one the user only wants to try or test something with, not land: no merge card, and the app doesn't ask the user to land it. " +
 			"Turning it on removes the thread's merge card; turning it off makes it a normal thread to land again. Its worktree, branch and commits don't change. Only when the user says so.",
 		InputSchema: schema(`{"type":"object","properties":{
 			"id":{"type":"string","description":"Thread ID or short ID."},
-			"on":{"type":"boolean","description":"true to make it an experiment, false to make it a normal thread again."}},"required":["id","on"]}`),
+			"on":{"type":"boolean","description":"true to make it a scratch thread, false to make it a normal thread again."}},"required":["id","on"]}`),
 	},
 	{
 		Name:        "propose_merge",
@@ -230,7 +230,7 @@ func (o *Orchestrator) handleTool(ctx context.Context, threadID, name string, ra
 		Replaces      []int64           `json:"replaces"`
 		Queries       []string          `json:"queries"`
 		MemoryID      int64             `json:"memory_id"`
-		Experiment    bool              `json:"experiment"`
+		Scratch       bool              `json:"scratch"`
 		On            *bool             `json:"on"`
 	}
 	if len(raw) > 0 {
@@ -291,13 +291,13 @@ func (o *Orchestrator) handleTool(ctx context.Context, threadID, name string, ra
 		}
 	case "spawn_thread":
 		var v core.ThreadView
-		if v, err = o.c.CreateWorker(ctx, core.WorkerSpec{Repo: a.Repo, Repos: a.Repos, Title: a.Title, Prompt: a.Prompt, Model: a.Model, Effort: a.Effort, Base: a.Base, Images: a.Images, Experiment: a.Experiment}); err == nil {
+		if v, err = o.c.CreateWorker(ctx, core.WorkerSpec{Repo: a.Repo, Repos: a.Repos, Title: a.Title, Prompt: a.Prompt, Model: a.Model, Effort: a.Effort, Base: a.Base, Images: a.Images, Scratch: a.Scratch}); err == nil {
 			out = fmt.Sprintf("Started thread %s %q in %s (status: %s). You'll get a thread update when it finishes or needs input.",
 				short(v.ID), v.Title, repoList(v), v.Status)
 			if v.InPlace {
 				out += " It works directly in the folder, which isn't in git: no branch, diff or merge."
-			} else if v.Experiment {
-				out += " It's an experiment: when it finishes, report what it found or did; don't propose a merge."
+			} else if v.Scratch {
+				out += " It's a scratch thread: when it finishes, report what it found or did; don't propose a merge."
 			}
 			if a.Todo != "" {
 				if err = o.linkTodo(a.Todo, v.ID); err != nil {
@@ -341,16 +341,16 @@ func (o *Orchestrator) handleTool(ctx context.Context, threadID, name string, ra
 		if v, err = worker(); err == nil {
 			out, err = o.reopen(ctx, v)
 		}
-	case "set_experiment":
+	case "set_scratch":
 		var v core.ThreadView
 		if v, err = worker(); err == nil {
 			if a.On == nil {
 				err = errors.New("say on: true or on: false")
 				break
 			}
-			if v, err = o.c.SetExperimentFromOrchestrator(v.ID, *a.On); err == nil {
-				out = fmt.Sprintf("%s is an experiment now: nothing asks the user to land it, and its merge card, if it had one, is gone. Report what it finds; don't propose a merge.", short(v.ID))
-				if !v.Experiment {
+			if v, err = o.c.SetScratchFromOrchestrator(v.ID, *a.On); err == nil {
+				out = fmt.Sprintf("%s is a scratch thread now: nothing asks the user to land it, and its merge card, if it had one, is gone. Report what it finds; don't propose a merge.", short(v.ID))
+				if !v.Scratch {
 					out = fmt.Sprintf("%s is a normal thread again: when its work looks right, propose_merge it as usual.", short(v.ID))
 				}
 			}
@@ -580,8 +580,8 @@ func statusText(t core.ThreadView) string {
 	}
 	if t.InPlace {
 		s += " (works directly in a folder outside git: its edits are already in the user's files; nothing to review or merge)"
-	} else if t.Experiment {
-		s += " (an experiment: the user doesn't mean to land it; report what it found or did, and don't propose a merge)"
+	} else if t.Scratch {
+		s += " (a scratch thread: the user doesn't mean to land it; report what it found or did, and don't propose a merge)"
 	}
 	if !t.DoneAt.IsZero() && t.Status != core.StatusDiscarded {
 		s += " (the user marked it done: it's out of their list, in Settings › History)"
@@ -601,8 +601,8 @@ func (o *Orchestrator) describe(ctx context.Context, v core.ThreadView) string {
 	if v.Branch != "" {
 		fmt.Fprintf(&b, "Branch: %s (from %s)\n", v.Branch, v.BaseBranch)
 	}
-	if v.Experiment && !v.InPlace {
-		b.WriteString("Landing: none, it's an experiment: the user started it to try or test something and doesn't mean to land it. Report what it found or did; don't propose a merge.\n")
+	if v.Scratch && !v.InPlace {
+		b.WriteString("Landing: none, it's a scratch thread: the user started it to try or test something and doesn't mean to land it. Report what it found or did; don't propose a merge.\n")
 	}
 	if v.ActualModel != "" || v.Model != "" {
 		m := v.ActualModel
@@ -643,7 +643,7 @@ func (o *Orchestrator) describe(ctx context.Context, v core.ThreadView) string {
 			if len(pr.Failed) > 0 {
 				b.WriteString("; failed: " + failedChecks(pr.Failed))
 			}
-		} else if p.CanOpenPR && !v.Experiment {
+		} else if p.CanOpenPR && !v.Scratch {
 			fmt.Fprintf(&b, "\n%sLanding: the user opens a %s from your merge proposal.", where, p.Forge.Noun())
 		}
 	}

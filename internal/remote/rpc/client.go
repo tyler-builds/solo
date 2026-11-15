@@ -915,8 +915,8 @@ func (c *Client) SetThreadModel(ctx context.Context, threadID, model, effort str
 	return c.do(ctx, "setModel", modelParams{Thread: threadID, Model: model, Effort: effort}, nil)
 }
 
-func (c *Client) SetExperiment(ctx context.Context, threadID string, on bool) error {
-	return c.do(ctx, "setExperiment", experimentParams{Thread: threadID, On: on}, nil)
+func (c *Client) SetScratch(ctx context.Context, threadID string, on bool) error {
+	return c.do(ctx, "setScratch", scratchParams{Thread: threadID, On: on}, nil)
 }
 
 func (c *Client) SearchMessages(ctx context.Context, query string, limit int) ([]core.SearchHit, error) {

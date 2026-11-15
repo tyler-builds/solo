@@ -215,10 +215,10 @@ type Change struct {
 	Repo    string
 	// For ChangeAnswer: the question and what became of it.
 	Answer *Answered
-	// ExperimentSet: for ChangeThread, the thread's experiment mode was turned on or off
-	// (Core.SetExperiment), by ExperimentBy: FromUser or FromOrchestrator.
-	ExperimentSet bool
-	ExperimentBy  string
+	// ScratchSet: for ChangeThread, the thread's scratch mode was turned on or off
+	// (Core.SetScratch), by ScratchBy: FromUser or FromOrchestrator.
+	ScratchSet bool
+	ScratchBy  string
 }
 
 // Answered is a question a thread asked and what became of it.
