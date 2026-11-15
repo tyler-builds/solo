@@ -2,6 +2,9 @@ package core
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -122,5 +125,93 @@ func TestExperimentThread(t *testing.T) {
 	}
 	if out, err := git.Run(ctx, e.repo, "branch", "--list", v.Branch); err != nil || !strings.Contains(out, strings.TrimPrefix(v.Branch, "refs/heads/")) {
 		t.Fatalf("branch %s not kept after done: %q %v", v.Branch, out, err)
+	}
+}
+
+// New commits pushed to an experiment's open pull request bring no merge card back: turning the mode
+// on removed its card, and one that got past that (posted as the mode was turned on) isn't posted anew.
+func TestExperimentPushPostsNoCard(t *testing.T) {
+	gh := fakeGH(t)
+	e := newEnv(t)
+	ctx := context.Background()
+	run := func(dir string, args ...string) string {
+		t.Helper()
+		out, err := git.Run(ctx, dir, args...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	origin := filepath.Join(e.root, "origin.git")
+	run(e.root, "clone", "-q", "--bare", e.repo, origin)
+	run(e.repo, "remote", "add", "origin", origin)
+	run(e.repo, "config", "solo.forge", "github")
+	if _, err := e.c.EnsureOrchestrator(); err != nil {
+		t.Fatal(err)
+	}
+	v, err := e.c.CreateWorker(ctx, WorkerSpec{Repo: "proj", Title: "Bench GPUs", Prompt: "write bench.txt results"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	v = waitStatus(t, e.c, v.ID, StatusIdle)
+	for deadline := time.Now().Add(5 * time.Second); (v.Changed < 0 || v.Forge == "") && time.Now().Before(deadline); v, _ = e.c.Thread(v.ID) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	setView(t, gh, "OPEN", "BLOCKED")
+	if _, err := e.c.OpenPR(ctx, v.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.c.AddProposal(v.ID, "ship it"); err != nil {
+		t.Fatal(err)
+	}
+	cards := func() []Item {
+		t.Helper()
+		items, err := e.c.Items(ctx, OrchestratorID, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []Item
+		for _, it := range items {
+			if it.Kind == ItemProposal && it.Ref == v.ID {
+				out = append(out, it)
+			}
+		}
+		return out
+	}
+	n := 0
+	push := func() {
+		t.Helper()
+		n++
+		os.WriteFile(filepath.Join(v.WorktreePath, fmt.Sprintf("more%d.txt", n)), []byte("more"), 0o644)
+		run(v.WorktreePath, "add", "-A")
+		run(v.WorktreePath, "commit", "-q", "-m", fmt.Sprintf("more %d", n))
+		e.c.countChanges(v.ID)
+		head := run(v.WorktreePath, "rev-parse", "HEAD")
+		if remote := run(e.repo, "ls-remote", "origin", v.Branch); !strings.HasPrefix(remote, head) {
+			t.Fatalf("new commit not pushed: remote %q, local %s", remote, head)
+		}
+	}
+
+	if err := e.c.SetExperiment(ctx, v.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	push()
+	if all := cards(); len(all) != 0 {
+		t.Fatalf("a push brought a card back: %+v", all)
+	}
+
+	// A card that got past the mode stays where it is, not posted anew at the end of Solo's chat.
+	e.c.mu.Lock()
+	err = e.c.postProposalLocked(ProposalData{ThreadID: v.ID, Title: v.Title, Summary: "ship it"})
+	e.c.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stray := cards()
+	e.c.addNotice(OrchestratorID, "info", "the conversation moves on")
+	push()
+	e.c.cardStale(v.ID)
+	if all := cards(); len(all) != 1 || all[0].ID != stray[0].ID {
+		t.Fatalf("an experiment's card was posted anew: %+v, was %+v", all, stray)
 	}
 }

@@ -288,9 +288,10 @@ func (c *Core) soloIdleLocked() bool {
 }
 
 // repostCardLocked posts the thread's merge card anew, with its summary, while one of its pull
-// requests is still open; false when it has no card or nothing left open.
+// requests is still open; false when it has no card, nothing left open, or it is an experiment, which
+// the user doesn't mean to land (SetExperiment).
 func (c *Core) repostCardLocked(t *thread) (bool, error) {
-	if Finished(t.row.Status) || !slices.ContainsFunc(t.parts, (*part).prOpen) {
+	if t.row.Experiment || Finished(t.row.Status) || !slices.ContainsFunc(t.parts, (*part).prOpen) {
 		return false, nil
 	}
 	items, err := c.db.ItemsByRef(context.Background(), OrchestratorID, ItemProposal, t.row.ID)
