@@ -170,7 +170,8 @@ func subtle(ctx *ui.Context, s string) *ui.TextElement {
 const statusNoChanges = "no-changes"
 
 // statusFinished is shown for a thread that worked directly in a folder outside git and finished: its
-// edits are already in place, so there is nothing to review or merge (ThreadView.InPlace).
+// edits are already in place, so there is nothing to review or merge (ThreadView.InPlace). An
+// experiment that finished shows it too: the user doesn't mean to land it (store.Thread.Experiment).
 const statusFinished = "finished"
 
 // Statuses the UI shows for a worker with an open pull request.
@@ -187,7 +188,7 @@ func shownStatus(v core.ThreadView) string {
 	if v.NoChanges {
 		return statusNoChanges
 	}
-	if v.InPlace && v.Status == core.StatusIdle {
+	if (v.InPlace || v.Experiment) && v.Status == core.StatusIdle {
 		return statusFinished
 	}
 	if open := openPRs(v); len(open) > 0 && !core.Active(v.Status) && v.Status != core.StatusFailed {
@@ -296,7 +297,7 @@ func statusLabel(v core.ThreadView) string {
 		switch {
 		case v.NoChanges:
 			return "No changes"
-		case v.InPlace:
+		case v.InPlace || v.Experiment:
 			return "Finished"
 		case v.CanOpenPR:
 			return "Ready for a " + v.Forge.Noun()

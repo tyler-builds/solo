@@ -38,7 +38,7 @@ func (a *App) notifyChange(ch core.Change) {
 				n = &Notification{Title: "Solo replied.", Body: body, Thread: ""}
 			}
 		}
-	case ch.PREvent == core.PRChecksFailed:
+	case ch.PREvent == core.PRChecksFailed && !v.Experiment: // an experiment isn't meant to land
 		n = &Notification{Title: fmt.Sprintf("Checks failed on “%s”.", v.Title), Body: prBody(v, ch.Repo), Thread: v.ID}
 	case ch.PREvent == core.PRMerged:
 		n = &Notification{Title: fmt.Sprintf("“%s” merged.", v.Title), Body: prBody(v, ch.Repo), Thread: v.ID}

@@ -195,14 +195,22 @@ func (a *App) repoMenu(ctx *ui.Context) ui.Element {
 	})
 }
 
-// needsUser reports whether a thread waits on the user: a question, a failure, or work to review.
+// needsUser reports whether a thread waits on the user: a question, a failure, or work to review. An
+// experiment (store.Thread.Experiment) has no work to review: only a question or a failure.
 func needsUser(th core.ThreadView) bool {
+	if th.Experiment {
+		return th.Status == core.StatusWaiting || th.Status == core.StatusFailed
+	}
 	if th.PR != nil && th.PR.State == forge.StateOpen {
 		return th.CanMerge && !th.PR.AutoMerge // checks passed and it waits for the user's Merge
 	}
 	return th.Status == core.StatusWaiting || th.Status == core.StatusFailed ||
 		(th.Status == core.StatusIdle && (th.CanMerge || th.CanOpenPR))
 }
+
+// asksToLand reports whether marking a thread done asks first because its changes haven't landed:
+// not for an experiment, which the user never meant to land (its branch is kept all the same).
+func asksToLand(th core.ThreadView) bool { return th.Unlanded && !th.Experiment }
 
 func groupHeader(ctx *ui.Context, title string, n int, status string) ui.Element {
 	t := ctx.Theme()
@@ -292,7 +300,7 @@ func (a *App) rowTime(ctx *ui.Context, th core.ThreadView) (string, ui.Color) {
 // rowEnd is the end of a rail row's first line: its time, or a Done button for a thread with nothing
 // left to land. One with unlanded changes is marked done from its panel's menu, which asks first.
 func (a *App) rowEnd(ctx *ui.Context, th core.ThreadView, when string, c ui.Color) ui.Element {
-	if th.CanDone && !th.Unlanded {
+	if th.CanDone && !asksToLand(th) {
 		return ui.Div().Height(ui.Px(16)).Row().Align(ui.Center).
 			Child(ui.IconButton(icons.Check).Ghost().Small().Label("Mark “" + th.Title + "” done").
 				Tooltip("Done: take it out of your list").OnClick(func() { a.markDone(th) }))

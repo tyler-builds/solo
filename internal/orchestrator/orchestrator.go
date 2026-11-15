@@ -328,6 +328,10 @@ func (o *Orchestrator) onChange(ch core.Change) {
 		}
 		return
 	}
+	if ch.ExperimentSet {
+		o.onExperiment(ch)
+		return
+	}
 	if ch.PrevStatus == ch.Status && ch.PREvent == "" {
 		return
 	}
@@ -365,11 +369,16 @@ func (o *Orchestrator) onChange(ch core.Change) {
 			}
 		case core.PRChecksPassed:
 			line = fmt.Sprintf("%s: checks passed on %s.", label(v), noun)
+			if v.Experiment {
+				line += experimentNote
+			}
 		case core.PRClosed:
 			line = fmt.Sprintf("%s: %s was closed without merging.", label(v), noun)
 		case core.PRChecksFailed:
 			line = fmt.Sprintf("%s: checks failed on %s: %s.", label(v), noun, failedChecks(pr.Failed))
-			if o.c.Settings().OnChecksFail == core.ChecksNotify {
+			if v.Experiment {
+				line += experimentNote
+			} else if o.c.Settings().OnChecksFail == core.ChecksNotify {
 				line += " The user handles failed checks themselves: tell them, and don't ask the thread to fix it."
 			} else {
 				line += " Have the thread fix them with message_thread (it can read the failures with gh pr checks or glab ci view); Solo pushes its new commits to the " + pr.Kind.Noun() + "."
@@ -397,6 +406,8 @@ func (o *Orchestrator) onChange(ch core.Change) {
 		line = fmt.Sprintf("%s finished its turn. Summary: %s", label(v), clip(oneLine(v.Summary), 600))
 		if v.Resolving {
 			line = fmt.Sprintf("%s resolved the conflicts its merge had; Solo is merging it now, so don't propose it again.", label(v))
+		} else if v.Experiment && !v.InPlace {
+			line += experimentNote
 		}
 	case core.StatusBackground:
 		line = fmt.Sprintf("%s ended its turn but isn't finished: it waits on work it runs in the background (%s), "+
@@ -421,6 +432,26 @@ func (o *Orchestrator) onChange(ch core.Change) {
 		return
 	}
 	o.queue(line)
+}
+
+// experimentNote ends a thread update about an experiment thread (store.Thread.Experiment).
+const experimentNote = " It's an experiment: the user doesn't mean to land it, so there is nothing to land. Report what it found or did; don't propose a merge or have it fix checks."
+
+// onExperiment notes, for Solo's next message, that the user turned a thread's experiment mode on or
+// off themselves (set_experiment tells Solo when it does). It starts no turn.
+func (o *Orchestrator) onExperiment(ch core.Change) {
+	if ch.ExperimentBy != core.FromUser {
+		return
+	}
+	v, ok := o.c.Thread(ch.ThreadID)
+	if !ok || v.Kind != store.KindWorker {
+		return
+	}
+	n := fmt.Sprintf("[Solo: the user made %s an experiment: they don't mean to land it, and its merge card, if it had one, is gone. Report what it finds; don't propose a merge.]", label(v))
+	if !v.Experiment {
+		n = fmt.Sprintf("[Solo: the user made %s a normal thread again, no longer an experiment: propose_merge it when its work looks right.]", label(v))
+	}
+	o.note(n)
 }
 
 func askingLine(v core.ThreadView) string {

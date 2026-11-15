@@ -203,6 +203,20 @@ Raw `SDKMessage`s are also appended to a per-session JSONL file for debugging an
   lost; **Discard** is what deletes work. Discarding marks it done too. **Restore** recreates the
   worktree at the same path (on the branch if it survived, else a new one from the base branch's head),
   so the Claude session resumes.
+- **Experiments** (`threads.experiment`, `core.Core.SetExperiment`): a thread the user started only to
+  try or test something (a benchmark, a spike) and doesn't mean to land. Solo starts one with
+  `spawn_thread(..., experiment: true)` or turns the mode on or off with `set_experiment(id, on)`,
+  only when the user says so; the user does it from the thread's More menu (an "experiment" label
+  shows in its header, beside where "not in git" would). Nothing about landing asks for attention:
+  `propose_merge` refuses it, turning the mode on deletes its merge card, it doesn't count toward
+  "needs you" (rail, the bar's count, Solo's chat pill, next-thread), failed checks on a PR it already
+  has raise no notification, and an idle one reads as Finished, as an in-place thread does. A
+  question or a failure still needs the user. Thread updates, `get_thread` and `list_threads` tell Solo
+  it is an experiment with nothing to land, and the user turning the mode on or off is noted for Solo's
+  next message. It is not another way of working: it keeps its worktree and branch, its worker may
+  commit, Done and Discard do what they do for any thread (Done keeps an unlanded branch, but doesn't
+  ask first), and the header's Open PR / Merge stays, as a secondary button, so the user can still
+  land it.
 - Pull requests (`internal/forge`): the forge comes from origin's host, or `git config solo.forge
   github|gitlab` for self-hosted ones. Open PR commits leftovers, pushes the branch and opens the PR
   against the base branch. The PR text model (Settings › Models; Haiku by default) writes the title and

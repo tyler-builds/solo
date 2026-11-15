@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS threads (
 	pr             TEXT NOT NULL DEFAULT '',
 	parts          TEXT NOT NULL DEFAULT '',
 	effort         TEXT NOT NULL DEFAULT '',
+	experiment     INTEGER NOT NULL DEFAULT 0,
 	cost_usd       REAL NOT NULL DEFAULT 0,
 	context_tokens INTEGER NOT NULL DEFAULT 0,
 	created_at     INTEGER NOT NULL,
@@ -79,7 +80,8 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("store: schema: %w", err)
 	}
 	// Columns added after the first release. SQLite has no ADD COLUMN IF NOT EXISTS.
-	for _, col := range []string{`prompt_images TEXT NOT NULL DEFAULT ''`, `done_at INTEGER NOT NULL DEFAULT 0`, `pr TEXT NOT NULL DEFAULT ''`, `parts TEXT NOT NULL DEFAULT ''`, `effort TEXT NOT NULL DEFAULT ''`, `cost_base REAL NOT NULL DEFAULT 0`} {
+	for _, col := range []string{`prompt_images TEXT NOT NULL DEFAULT ''`, `done_at INTEGER NOT NULL DEFAULT 0`, `pr TEXT NOT NULL DEFAULT ''`, `parts TEXT NOT NULL DEFAULT ''`, `effort TEXT NOT NULL DEFAULT ''`, `cost_base REAL NOT NULL DEFAULT 0`,
+		`experiment INTEGER NOT NULL DEFAULT 0`} {
 		if _, err := db.Exec(`ALTER TABLE threads ADD COLUMN ` + col); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			db.Close()
 			return nil, fmt.Errorf("store: migrate: %w", err)
@@ -120,19 +122,19 @@ func (s *Store) SetSetting(key string, v any) error {
 }
 
 const threadCols = `id, kind, session_id, has_transcript, title, repo_path, worktree_path, branch, base_branch,
-	base_commit, model, status, summary, error, prompt, prompt_images, done_at, pr, parts, effort, cost_usd, cost_base, context_tokens, created_at, updated_at`
+	base_commit, model, status, summary, error, prompt, prompt_images, done_at, pr, parts, effort, experiment, cost_usd, cost_base, context_tokens, created_at, updated_at`
 
 // SaveThread inserts or replaces the thread.
 func (s *Store) SaveThread(t *Thread) error {
-	_, err := s.db.Exec(`INSERT INTO threads(`+threadCols+`) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+	_, err := s.db.Exec(`INSERT INTO threads(`+threadCols+`) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(id) DO UPDATE SET kind=excluded.kind, session_id=excluded.session_id,
 		has_transcript=excluded.has_transcript, title=excluded.title, repo_path=excluded.repo_path,
 		worktree_path=excluded.worktree_path, branch=excluded.branch, base_branch=excluded.base_branch,
 		base_commit=excluded.base_commit, model=excluded.model, status=excluded.status, summary=excluded.summary,
-		error=excluded.error, prompt=excluded.prompt, prompt_images=excluded.prompt_images, done_at=excluded.done_at, pr=excluded.pr, parts=excluded.parts, effort=excluded.effort, cost_usd=excluded.cost_usd, cost_base=excluded.cost_base,
+		error=excluded.error, prompt=excluded.prompt, prompt_images=excluded.prompt_images, done_at=excluded.done_at, pr=excluded.pr, parts=excluded.parts, effort=excluded.effort, experiment=excluded.experiment, cost_usd=excluded.cost_usd, cost_base=excluded.cost_base,
 		context_tokens=excluded.context_tokens, updated_at=excluded.updated_at`,
 		t.ID, t.Kind, t.SessionID, t.HasTranscript, t.Title, t.RepoPath, t.WorktreePath, t.Branch, t.BaseBranch,
-		t.BaseCommit, t.Model, t.Status, t.Summary, t.Error, t.Prompt, joinPaths(t.PromptImages), unixMilli(t.DoneAt), t.PR, t.Parts, t.Effort, t.CostUSD, t.CostBase, t.ContextTokens,
+		t.BaseCommit, t.Model, t.Status, t.Summary, t.Error, t.Prompt, joinPaths(t.PromptImages), unixMilli(t.DoneAt), t.PR, t.Parts, t.Effort, t.Experiment, t.CostUSD, t.CostBase, t.ContextTokens,
 		t.CreatedAt.UnixMilli(), t.UpdatedAt.UnixMilli())
 	if err != nil {
 		return err
@@ -154,7 +156,7 @@ func (s *Store) Threads() ([]*Thread, error) {
 		var images string
 		var done int64
 		if err := rows.Scan(&t.ID, &t.Kind, &t.SessionID, &t.HasTranscript, &t.Title, &t.RepoPath, &t.WorktreePath,
-			&t.Branch, &t.BaseBranch, &t.BaseCommit, &t.Model, &t.Status, &t.Summary, &t.Error, &t.Prompt, &images, &done, &t.PR, &t.Parts, &t.Effort,
+			&t.Branch, &t.BaseBranch, &t.BaseCommit, &t.Model, &t.Status, &t.Summary, &t.Error, &t.Prompt, &images, &done, &t.PR, &t.Parts, &t.Effort, &t.Experiment,
 			&t.CostUSD, &t.CostBase, &t.ContextTokens, &created, &updated); err != nil {
 			return nil, err
 		}

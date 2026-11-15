@@ -70,6 +70,16 @@ func (a *App) landControl(ctx *ui.Context, th core.ThreadView, short bool) ui.El
 				"The thread is merging it in, then Solo merges.")
 	}
 	e := a.landButton(ctx, th, short)
+	if th.Experiment {
+		// The user doesn't mean to land an experiment, but may change their mind: the button stays,
+		// without the emphasis that asks for it.
+		switch b := e.(type) {
+		case *ui.ButtonElement:
+			e = b.Secondary()
+		case *ui.SplitButtonElement:
+			e = b.Secondary()
+		}
+	}
 	if a.busy.Get()[th.ID] {
 		switch b := e.(type) {
 		case *ui.ButtonElement:
@@ -90,6 +100,9 @@ func (a *App) landAction(ctx *ui.Context, th core.ThreadView, short bool) ui.Ele
 		return a.landControl(ctx, th, short) // it merges by itself once the conflicts are resolved
 	}
 	busy := core.Active(th.Status) || th.Status == core.StatusQueued
+	if busy && th.Experiment {
+		return nil // nothing it is meant to land, so nothing to wait for
+	}
 	if busy && th.IsWorker && !th.InPlace && (th.Changed > 0 || len(openPRs(th)) > 0) {
 		return a.landBlocked(th)
 	}
@@ -530,10 +543,12 @@ func (a *App) threadPanel(ctx *ui.Context) ui.Element {
 	if pr := a.prLink(ctx, th); pr != nil {
 		land = append(land, pr)
 	}
-	switch l := a.landAction(ctx, th, true); {
-	case l != nil:
+	l := a.landAction(ctx, th, true)
+	if l != nil {
 		land = append(land, l)
-	case th.CanDone && !th.Unlanded:
+	}
+	// An experiment's landing button is a quiet one, so Done stays beside it.
+	if th.CanDone && !asksToLand(th) && (l == nil || th.Experiment) {
 		land = append(land, ui.Button("Done").Icon(icons.Check).Primary().Small().
 			Tooltip("Take it out of your list. Settings › History can restore it.").
 			OnClick(func() { a.markDone(th) }))
@@ -542,7 +557,7 @@ func (a *App) threadPanel(ctx *ui.Context) ui.Element {
 		// One wrapping row there, under the window's bar: the landing controls come before More.
 		tools = tools.Children(land...)
 	}
-	if th.CanDiscard || th.CanInterrupt || th.CanMergeLocal || th.Unlanded || th.Dir != "" {
+	if th.IsWorker || th.CanDiscard || th.CanInterrupt || th.CanMergeLocal || th.Unlanded || th.Dir != "" {
 		tools = tools.Child(ui.DropdownMenu(
 			ui.IconButton(icons.Ellipsis).Ghost().Small().Label("More actions").Tooltip("More"),
 			func() []ui.MenuItem {
@@ -559,10 +574,13 @@ func (a *App) threadPanel(ctx *ui.Context) ui.Element {
 				if th.CanMergeLocal && th.Forge != forge.None {
 					items = append(items, ui.MenuItem{Label: "Merge locally instead", Icon: icons.GitMerge, OnClick: func() { a.mergeLocal(id) }})
 				}
-				if th.CanDone && th.Unlanded {
+				if th.CanDone && asksToLand(th) {
 					items = append(items, ui.MenuItem{Label: "Mark done…", Icon: icons.Check, OnClick: func() { a.markDone(th) }})
 				} else if th.CanDone && (th.CanOpenPR || th.CanMerge || th.PR != nil) {
 					items = append(items, ui.MenuItem{Label: "Done", Icon: icons.Check, OnClick: func() { a.markDone(th) }})
+				}
+				if th.IsWorker && !th.InPlace {
+					items = append(items, a.experimentItem(th))
 				}
 				if th.Dir != "" {
 					dir := th.Dir
@@ -600,6 +618,9 @@ func (a *App) threadPanel(ctx *ui.Context) ui.Element {
 			meta = meta.Child(ui.Div().Tooltip("This folder isn't in git, so the thread edits it directly: no separate copy, diff or merge. Settings › General can put it in git.").
 				Child(subtle(ctx, "not in git")))
 		}
+	}
+	if th.Experiment && !th.InPlace {
+		meta = meta.Child(experimentLabel(ctx))
 	}
 	if a.cfg.Get().ShowCosts && th.CostUSD > 0 {
 		meta = meta.Child(subtle(ctx, fmt.Sprintf("$%.2f", th.CostUSD)))
@@ -765,6 +786,27 @@ func (a *App) confirmDiscard(th core.ThreadView) {
 			a.run("Discard", func(ctx context.Context) error { return a.b.Discard(ctx, id) })
 		},
 	})
+}
+
+// experimentItem is the thread menu's item that turns its experiment mode on or off
+// (store.Thread.Experiment).
+func (a *App) experimentItem(th core.ThreadView) ui.MenuItem {
+	id, on := th.ID, !th.Experiment
+	label, icon, what := "Mark as experiment", icons.FlaskConical, "Marking it an experiment"
+	if th.Experiment {
+		label, icon, what = "Not an experiment", icons.FlaskConicalOff, "Making it a normal thread"
+	}
+	return ui.MenuItem{Label: label, Icon: icon, OnClick: func() {
+		a.run(what, func(ctx context.Context) error { return a.b.SetExperiment(ctx, id, on) })
+	}}
+}
+
+// experimentLabel marks an experiment in its header, as "not in git" marks a folder outside git.
+func experimentLabel(ctx *ui.Context) ui.Element {
+	return ui.Div().Key("experiment-label").
+		Tooltip("An experiment: you're trying something out, not landing it, so Solo proposes no merge and it never waits on you to land it. " +
+			"It still has its branch, and you can land it if you change your mind. More › Not an experiment turns this off.").
+		Child(subtle(ctx, "experiment"))
 }
 
 // discardText says what discarding a thread loses.

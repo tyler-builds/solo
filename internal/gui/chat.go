@@ -1128,7 +1128,7 @@ func (a *App) proposalCard(ctx *ui.Context, d core.ProposalData) ui.Element {
 					}
 					if th.CanDone {
 						label := "Done"
-						if th.Unlanded {
+						if asksToLand(th) {
 							label = "Mark done…"
 						}
 						items = append(items, ui.MenuItem{Label: label, Icon: icons.Check, OnClick: func() { a.markDone(th) }})
@@ -1887,7 +1887,7 @@ func (a *App) isAction(r row) bool {
 	switch r.item.Kind {
 	case core.ItemProposal:
 		th, ok := a.thread(r.item.Ref)
-		return ok && th.CanMerge
+		return ok && th.CanMerge && !th.Experiment
 	case core.ItemQuestion:
 		var d core.QuestionData
 		r.item.Decode(&d)

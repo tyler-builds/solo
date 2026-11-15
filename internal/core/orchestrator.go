@@ -112,6 +112,9 @@ func (c *Core) AddProposal(workerID, summary string) error {
 	if !ok {
 		return fmt.Errorf("no thread %s", workerID)
 	}
+	if v.Experiment {
+		return experimentError(v)
+	}
 	if v.NoChanges || (v.Changed == 0 && !Finished(v.Status)) {
 		return fmt.Errorf("thread %q changed no files; there is nothing to merge", v.Title)
 	}

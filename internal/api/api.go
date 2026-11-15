@@ -60,6 +60,9 @@ type Backend interface {
 	OpenPRFor(ctx context.Context, threadID, repo string, draft bool) ([]forge.PR, error)
 	MergeRepo(ctx context.Context, threadID, repo string) (string, error)
 	SetThreadModel(ctx context.Context, threadID, model, effort string) error
+	// SetExperiment turns a worker's experiment mode on or off: a thread the user doesn't mean to land
+	// (see core.Core.SetExperiment).
+	SetExperiment(ctx context.Context, threadID string, on bool) error
 	SearchMessages(ctx context.Context, query string, limit int) ([]core.SearchHit, error)
 	// Skills lists the skills and commands a conversation can invoke with "/"; with threadID "", the
 	// skills Settings offers for pull request text (see core.Core.Skills).
