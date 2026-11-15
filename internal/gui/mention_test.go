@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tyler-builds/jamb/access"
 	"github.com/tyler-builds/jamb/ui/uitest"
@@ -208,6 +209,33 @@ func TestAtMenu(t *testing.T) {
 			t.Fatalf("draft %q, want %q", got, want)
 		}
 	})
+}
+
+// Typing after "@" in a thread asks the machine for its files once typing pauses, not for each key:
+// from a web page each search is a round trip through the relay.
+func TestAtMenuSearchWaitsForTyping(t *testing.T) {
+	f := demoBackend()
+	a, u := newUI(t, f)
+	a.openThread("a1f3c9d2-oauth", "conversation")
+	u.Frame()
+	area := u.Get("draft-a1f3c9d2-oauth-area")
+	area.Type("look at @")
+	for _, c := range "internal/au" { // a key a frame, 50 ms apart
+		u.Type(string(c))
+		u.Advance(50 * time.Millisecond)
+	}
+	u.WaitFor("the files", func() bool { return menuShows(u, "token.go") })
+	f.mu.Lock()
+	got := append([]string(nil), f.pathQueries...)
+	f.mu.Unlock()
+	for i, q := range got {
+		if q != "" && q != "internal/au" || q == "" && i > 0 {
+			t.Fatalf("searched for %q; want at most the list's first search, then the query typed", got)
+		}
+	}
+	if len(got) == 0 || got[len(got)-1] != "internal/au" {
+		t.Errorf("searched for %q; want the query typed last", got)
+	}
 }
 
 // Up in an empty composer brings back the messages sent there, newest first; Down goes back.

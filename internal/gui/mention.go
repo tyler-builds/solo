@@ -129,6 +129,10 @@ const (
 	menuRowH    = 30
 	menuRows    = 8 // rows shown; the list moves to keep the highlighted one in view
 	menuMaxHits = 50
+	// pathSearchDelay is how long typing after "@" in a thread pauses before the machine is asked
+	// for the files that match: a web page asks it over the relay, and a search for each key would
+	// queue round trips behind each other. The list keeps the last answer meanwhile.
+	pathSearchDelay = 150 * time.Millisecond
 )
 
 // skillItems are the skills and commands matching q, best first.
@@ -287,6 +291,36 @@ type mentionKit struct {
 	sent     func()                  // the draft was sent
 }
 
+// pathWait is the path search that waits for typing to pause (see pathQuery).
+type pathWait struct {
+	open   bool   // the list was open at the last render
+	query  string // the query that waits
+	cancel func()
+}
+
+// pathQuery returns the query that the "@" list of a composer searches the machine's files for: what is
+// typed when the list opens, and then what is typed once typing pauses for pathSearchDelay. Each key
+// would otherwise ask the machine again.
+func (a *App) pathQuery(ctx *ui.Context, key, typed string, searching bool) string {
+	q := ui.Local(ctx, key+"-path-query", typed)
+	w := ui.Local(ctx, key+"-path-wait", &pathWait{}).Peek()
+	if w.cancel != nil && (!searching || typed != w.query) {
+		w.cancel()
+		*w = pathWait{open: w.open}
+	}
+	if !searching {
+		w.open = false
+		return typed
+	}
+	if !w.open {
+		w.open = true
+		q.Set(typed) // the list opens with what is typed then, at once
+	} else if typed != q.Peek() && w.cancel == nil {
+		w.query, w.cancel = typed, ctx.After(pathSearchDelay, func() { w.cancel = nil; q.Set(typed) })
+	}
+	return q.Get()
+}
+
 // mentions builds a composer's lists. boxW is about the composer's width, and areaW its text's.
 func (a *App) mentions(ctx *ui.Context, v core.ThreadView, key string, draft *ui.Signal[string], focus *ui.FocusHandle,
 	areaW, boxW, below float32) mentionKit {
@@ -313,9 +347,11 @@ func (a *App) mentions(ctx *ui.Context, v core.ThreadView, key string, draft *ui
 
 	// The list's rows. Each list loads only while it is open.
 	skills := a.skillsQuery(ctx, v.ID, open && tr.kind == '/')
-	paths := ui.Query(ctx, "paths:"+v.ID+"\x00"+tr.query, func(cx context.Context) ([]core.PathHit, error) {
-		return a.b.SearchPaths(cx, v.ID, tr.query, menuMaxHits)
-	}, ui.QueryEnabled(open && tr.kind == '@' && worker), ui.QueryKeepPrevious(), ui.QueryStaleTime(5*time.Second))
+	searching := open && tr.kind == '@' && worker
+	query := a.pathQuery(ctx, key, tr.query, searching)
+	paths := ui.Query(ctx, "paths:"+v.ID+"\x00"+query, func(cx context.Context) ([]core.PathHit, error) {
+		return a.b.SearchPaths(cx, v.ID, query, menuMaxHits)
+	}, ui.QueryEnabled(searching), ui.QueryKeepPrevious(), ui.QueryStaleTime(5*time.Second))
 	var items []menuItem
 	title, loading, failed := "", false, ""
 	if open {
