@@ -56,7 +56,8 @@ func (a *App) orchestratorView(ctx *ui.Context) ui.Element {
 		Child(body).
 		Child(ui.Div().Column().Align(ui.Center).PaddingX(gutter(ctx)).PaddingBottom(gutter(ctx) - space2).Shrink(0).
 			Child(ui.Div().Column().Gap(space2).Width(ui.Full).MaxWidth(ui.Px(chatMaxWidth)).
-				Child(a.questionStrip(ctx)).
+				// A component of its own: what it reads re-renders it, not the conversation.
+				Child(ui.Component(a.questionStrip)).
 				Child(a.composer(ctx, v, "orch-draft", "orch", "Message Solo…", func(text string, images []string) error {
 					return a.b.SendToOrchestrator(context.Background(), text, images...)
 				})))).
@@ -158,7 +159,11 @@ func (a *App) transcript(ctx *ui.Context, v core.ThreadView, items []core.Item, 
 		// scrolled away.
 		return ui.Component(func(rctx *ui.Context) ui.Element {
 			a.markBuilt(rctx, scope, key, true)
-			rctx.OnDispose(func() { a.markBuilt(rctx, scope, key, false) })
+			// Once for the row, not in each of its renders, which would add a callback each time.
+			if once := ui.Local(rctx, "disposer", false); !once.Peek() {
+				once.Set(true)
+				rctx.OnDispose(func() { a.markBuilt(rctx, scope, key, false) })
+			}
 			col := ui.Div().Column().Width(ui.Full).MaxWidth(ui.Px(chatMaxWidth)).PaddingY(space1 + 2)
 			if r.topic {
 				// Solo's chat rules off each exchange from the one before.
@@ -1281,7 +1286,7 @@ func (a *App) askForm(ctx *ui.Context, threadID, toolUseID string, qs []agent.Qu
 func (a *App) questionStrip(ctx *ui.Context) ui.Element {
 	pending := a.pending.Get()
 	folded := a.foldedAsks.Get()
-	writing := strings.TrimSpace(a.orchDraft.Get()) != "" // the question folds while the user writes to Solo
+	writing := a.orchWriting.Get() // the question folds while the user writes to Solo
 	type ask struct {
 		th core.ThreadView
 		pq core.PendingQuestion

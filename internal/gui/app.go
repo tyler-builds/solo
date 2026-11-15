@@ -71,6 +71,7 @@ type App struct {
 	built       map[string]bool // transcript rows that are built, by scope/key (UI thread only)
 	builtVer    *ui.Signal[int]
 	orchDraft   *ui.Signal[string] // the message being written to Solo
+	orchWriting *ui.Computed[bool] // whether orchDraft has text: it changes on the first key, not each one
 	orchFocus   *ui.FocusHandle
 	foldedAsks  *ui.Signal[map[string]bool] // pinned questions the user folded, by tool-use ID
 	askOpen     *ui.Signal[string]          // the pinned question the user last opened, by tool-use ID
@@ -209,6 +210,7 @@ func New(b Backend) *App {
 		}
 		return n
 	})
+	a.orchWriting = ui.NewComputed(func() bool { return strings.TrimSpace(a.orchDraft.Get()) != "" })
 	a.unsub = b.Subscribe(a.onChange)
 	return a
 }
