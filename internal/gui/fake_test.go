@@ -45,6 +45,7 @@ type fakeBackend struct {
 	todos       []core.Todo
 	skills      []core.Skill   // for "/" and Settings; fakeSkills when nil
 	paths       []core.PathHit // a thread's files, for "@"; fakePaths when nil
+	pathQueries []string       // the queries SearchPaths was asked, in order
 	// machineNow is the time on the machine, for a backend on another one (api.Clock); nil for this
 	// process's clock.
 	machineNow func() time.Time
@@ -91,6 +92,7 @@ func (f *fakeBackend) Skills(_ context.Context, threadID string) ([]core.Skill, 
 func (f *fakeBackend) SearchPaths(_ context.Context, _ string, query string, limit int) ([]core.PathHit, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.pathQueries = append(f.pathQueries, query)
 	src := f.paths
 	if src == nil {
 		src = fakePaths
