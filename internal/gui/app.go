@@ -707,7 +707,10 @@ func (a *App) titleBar(ctx *ui.Context) ui.Element {
 	trailing = append(trailing, ui.IconButton(icons.Settings).Ghost().Small().Label("Settings").Tooltip("Settings").
 		Key("open-settings").OnClick(func() { a.settings.Set(true) }))
 	return ui.TitleBar().Height(ui.Px(40)).
-		Child(ui.Div().PaddingLeft(space6).Child(brandMark(20))). // in line with the rail's headings
+		// The mark's left edge is in line with the rail panel's border below it (the rail's PaddingX), as
+		// the settings button's glyph, last in the bar where the desktop puts no window buttons after it,
+		// is with the right panel's.
+		Child(ui.Div().PaddingLeft(space2).Child(brandMark(20))).
 		Center(find).
 		Trailing(trailing...)
 }
