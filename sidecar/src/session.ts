@@ -26,6 +26,7 @@ import {
   type SpawnedProcess,
 } from "@anthropic-ai/claude-agent-sdk";
 import { fromJSONSchema, type ZodObject } from "zod";
+import { ENTRYPOINT, claudeProcess } from "./launch";
 import { Normalizer } from "./normalize";
 import type { AgentEventBody, AskResult, OpenParams, Question, SendParams, ToolCallResult } from "./protocol";
 import { errorText, log, type Peer } from "./rpc";
@@ -41,16 +42,6 @@ function userContent(p: SendParams): SDKUserMessage["message"]["content"] {
     })),
     ...(p.text ? [{ type: "text" as const, text: p.text }] : []),
   ];
-}
-
-// claudeExecutable is the SDK option naming the claude binary. A compiled sidecar can't fall back to
-// the SDK's bundled CLI, so it needs a path from Go.
-export function claudeExecutable(path?: string): { pathToClaudeCodeExecutable?: string } {
-  if (path) return { pathToClaudeCodeExecutable: path };
-  if (/\$bunfs|~BUN/.test(import.meta.path)) {
-    throw new Error("Claude Code not found. Install it, or set its path in Settings.");
-  }
-  return {};
 }
 
 const STDERR_TAIL = 2048;
@@ -79,6 +70,25 @@ export function toolDenial(
   if (toolName === "Bash" && typeof input.command === "string" && bashAllowed(p.bashAllow, input.command))
     return undefined;
   return `${toolName} is not available to this session: it only reads. Start a worker thread to make changes.`;
+}
+
+/**
+ * missingArtifact says why a session that should have the Artifact tool started without it, or
+ * undefined when it has it or wasn't meant to. Solo gets the tool only through its entrypoint (see
+ * ENTRYPOINT), which Claude Code doesn't document, so a Claude Code update could take it away.
+ */
+export function missingArtifact(
+  p: Pick<OpenParams, "tools" | "disallowedTools">,
+  tools: string[],
+  claudeVersion?: string,
+): string | undefined {
+  if (tools.includes("Artifact")) return undefined;
+  if ((p.tools && !p.tools.includes("Artifact")) || p.disallowedTools?.includes("Artifact")) return undefined;
+  return (
+    `Claude Code ${claudeVersion || "(unknown version)"} started without the Artifact tool. Artifacts are off for ` +
+    `this account or its settings (see https://code.claude.com/docs/en/artifacts#availability), or Claude Code ` +
+    `no longer offers them to entrypoint "${ENTRYPOINT}".`
+  );
 }
 
 function bashAllowed(allow: string[] | undefined, command: string): boolean {
@@ -167,6 +177,8 @@ export class Session {
   private interrupting = false;
   /** Subagents (Agent tool calls) of the running turn still in the foreground, by tool use id. */
   private foreground = new Set<string>();
+  /** Set once the first init message's tools have been checked for Artifact. */
+  private toolsChecked = false;
 
   constructor(
     private params: OpenParams,
@@ -307,8 +319,7 @@ export class Session {
       ...(p.disallowedTools?.length ? { disallowedTools: p.disallowedTools } : {}),
       ...(p.skills ? { skills: p.skills } : {}),
       ...(p.ephemeral ? { persistSession: false } : {}),
-      ...claudeExecutable(p.claudePath),
-      env: { ...process.env, ...p.env },
+      ...claudeProcess(p.claudePath, p.env),
       abortController: abort,
       permissionMode: p.permissionMode,
       ...(p.permissionMode === "bypassPermissions" ? { allowDangerouslySkipPermissions: true } : {}),
@@ -335,6 +346,11 @@ export class Session {
           this.hasTranscript = true;
         }
         this.record(msg);
+        if (!this.toolsChecked && msg.type === "system" && msg.subtype === "init") {
+          this.toolsChecked = true;
+          const warning = missingArtifact(this.params, msg.tools, msg.claude_code_version);
+          if (warning) log(`warning: session ${this.id}: ${warning}`);
+        }
         for (const body of this.normalizer.push(msg)) {
           this.track(body);
           this.emit(body);

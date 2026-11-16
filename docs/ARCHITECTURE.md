@@ -91,6 +91,13 @@ Raw `SDKMessage`s are also appended to a per-session JSONL file for debugging an
 8. **MCP registration** can time out. Retry once, and only for resumed opens.
 9. **Probe** capabilities (models, account) with a query whose prompt never yields, then read
    `initializationResult()`, instead of hard-coding the model list.
+10. **Process environment** (t3code's `mergeClaudeProcessEnvironment`, in `sidecar/src/launch.ts`).
+   Every `claude` gets `CLAUDE_CODE_ENTRYPOINT=solo`, unless the user's or managed Claude settings
+   set one in `env`, and none of the variables a parent Claude Code session exports (`CLAUDECODE`,
+   `CLAUDE_CODE_SESSION_ID`, its messaging socket and token, …). Left unset, the SDK reports `sdk-ts`,
+   and Claude Code then leaves out tools it keeps off in Agent SDK sessions, the Artifact tools among
+   them. That is undocumented, so a session meant to have Artifact that starts without it logs a
+   warning.
 
 ### Verified in phase 1 (live, claude 2.1.319, SDK 0.3.319)
 

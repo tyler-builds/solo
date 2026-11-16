@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { toolDenial } from "../src/session";
+import { missingArtifact, toolDenial } from "../src/session";
 
 describe("toolDenial", () => {
   test("the allow policy (the orchestrator's and workers') runs any Bash command", () => {
@@ -18,5 +18,18 @@ describe("toolDenial", () => {
     expect(toolDenial(p, "Bash", { command: "cd /tmp && git status" })).toContain("only reads");
     expect(toolDenial(p, "Bash", { command: "rm -rf x" })).toContain("only reads");
     expect(toolDenial(p, "Edit", {})).toContain("only reads");
+  });
+});
+
+describe("missingArtifact", () => {
+  test("warns when a session with all tools, or one that lists Artifact, starts without it", () => {
+    expect(missingArtifact({}, ["Bash", "Read"], "2.1.325")).toContain("without the Artifact tool");
+    expect(missingArtifact({ tools: ["Read", "Artifact"] }, ["Read"])).toContain("without the Artifact tool");
+  });
+
+  test("is quiet when the session has it, or wasn't meant to", () => {
+    expect(missingArtifact({}, ["Bash", "Artifact"])).toBeUndefined();
+    expect(missingArtifact({ tools: ["Read"] }, ["Read"])).toBeUndefined();
+    expect(missingArtifact({ disallowedTools: ["Artifact"] }, ["Bash"])).toBeUndefined();
   });
 });

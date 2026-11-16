@@ -105,7 +105,11 @@ func StartSidecar(ctx context.Context, c Command, cb Callbacks, log *slog.Logger
 		for sc.Scan() {
 			line := sc.Text()
 			stderrTail.add(line)
-			log.Debug("solo-agent", "stderr", line)
+			if strings.HasPrefix(line, "[solo-agent] warning: ") {
+				log.Warn("solo-agent", "stderr", line)
+			} else {
+				log.Debug("solo-agent", "stderr", line)
+			}
 		}
 	}()
 	go s.conn.serve(out)

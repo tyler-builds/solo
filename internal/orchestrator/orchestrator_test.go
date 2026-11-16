@@ -554,6 +554,18 @@ func TestOrchestratorRunsAnyBash(t *testing.T) {
 	}
 }
 
+// Solo's own session is offered the Artifact tools, so it can read the claude.ai artifacts the user
+// links to. Claude Code turns them on for Solo's entrypoint; a built-in list without them would drop them.
+func TestOrchestratorHasArtifactTools(t *testing.T) {
+	_, o := setup(t)
+	p := o.openParams()
+	for _, name := range []string{"Artifact", "ArtifactComments", "ArtifactData"} {
+		if !slices.Contains(p.Tools, name) {
+			t.Errorf("tools %q lack %s", p.Tools, name)
+		}
+	}
+}
+
 // A thread whose turn ends with background work still running is reported as not finished, in its
 // update and in get_thread and list_threads; it is reported finished after the turn that reads the work.
 func TestUpdatesSayBackgroundWorkIsNotFinished(t *testing.T) {
