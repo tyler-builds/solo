@@ -54,6 +54,9 @@ const (
 
 type TextData struct {
 	Text string `json:"text"`
+	// Images are the attachments an assistant message shows inline, as markdown images in Text
+	// (see embedImages): the app draws only these.
+	Images []string `json:"images,omitempty"`
 }
 
 type ToolData struct {

@@ -614,7 +614,7 @@ func (o *Orchestrator) describe(ctx context.Context, v core.ThreadView) string {
 	fmt.Fprintf(&b, "Cost so far: $%.2f; context in use: %dk tokens\n", v.CostUSD, v.ContextTokens/1000)
 	fmt.Fprintf(&b, "\nTask:\n%s\n", clip(v.Prompt, 3000))
 	if v.Summary != "" {
-		fmt.Fprintf(&b, "\nLatest summary:\n%s\n", clip(v.Summary, 3000))
+		fmt.Fprintf(&b, "\nLatest summary:\n%s\n", o.clipImages(v.Summary, 3000))
 	}
 	if v.Error != "" {
 		fmt.Fprintf(&b, "\nError: %s\n", v.Error)
@@ -715,7 +715,7 @@ func (o *Orchestrator) transcript(ctx context.Context, threadID string, limit in
 		case core.ItemAssistant:
 			var d core.TextData
 			it.Decode(&d)
-			fmt.Fprintf(&b, "[Agent] %s\n", clip(d.Text, 2000))
+			fmt.Fprintf(&b, "[Agent] %s\n", o.clipImages(d.Text, 2000))
 		case core.ItemTool:
 			var d core.ToolData
 			it.Decode(&d)

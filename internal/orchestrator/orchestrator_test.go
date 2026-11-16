@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	"image/png"
 	"io"
 	"log/slog"
 	"os"
@@ -905,5 +907,44 @@ esac
 	var d core.ProposalData
 	if all[0].Decode(&d); d.Summary != "Adds hello." {
 		t.Fatalf("summary %q", d.Summary)
+	}
+}
+
+// A thread's screenshots reach Solo as copies it can read and show, even past where its summary is
+// clipped; and Solo's prompt asks for screenshots of UI changes and says how to show an image.
+func TestThreadImagesReachSolo(t *testing.T) {
+	c, o := setup(t)
+	shot := filepath.Join(t.TempDir(), "after.png")
+	f, _ := os.Create(shot)
+	png.Encode(f, image.NewRGBA(image.Rect(0, 0, 8, 8)))
+	f.Close()
+	call(t, o, "spawn_thread", map[string]any{"repo": "web", "title": "Form", "prompt": strings.Repeat("Moved the field. ", 50) + "![after](" + filepath.ToSlash(shot) + ")"})
+	var update string
+	eventually(t, "thread update", func() bool {
+		for _, m := range syntheticMessages(c) {
+			if strings.Contains(m, `"Form" (web) finished its turn`) {
+				update = m
+				return true
+			}
+		}
+		return false
+	})
+	w := onlyWorker(c)
+	images := c.ImagesIn(w.Summary)
+	if len(images) != 1 || strings.Contains(w.Summary, shot) {
+		t.Fatalf("summary %q", w.Summary)
+	}
+	if !strings.Contains(update, "[Images: "+core.ImageDest(images[0])+"]") {
+		t.Errorf("the update loses the image:\n%s", update)
+	}
+	if got := call(t, o, "get_thread", map[string]any{"id": w.ID}); !strings.Contains(got, core.ImageDest(images[0])) {
+		t.Errorf("get_thread lacks the image:\n%s", got)
+	}
+	p := strings.Join(strings.Fields(systemPrompt(c)), " ")
+	for _, want := range []string{"reported with screenshots of the changed views", "before and after when the view existed",
+		"if it couldn't, tell the user so", "![caption](/absolute/path.png)", "Read one to look at it"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("the prompt lacks %q", want)
+		}
 	}
 }

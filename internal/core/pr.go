@@ -275,7 +275,7 @@ func (c *Core) prText(ctx context.Context, v ThreadView, p PartView) (string, st
 	if len(pp.subjects) == 1 {
 		title = pp.subjects[0]
 	}
-	body := strings.TrimSpace(v.Summary)
+	body := strings.TrimSpace(DropImages(v.Summary))
 	if body == "" {
 		body = clipText(strings.TrimSpace(v.Prompt), 2000)
 	}
@@ -480,7 +480,7 @@ func prPrompt(ctx context.Context, v ThreadView, p PartView, s Settings) prReque
 	}
 	r.prompt = fmt.Sprintf("Write the pull request for this change.\n\n%s\n\nRepository: %s%s\nBranch: %s into %s\nTask title: %s\nTask:\n%s\n\nWhat the agent that made the change reported:\n%s\n\nCommits:\n%s\n\nFiles changed:\n%s",
 		rules, p.Name, scope, p.Branch, p.BaseBranch, v.Title, clipText(v.Prompt, 1500),
-		clipText(strings.TrimSpace(v.Summary), 3000), strings.Join(r.subjects, "\n"), strings.Join(files, "\n"))
+		clipText(strings.TrimSpace(DropImages(v.Summary)), 3000), strings.Join(r.subjects, "\n"), strings.Join(files, "\n"))
 	switch {
 	case len(r.skills) > 0 && s.SkipPRDescription:
 		r.system = fmt.Sprintf(prAgentSystem, prAnswerFormatTitle)

@@ -550,7 +550,7 @@ func (a *App) rowView(ctx *ui.Context, v core.ThreadView, r row) ui.Element {
 	case core.ItemAssistant:
 		var d core.TextData
 		it.Decode(&d)
-		return a.md(ctx, d.Text, viewBases(v))
+		return a.agentText(ctx, d.Text, viewBases(v), d.Images)
 	default:
 		return a.stepView(ctx, it, v)
 	}
@@ -563,7 +563,7 @@ func (a *App) stepView(ctx *ui.Context, it *core.Item, v core.ThreadView) ui.Ele
 	case core.ItemAssistant:
 		var d core.TextData
 		it.Decode(&d)
-		return a.md(ctx, d.Text, viewBases(v)) // on the edge of the steps around it
+		return a.agentText(ctx, d.Text, viewBases(v), d.Images) // on the edge of the steps around it
 	case core.ItemThinking:
 		var d core.TextData
 		it.Decode(&d)

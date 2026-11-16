@@ -471,17 +471,17 @@ var presentTense = map[string]string{
 func lastLine(s string) string {
 	lines := strings.Split(strings.TrimSpace(s), "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
-		if l := strings.TrimSpace(lines[i]); l != "" {
+		if l := strings.TrimSpace(core.DropImages(lines[i])); l != "" {
 			return stripMarkdown(l)
 		}
 	}
 	return ""
 }
 
-// stripMarkdown removes the emphasis and code marks of a one-line summary.
+// stripMarkdown removes the emphasis and code marks of a one-line summary, and its images.
 func stripMarkdown(s string) string {
 	r := strings.NewReplacer("**", "", "`", "", "__", "", "# ", "")
-	return strings.TrimLeft(r.Replace(s), "-* ")
+	return strings.TrimLeft(r.Replace(core.DropImages(s)), "-* ")
 }
 
 // shortAgo is a compact time from t until now (App.now): "now", "4m", "3h", "2d".

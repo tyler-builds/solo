@@ -234,10 +234,18 @@ func viewBases(th core.ThreadView) []string {
 }
 
 // md is a message in markdown with its paths as links: a click opens the file, and a right click
-// offers what to do with each of them.
-func (a *App) md(ctx *ui.Context, text string, bases []string) ui.Element {
-	view := markdown.View(linkMarkdown(text, bases)).Code(code).Key("md").OnLink(func(link string) {
-		if fp, ok := pathFromLink(link, bases); ok {
+// offers what to do with each of them. images are the attachments it shows inline (an agent's
+// message, core.TextData.Images): a click on one opens it in the lightbox. No other image loads, so
+// a message can't make the app read a file.
+func (a *App) md(ctx *ui.Context, text string, bases []string, images ...string) ui.Element {
+	src := linkMarkdown(text, bases)
+	if len(images) > 0 {
+		src = inlineImages(src, images)
+	}
+	view := markdown.View(src).Code(code).Key("md").Images(a.imageLoader(images)).OnLink(func(link string) {
+		if p, ok := shownImage(link, images); ok {
+			a.lightbox.Set(p)
+		} else if fp, ok := pathFromLink(link, bases); ok {
 			a.openPath(fp)
 		} else if err := ctx.OpenURL(link); err != nil {
 			a.notify(ui.ToastError, "Couldn't open the link", err.Error())
