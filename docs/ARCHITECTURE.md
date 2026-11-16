@@ -250,7 +250,14 @@ Raw `SDKMessage`s are also appended to a per-session JSONL file for debugging an
   Changes and the diff prefix paths with the repository. Open PRs opens one per changed repository,
   each description listing the others; the split button's menu opens or merges one repository on its
   own. Auto-merge is each forge's own. The thread is merged once every changed repository has landed.
-- Discarding a thread deletes its message images, except ones another thread's history still shows.
+- Discarding a thread deletes its message images (the user's and its agent's), except ones another
+  thread's history still shows, such as a screenshot Solo showed the user again.
+- **Screenshots of UI changes:** both prompts ask for them. A worker whose work changes what a user
+  sees (in any repository) puts screenshots of each changed view in its summary, before and after (the
+  base commit rendered from before its changes or a temporary checkout) or after alone for a new view,
+  saved outside the repository; when it can't take them it says why. Solo asks for them when it gives
+  a thread such a task, shows them when it reports, and sends the thread back when they're missing
+  without a reason. Both are told how to embed an image (below).
 
 ## UI (jamb)
 
@@ -278,6 +285,19 @@ Raw `SDKMessage`s are also appended to a per-session JSONL file for debugging an
   `<data>/attachments` (scaled to at most 2000 px and 3.5 MB) and sent as image blocks before the text.
   Messages to Solo also list the saved paths, so Solo can pass them on with `spawn_thread` or
   `message_thread`'s `images`.
+- **Images in agents' messages:** an agent (a worker or Solo) shows an image by writing
+  `![caption](path)`, with an absolute path or one relative to its working directory. Before the
+  message is applied (`core.embedImages`), each local image it names is imported as the user's are
+  (`ImportImage`: PNG, JPEG, GIF or WebP by content, at most 16 MB and 50 MP, scaled to the limits
+  above, 20 a message), and the text is rewritten to point at the copy; the turn's result, which is the
+  thread's summary, the same way. Web addresses, network paths, folders, pipes and files that aren't
+  images stay as written. `TextData.Images` lists the attachments a message shows (`core.ImagesIn`),
+  and the UI draws only those: a line of nothing but images becomes a row of previews with their
+  captions (`agentText`), an image among text is drawn by the markdown view from a small preview, and
+  a click opens either in the lightbox. Any other image a message names shows a placeholder, and
+  nothing else is read. A screenshot outlives the worktree and its original file, and Solo reads a
+  thread's (the paths are in `get_thread`, `read_thread` and the "finished its turn" update, listed
+  after the text when clipping cuts them off) and shows it again with the same path.
 - **Search:** the rail's filter matches thread titles and repositories. Ctrl+K (the title bar's
   Search) lists threads, including merged ones and History, and, from three letters, messages (yours,
   Solo's and the threads'), found with `core.SearchMessages`.

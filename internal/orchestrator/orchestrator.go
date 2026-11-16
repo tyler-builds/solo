@@ -405,7 +405,7 @@ func (o *Orchestrator) onChange(ch core.Change) {
 	}
 	switch ch.Status {
 	case core.StatusIdle:
-		line = fmt.Sprintf("%s finished its turn. Summary: %s", label(v), clip(oneLine(v.Summary), 600))
+		line = fmt.Sprintf("%s finished its turn. Summary: %s", label(v), o.clipImages(oneLine(v.Summary), 600))
 		if v.Resolving {
 			line = fmt.Sprintf("%s resolved the conflicts its merge had; Solo is merging it now, so don't propose it again.", label(v))
 		} else if v.Scratch && !v.InPlace {
@@ -414,7 +414,7 @@ func (o *Orchestrator) onChange(ch core.Change) {
 	case core.StatusBackground:
 		line = fmt.Sprintf("%s ended its turn but isn't finished: it waits on work it runs in the background (%s), "+
 			"and carries on by itself when that ends. Don't review it or propose landing yet; you hear when its next turn finishes. "+
-			"Summary so far: %s", label(v), core.DescribeBackground(v.Background), clip(oneLine(v.Summary), 400))
+			"Summary so far: %s", label(v), core.DescribeBackground(v.Background), o.clipImages(oneLine(v.Summary), 400))
 	case core.StatusFailed:
 		line = fmt.Sprintf("%s failed: %s", label(v), clip(oneLine(v.Error), 400))
 	case core.StatusWaiting:
@@ -651,6 +651,22 @@ func short(id string) string {
 }
 
 func oneLine(s string) string { return strings.Join(strings.Fields(s), " ") }
+
+// clipImages is clip for a text that may show images (a thread's screenshots): those clipping cuts off
+// are listed after it, so Solo can still read them and show them to the user.
+func (o *Orchestrator) clipImages(s string, n int) string {
+	out := clip(s, n)
+	var lost []string
+	for _, p := range o.c.ImagesIn(s) {
+		if d := core.ImageDest(p); !strings.Contains(out, d) {
+			lost = append(lost, d)
+		}
+	}
+	if len(lost) > 0 {
+		out += " [Images: " + strings.Join(lost, ", ") + "]"
+	}
+	return out
+}
 
 func clip(s string, n int) string {
 	if r := []rune(s); len(r) > n {

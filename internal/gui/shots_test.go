@@ -2,7 +2,9 @@ package gui
 
 import (
 	"fmt"
+	"image"
 	"image/color"
+	"image/draw"
 	"image/png"
 	"os"
 	"path/filepath"
@@ -122,6 +124,24 @@ func TestShots(t *testing.T) {
 				Images: []string{sampleScreenshot(dir, color.RGBA{47, 214, 193, 255}), sampleScreenshot(dir, color.RGBA{90, 120, 230, 255})}})
 			a.items = map[string]*ui.Signal[[]core.Item]{}
 			a.orchImages.Set([]string{sampleScreenshot(dir, color.RGBA{200, 140, 60, 255})})
+		}},
+		// An agent's message shows images inline: Solo shows a thread's before and after screenshots, and
+		// the thread's own summary has them.
+		{"agent-images", func(a *App, f *fakeBackend) {
+			before, after := formScreenshots(t.TempDir())
+			f.add(core.OrchestratorID, core.ItemUser, core.UserData{Text: "How did the email field fix turn out?"})
+			f.add(core.OrchestratorID, core.ItemAssistant, core.TextData{Text: "**Fix the email field overlap** is done: on narrow windows the email field " +
+				"now sits under its label instead of over the Save button.\n\n![Before](" + core.ImageDest(before) + ") ![After](" + core.ImageDest(after) + ")",
+				Images: []string{before, after}})
+			a.items = map[string]*ui.Signal[[]core.Item]{}
+		}},
+		{"agent-images-thread", func(a *App, f *fakeBackend) {
+			before, after := formScreenshots(t.TempDir())
+			f.add("c3d4e5f6-forms", core.ItemAssistant, core.TextData{Text: "Moved the email field under its label below 720 px, so it no longer " +
+				"covers Save. Screenshots from `go test ./ui -run TestFormShots`:\n\n![Before](" + core.ImageDest(before) + ") ![After](" + core.ImageDest(after) + ")",
+				Images: []string{before, after}})
+			a.items = map[string]*ui.Signal[[]core.Item]{}
+			a.openThread("c3d4e5f6-forms", "conversation")
 		}},
 		{"paths", func(a *App, f *fakeBackend) {
 			dir := filepath.Join(t.TempDir(), "solo-brand")
@@ -375,3 +395,33 @@ func longChat(f *fakeBackend) {
 // composerMarkdown is a draft with each kind of inline Markdown the composer formats.
 const composerMarkdown = "Can you check these?\n\n**Skip writes** that change nothing: `Signal.Set` re-renders.\n" +
 	"**A benchmark:** time a ~~write~~ *change* among 3,000 rows.\n**A clock:** see [the post](https://example.com/post)."
+
+// formScreenshots writes a window's worth of a settings form before a fix (the email field over the
+// Save button) and after it, as a thread would screenshot them.
+func formScreenshots(dir string) (before, after string) {
+	shot := func(name string, fixed bool) string {
+		img := image.NewRGBA(image.Rect(0, 0, 1280, 800))
+		fill := func(r image.Rectangle, c color.RGBA) { draw.Draw(img, r, &image.Uniform{c}, image.Point{}, draw.Src) }
+		fill(img.Bounds(), color.RGBA{246, 246, 248, 255})
+		fill(image.Rect(0, 0, 1280, 72), color.RGBA{32, 33, 38, 255})
+		for i := 0; i < 3; i++ {
+			y := 140 + i*140
+			fill(image.Rect(80, y, 520, y+28), color.RGBA{120, 122, 130, 255})
+			fill(image.Rect(80, y+48, 1200, y+112), color.RGBA{255, 255, 255, 255})
+		}
+		save := image.Rect(80, 660, 320, 724)
+		fill(save, color.RGBA{47, 214, 193, 255})
+		if fixed {
+			fill(image.Rect(80, 560, 1200, 624), color.RGBA{255, 255, 255, 255})
+			fill(image.Rect(80, 532, 360, 552), color.RGBA{120, 122, 130, 255})
+		} else {
+			fill(image.Rect(200, 640, 1200, 704), color.RGBA{230, 70, 70, 255}) // the email field, over Save
+		}
+		p := filepath.Join(dir, name)
+		out, _ := os.Create(p)
+		defer out.Close()
+		png.Encode(out, img)
+		return p
+	}
+	return shot("before.png", false), shot("after.png", true)
+}

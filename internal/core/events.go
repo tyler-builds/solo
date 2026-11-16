@@ -21,6 +21,7 @@ func (c *Core) onEvent(e agent.Event) {
 		c.setRateLimit(e)
 		return
 	}
+	e = c.embedImages(e)
 	c.mu.Lock()
 	if job := c.jobs[e.SessionID]; job != nil {
 		c.mu.Unlock()
@@ -45,6 +46,9 @@ func (c *Core) onEvent(e agent.Event) {
 	switch e.Kind {
 	case agent.EventInit:
 		t.model = e.Model
+		if e.Cwd != "" {
+			t.cwd = e.Cwd
+		}
 		threadChanged = true
 
 	case agent.EventTurnStart:
@@ -94,7 +98,7 @@ func (c *Core) onEvent(e agent.Event) {
 			switch b.Type {
 			case "text":
 				if b.Text != "" {
-					c.addItemLocked(t, ItemAssistant, "", TextData{Text: b.Text})
+					c.addItemLocked(t, ItemAssistant, "", TextData{Text: b.Text, Images: c.ImagesIn(b.Text)})
 				}
 			case "thinking":
 				if b.Text != "" {

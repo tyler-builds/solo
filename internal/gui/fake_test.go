@@ -1,6 +1,7 @@
 package gui
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -15,6 +16,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	xdraw "golang.org/x/image/draw"
 
 	"github.com/tyler-builds/solo/internal/agent"
 	"github.com/tyler-builds/solo/internal/core"
@@ -46,6 +49,7 @@ type fakeBackend struct {
 	skills      []core.Skill   // for "/" and Settings; fakeSkills when nil
 	paths       []core.PathHit // a thread's files, for "@"; fakePaths when nil
 	pathQueries []string       // the queries SearchPaths was asked, in order
+	imageReads  []string       // the images ReadImage was asked for, in order
 	// machineNow is the time on the machine, for a backend on another one (api.Clock); nil for this
 	// process's clock.
 	machineNow func() time.Time
@@ -314,8 +318,29 @@ func (f *fakeBackend) SaveImageData(_ context.Context, data []byte) (string, err
 	return p, os.WriteFile(p, data, 0o600)
 }
 
-func (f *fakeBackend) ReadImage(_ context.Context, path string, _ int) ([]byte, error) {
-	return os.ReadFile(path)
+// ReadImage reads any file, but scales a preview down as the real backend does.
+func (f *fakeBackend) ReadImage(_ context.Context, path string, maxSide int) ([]byte, error) {
+	f.mu.Lock()
+	f.imageReads = append(f.imageReads, path)
+	f.mu.Unlock()
+	data, err := os.ReadFile(path)
+	if err != nil || maxSide <= 0 {
+		return data, err
+	}
+	img, err := png.Decode(bytes.NewReader(data))
+	if err != nil {
+		return data, nil
+	}
+	b := img.Bounds()
+	if b.Dx() <= maxSide && b.Dy() <= maxSide {
+		return data, nil
+	}
+	scale := float64(maxSide) / float64(max(b.Dx(), b.Dy()))
+	dst := image.NewRGBA(image.Rect(0, 0, int(float64(b.Dx())*scale), int(float64(b.Dy())*scale)))
+	xdraw.ApproxBiLinear.Scale(dst, dst.Bounds(), img, b, draw.Src, nil)
+	var buf bytes.Buffer
+	err = png.Encode(&buf, dst)
+	return buf.Bytes(), err
 }
 
 // sampleScreenshot writes a small picture of a settings form, standing in for a pasted screenshot.

@@ -32,6 +32,10 @@ type thread struct {
 	live    []liveKey // streaming blocks, in order
 	liveTxt map[liveKey]*LiveBlock
 	model   string // the model Claude reports
+	cwd     string // the folder Claude reports working in: relative image paths are in it
+	// embeds are the images its messages showed, imported into the attachments: file (path, size, time
+	// changed) → attachment, so a file shown again isn't copied again (embedImages).
+	embeds map[string]string
 	// step is the tool call in progress, and turnStart when the current turn began.
 	step      *ToolData
 	turnStart time.Time
@@ -485,6 +489,7 @@ files at once, with no branch or copy to review first, and other threads may wor
   Don't run git init; the user decides whether this folder goes in git.
 - End with a short summary of what you changed (each file) and anything left undone, for the user and
   Solo.
+` + screenshotRules(true) + `
 - If you need a decision only the user can make, ask with AskUserQuestion.`
 	}
 	if len(ps) > 1 {
@@ -520,7 +525,26 @@ repository's or your own defaults:
 - When you are done, commit your changes on this branch ` + commit + `. Don't push,
   merge, rebase onto other branches, or switch branches; the user reviews and merges your branch.
 - End with a short summary of what you changed and anything left undone, for the user and Solo.
+` + screenshotRules(false) + `
 - If you need a decision only the user can make, ask with AskUserQuestion.` + rules
+}
+
+// screenshotRules ask a worker for screenshots of the views it changes, and tell it how to show an
+// image. inPlace: it works in a folder that isn't in git.
+func screenshotRules(inPlace bool) string {
+	before := `before, render the base commit, before your changes or from a temporary checkout of it. Save them
+  outside the repository unless the task is about committed screenshots. If you can't take them, say
+  why in your summary.`
+	if inPlace {
+		before = `before, render it before you change anything. Save them outside this folder unless the task is about
+  committed screenshots. If you can't take them, say why in your summary.`
+	}
+	return `- If your work changes what a user sees (a UI, in any repository), put screenshots of each changed
+  view in your summary: before and after when the view existed, after alone when it's new. Render with
+  what the project offers (a screenshot test, a dev server and a headless browser, the app itself); for
+  ` + before + `
+- To show an image in a message, write ![caption](path), with an absolute path or one relative to your
+  working directory; the app keeps a copy in the conversation.`
 }
 
 // Send sends the user's message, with any images (see ImportImage), to a thread, starting its session
@@ -1445,8 +1469,8 @@ func (c *Core) recount(id string) bool {
 	return true
 }
 
-// removeAttachments deletes the images of a discarded thread's messages that no other thread uses
-// (Solo's messages often share them).
+// removeAttachments deletes the images of a discarded thread's messages, the user's and its agent's,
+// that no other thread uses (Solo's messages often share them, and show a thread's screenshots again).
 func (c *Core) removeAttachments(ctx context.Context, threadID string) {
 	items, err := c.db.Items(ctx, threadID, 0)
 	if err != nil {
@@ -1459,8 +1483,14 @@ func (c *Core) removeAttachments(ctx context.Context, threadID string) {
 	}
 	c.mu.Unlock()
 	for _, it := range items {
-		if it.Kind == ItemUser {
+		switch it.Kind {
+		case ItemUser:
 			var d UserData
+			if json.Unmarshal(it.Data, &d) == nil {
+				paths = append(paths, d.Images...)
+			}
+		case ItemAssistant:
+			var d TextData
 			if json.Unmarshal(it.Data, &d) == nil {
 				paths = append(paths, d.Images...)
 			}
