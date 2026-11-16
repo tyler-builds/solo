@@ -515,7 +515,7 @@ func (a *App) rowView(ctx *ui.Context, v core.ThreadView, r row) ui.Element {
 		if r.live.Thinking {
 			return thinkingView(ctx, r.live.Text, true)
 		}
-		return a.md(ctx, r.live.Text, viewBases(v))
+		return a.agentText(ctx, r.live.Text, viewBases(v), nil)
 	case r.queued != nil:
 		tag := ui.Div().Row().Align(ui.Center).Gap(4).PaddingRight(2).
 			Tooltip("Solo reads this when it finishes what it's doing").
@@ -543,7 +543,7 @@ func (a *App) rowView(ctx *ui.Context, v core.ThreadView, r row) ui.Element {
 				Child(a.messageImages(ctx, d.Images, ui.Start)).
 				Child(ui.Div().PaddingX(space3+2).PaddingY(space2+2).Radius(radiusL).MaxWidth(ui.Percent(92)).
 					Background(t.Surface).Border(1, t.Border).
-					Child(a.md(ctx, d.Text, viewBases(v))))
+					Child(a.agentText(ctx, d.Text, viewBases(v), nil)))
 		}
 		var tag ui.Element
 		if d.Steer {
@@ -1164,7 +1164,7 @@ func (a *App) proposalCard(ctx *ui.Context, d core.ProposalData) ui.Element {
 		card := ui.Div().Column().Gap(space3).Padding(space4).Radius(radiusL).Background(t.Surface).Key("proposal-"+d.ThreadID).
 			Border(1, t.BorderStrong).
 			Child(a.proposalHeader(ctx, th)).
-			Child(a.md(ctx, d.Summary, a.threadBases(d.ThreadID))).
+			Child(a.agentText(ctx, d.Summary, a.threadBases(d.ThreadID), nil)).
 			Child(actions)
 		return card
 	})

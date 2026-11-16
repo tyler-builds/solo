@@ -319,6 +319,14 @@ Raw `SDKMessage`s are also appended to a per-session JSONL file for debugging an
   nothing else is read. A screenshot outlives the worktree and its original file, and Solo reads a
   thread's (the paths are in `get_thread`, `read_thread` and the "finished its turn" update, listed
   after the text when clipping cuts them off) and shows it again with the same path.
+- **Charts in agents' messages:** a fenced code block with the info string `chart` holds a small JSON
+  spec (`internal/chartspec`: line, area, bar, scatter, pie or donut; a title, axis labels and series
+  of `[x, y]` points), and `agentText` draws it where it stands with `jamb/charts`: hover shows
+  values, the arrow keys walk the points, the legend toggles a series. Both prompts teach it
+  (`core.ChartRules`). Nothing is stored beyond the message text, so charts replay as the text does,
+  and the web client draws them with the same code. A block still open (streaming), nested in another,
+  or whose spec is invalid, of an unknown kind or over the limits (64 KB, 12 series, 5,000 points,
+  24 slices, 20 charts a message) shows as code. Excerpts (the rail, notifications) leave charts out.
 - **Search:** the rail's filter matches thread titles and repositories. Ctrl+K (the title bar's
   Search) lists threads, including merged ones and History, and, from three letters, messages (yours,
   Solo's and the threads'), found with `core.SearchMessages`.

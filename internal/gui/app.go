@@ -82,6 +82,7 @@ type App struct {
 	railQuery   *ui.Signal[string]          // the rail's filter
 	imgs        map[string]*ui.ImageSource  // decoded attachments, by path (UI thread only)
 	imgLoading  map[string]bool             // attachments being fetched (RemoteImages; UI thread only)
+	chartSpecs  map[string]parsedChart      // chart blocks read, by body (see chartSpec; UI thread only)
 	imgVer      *ui.Signal[int]             // counts the attachments that have arrived
 	lists       map[string]*ui.ListHandle   // transcript lists, by scope, so a send can scroll one (UI thread only)
 
@@ -190,6 +191,7 @@ func New(b Backend) *App {
 		railQuery:   ui.NewSignal(""),
 		imgs:        map[string]*ui.ImageSource{},
 		imgLoading:  map[string]bool{},
+		chartSpecs:  map[string]parsedChart{},
 		imgVer:      ui.NewSignal(0),
 		remoteState: ui.NewSignal(api.RemoteState{}),
 		remoteTick:  ui.NewSignal(0),

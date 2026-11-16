@@ -12,6 +12,7 @@ import (
 	"github.com/tyler-builds/jamb/icons"
 	"github.com/tyler-builds/jamb/ui"
 
+	"github.com/tyler-builds/solo/internal/chartspec"
 	"github.com/tyler-builds/solo/internal/core"
 )
 
@@ -191,20 +192,25 @@ func inlineImages(md string, images []string) string {
 	return b.String()
 }
 
-// agentText draws an agent's message, which may show images (core.TextData.Images). A line that only
-// shows its images is drawn as a row of previews where it stands, each scaled to fit with its caption
-// below; a click opens one full size. An image among other text is left to the markdown view (see md).
+// agentText draws an agent's message, which may show images (core.TextData.Images) and charts. A line
+// that only shows its images is drawn as a row of previews where it stands, each scaled to fit with its
+// caption below; a click opens one full size. An image among other text is left to the markdown view
+// (see md). A chart block (see chartspec) is drawn as a chart where it stands, unless it doesn't read as
+// one: then it shows as code.
 func (a *App) agentText(ctx *ui.Context, text string, bases []string, images []string) ui.Element {
-	parts := imageLines(text, images)
-	if len(parts) == 0 || len(parts) == 1 && parts[0].shots == nil {
+	parts := a.chartParts(text, images)
+	if len(parts) == 0 || len(parts) == 1 && parts[0].shots == nil && parts[0].chart == nil {
 		return a.md(ctx, text, bases, images...)
 	}
 	col := ui.Div().Column().Gap(space3).MinWidth(ui.Px(0))
 	for i, p := range parts {
 		var e ui.Element
-		if p.shots != nil {
+		switch {
+		case p.chart != nil:
+			e = chartView(ctx, p.chart)
+		case p.shots != nil:
 			e = a.imageRow(ctx, p.shots)
-		} else {
+		default:
 			e = a.md(ctx, p.text, bases, images...)
 		}
 		col = col.Child(ui.Div().Column().Key(fmt.Sprintf("part%d", i)).Child(e))
@@ -212,10 +218,11 @@ func (a *App) agentText(ctx *ui.Context, text string, bases []string, images []s
 	return col
 }
 
-// messagePart is a run of a message's markdown, or a row of the images it shows.
+// messagePart is a run of a message's markdown, a row of the images it shows, or a chart.
 type messagePart struct {
 	text  string
 	shots []shot
+	chart *chartspec.Spec
 }
 
 // shot is an image a message shows: the attachment and its caption (the image's alternative text).

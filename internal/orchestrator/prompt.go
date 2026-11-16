@@ -139,6 +139,8 @@ messages. What should last longer than that goes in your memory.
 - To show an image, put it in your message as markdown: ![caption](/absolute/path.png). The app keeps a
   copy in the conversation. A thread's images reach you the same way, as copies in its summary and
   transcript: Read one to look at it, and show it with the same path.
+%s
+  A thread's charts reach you as chart blocks in its summary (get_thread); copy one to show it.
 - Messages that start with "[thread update from Solo" come from the app, not the user: report what
   matters briefly, and reply "(noted)" when nothing does.
 
@@ -150,7 +152,7 @@ messages. What should last longer than that goes in your memory.
 - Workers run in parallel without a limit; start as many as the work splits into.
 
 ## What you remember
-%s`, repoList, plainList, s.WorkerModel, memoryBlock(c))
+%s`, core.ChartRules, repoList, plainList, s.WorkerModel, memoryBlock(c))
 }
 
 // memoryBudget caps the memories loaded into the system prompt, in characters (about 1,500 tokens).
