@@ -77,6 +77,10 @@ type thread struct {
 	// repost: new commits reached its open pull request since its merge card was posted, so the card
 	// is posted anew at the end of Solo's conversation (repostCards).
 	repost bool
+	// queue holds the user's messages to Solo sent while it worked, oldest first, until its turn ends
+	// (saved under queueKey). queueHidden is the hidden context given with each (SendWithContext).
+	queue       []QueuedMessage
+	queueHidden []string
 }
 
 // DescribeBackground names background work in a line: `command "Run benchmarks", running 4m`; several
@@ -124,6 +128,7 @@ func (t *thread) view() ThreadView {
 		ActualModel: t.model,
 		Retry:       t.retry,
 		PendingAsk:  len(t.asks)+len(t.staleAsks) > 0,
+		Queued:      slices.Clone(t.queue),
 		Resolving:   t.resolving,
 		IsWorker:    t.row.Kind == store.KindWorker,
 	}
@@ -548,7 +553,8 @@ func screenshotRules(inPlace bool) string {
 }
 
 // Send sends the user's message, with any images (see ImportImage), to a thread, starting its session
-// if needed. Sent while the thread is working, it steers: Claude stops what it is doing and reads it.
+// if needed. Sent while a worker is working, it steers: Claude stops what it is doing and reads it. Sent
+// while Solo (the orchestrator) works, it waits instead, and Solo reads it as its next turn (queue).
 func (c *Core) Send(ctx context.Context, threadID, text string, images ...string) error {
 	return c.send(ctx, threadID, text, images, false, FromUser, "")
 }
@@ -575,6 +581,50 @@ func (c *Core) SendSyntheticWithContext(ctx context.Context, threadID, hidden, t
 	return c.send(ctx, threadID, text, nil, true, FromSolo, hidden)
 }
 
+// queueKey is where a thread's queued messages (thread.queue) are saved, so a restart doesn't lose them.
+func queueKey(threadID string) string { return "queue." + threadID }
+
+// queuedSend is a queued message as saved: what the user sees, and hidden context given with it.
+type queuedSend struct {
+	QueuedMessage
+	Hidden string `json:"hidden,omitempty"`
+}
+
+// queues reports whether a message is one that waits for Solo's turn to end (thread.queue) rather than
+// steering it: the user's own message to Solo.
+func queues(threadID string, synthetic bool, from string) bool {
+	return threadID == OrchestratorID && from == FromUser && !synthetic
+}
+
+// queueBusyLocked reports whether a message queued for the thread must wait: a turn runs or is about
+// to (a message was just sent and its turn hasn't started). Call with c.mu held.
+func queueBusyLocked(t *thread) bool {
+	return t.inTurn || t.row.Status == StatusRunning || t.row.Status == StatusStarting
+}
+
+// takeContext takes the hidden context that goes before Solo's next message from the user (see
+// SetSoloContext): nothing for another message. restore puts it back. Call without c.mu held.
+func (c *Core) takeContext(threadID string, synthetic bool, from string) (string, func()) {
+	c.mu.Lock()
+	f := c.soloContext
+	c.mu.Unlock()
+	if f == nil || !queues(threadID, synthetic, from) {
+		return "", func() {}
+	}
+	return f()
+}
+
+// joinHidden puts hidden context parts together, skipping empty ones.
+func joinHidden(parts ...string) string {
+	var out []string
+	for _, p := range parts {
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return strings.Join(out, "\n\n")
+}
+
 // send records text as the message and sends it to Claude, after hidden when that isn't empty.
 func (c *Core) send(ctx context.Context, threadID, text string, images []string, synthetic bool, from, hidden string) error {
 	if strings.TrimSpace(text) == "" && len(images) == 0 {
@@ -584,6 +634,117 @@ func (c *Core) send(ctx context.Context, threadID, text string, images []string,
 	if err != nil {
 		return err
 	}
+	ctxText, restore := c.takeContext(threadID, synthetic, from)
+	c.mu.Lock()
+	t := c.threads[threadID]
+	if err := c.sendableLocked(t, threadID); err != nil {
+		c.mu.Unlock()
+		restore()
+		return err
+	}
+	// The user's message to Solo while it works waits for the turn to end, and so does one sent while
+	// others wait, to keep their order. A question Solo is waiting on is answered in its own card; a
+	// message then goes to Claude, which holds it for after the turn, as it always has.
+	if queues(threadID, synthetic, from) && (len(t.queue) > 0 || (len(t.asks) == 0 && queueBusyLocked(t))) {
+		t.queue = append(t.queue, QueuedMessage{Text: text, Images: images, At: now()})
+		t.queueHidden = append(t.queueHidden, hidden)
+		c.saveQueueLocked(t)
+		status := t.row.Status
+		c.mu.Unlock()
+		restore() // it goes with the message when Solo is handed it
+		c.notify(Change{Kind: ChangeThread, ThreadID: threadID, PrevStatus: status, Status: status})
+		c.sendQueued(ctx, threadID) // in case nothing it waits for is running any more
+		return nil
+	}
+	return c.dispatchLocked(ctx, t, text, images, blocks, synthetic, from, joinHidden(ctxText, hidden), restore)
+}
+
+// sendableLocked reports why the thread can't take a message now, if it can't. Call with c.mu held.
+func (c *Core) sendableLocked(t *thread, threadID string) error {
+	switch {
+	case t == nil:
+		return fmt.Errorf("no thread %s", threadID)
+	case Finished(t.row.Status):
+		return fmt.Errorf("thread %q is %s", t.row.Title, t.row.Status)
+	case t.row.Kind == store.KindWorker && t.row.WorktreePath == "" && !t.inPlace():
+		return fmt.Errorf("thread %q has not started yet", t.row.Title)
+	}
+	return nil
+}
+
+// sendQueued hands Solo the oldest message the user queued for it (thread.queue), once it is between
+// turns. The end of the turn that message starts calls it again, so each message is a turn of its own,
+// in the order sent; so does a restart (ResumeInterrupted).
+func (c *Core) sendQueued(ctx context.Context, threadID string) {
+	c.mu.Lock()
+	t := c.threads[threadID]
+	if t == nil || len(t.queue) == 0 || queueBusyLocked(t) {
+		c.mu.Unlock()
+		return
+	}
+	m := t.queue[0]
+	c.mu.Unlock()
+	blocks, imgErr := c.loadImages(m.Images)
+	ctxText, restore := c.takeContext(threadID, false, FromUser)
+	c.mu.Lock()
+	if len(t.queue) == 0 || !t.queue[0].At.Equal(m.At) || queueBusyLocked(t) {
+		c.mu.Unlock()
+		restore()
+		return // another call got there first
+	}
+	hidden := t.queueHidden[0]
+	t.queue = slices.Delete(t.queue, 0, 1)
+	t.queueHidden = slices.Delete(t.queueHidden, 0, 1)
+	c.saveQueueLocked(t)
+	if imgErr == nil {
+		imgErr = c.sendableLocked(t, threadID)
+	}
+	if imgErr != nil {
+		status := t.row.Status
+		c.mu.Unlock()
+		restore()
+		c.log.Warn("core: dropping a queued message", "thread", threadID, "err", imgErr)
+		c.addNotice(threadID, "error", "A queued message was not delivered: "+imgErr.Error())
+		c.notify(Change{Kind: ChangeThread, ThreadID: threadID, PrevStatus: status, Status: status})
+		c.sendQueued(ctx, threadID)
+		return
+	}
+	if err := c.dispatchLocked(ctx, t, m.Text, m.Images, blocks, false, FromUser, joinHidden(ctxText, hidden), restore); err != nil {
+		c.sendQueued(ctx, threadID) // it says it wasn't delivered; the next one may get through
+	}
+}
+
+// saveQueueLocked saves the thread's queued messages. Call with c.mu held.
+func (c *Core) saveQueueLocked(t *thread) {
+	saved := make([]queuedSend, len(t.queue))
+	for i, m := range t.queue {
+		saved[i] = queuedSend{QueuedMessage: m, Hidden: t.queueHidden[i]}
+	}
+	if len(saved) == 0 {
+		saved = nil
+	}
+	if err := c.SetState(queueKey(t.row.ID), saved); err != nil {
+		c.log.Error("core: saving queued messages", "thread", t.row.ID, "err", err)
+	}
+}
+
+// loadQueueLocked reads the thread's queued messages saved before a restart. Call with c.mu held.
+func (c *Core) loadQueueLocked(t *thread) {
+	var saved []queuedSend
+	c.State(queueKey(t.row.ID), &saved)
+	t.queue, t.queueHidden = nil, nil
+	for _, s := range saved {
+		t.queue = append(t.queue, s.QueuedMessage)
+		t.queueHidden = append(t.queueHidden, s.Hidden)
+	}
+}
+
+// dispatchLocked records the message and sends it to Claude, with hidden before it when that isn't
+// empty. restore puts back hidden context taken for it, when the message doesn't get through. Call
+// with c.mu held, which it releases.
+func (c *Core) dispatchLocked(ctx context.Context, t *thread, text string, images []string, blocks []agent.Image,
+	synthetic bool, from, hidden string, restore func()) error {
+	threadID := t.row.ID
 	// Solo only sees the pixels; it needs the files' paths to hand the images on to a thread.
 	sent := text
 	if threadID == OrchestratorID && len(images) > 0 {
@@ -593,29 +754,17 @@ func (c *Core) send(ctx context.Context, threadID, text string, images []string,
 	if hidden != "" {
 		sent = hidden + "\n\n---\n\n" + sent
 	}
-	c.mu.Lock()
-	t := c.threads[threadID]
-	if t == nil {
-		c.mu.Unlock()
-		return fmt.Errorf("no thread %s", threadID)
-	}
-	if Finished(t.row.Status) {
-		c.mu.Unlock()
-		return fmt.Errorf("thread %q is %s", t.row.Title, t.row.Status)
-	}
-	if t.row.Kind == store.KindWorker && t.row.WorktreePath == "" && !t.inPlace() {
-		c.mu.Unlock()
-		return fmt.Errorf("thread %q has not started yet", t.row.Title)
-	}
 	// The user's message to a working thread steers it, as in t3code; a question it is waiting on is
-	// answered in its own card, so a message then waits for the turn like the others.
-	steer := from == FromUser && !synthetic && t.inTurn && len(t.asks) == 0
+	// answered in its own card, so a message then waits for the turn like the others. Solo's messages
+	// queue instead (see send), so they never reach here mid-turn unless a question is pending.
+	steer := from == FromUser && !synthetic && t.inTurn && len(t.asks) == 0 && !queues(threadID, synthetic, from)
 	// Record the message and the running state before Claude can answer, so a fast reply never lands
 	// ahead of the message or leaves the thread marked running after its turn ended.
 	uuid := agent.NewUUID()
 	data, _ := json.Marshal(UserData{Text: text, Synthetic: synthetic, From: from, Images: images, Steer: steer})
 	if err := c.db.AddItem(&store.Item{ThreadID: threadID, Kind: ItemUser, TurnUUID: uuid, Data: data, CreatedAt: now()}); err != nil {
 		c.mu.Unlock()
+		restore()
 		return err
 	}
 	prev := t.row.Status
@@ -650,6 +799,7 @@ func (c *Core) send(ctx context.Context, threadID, text string, images []string,
 		}
 		c.mu.Unlock()
 		c.notify(back)
+		restore()
 		c.addNotice(threadID, "error", "The message was not delivered: "+err.Error())
 		return err
 	}

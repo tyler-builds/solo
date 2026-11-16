@@ -34,14 +34,31 @@ const resumeLogKey = "resume-log"
 // stopped: its session resumes with a note that Solo restarted and what that stopped. A worker that
 // hadn't got going yet starts again. Settings can turn this off, and a thread restarted too often in a
 // short time stays stopped. Call it once, after the orchestrator is set up.
+// Messages the user queued for Solo that it hadn't read go to it then: after its own carrying on, if it
+// was working.
 func (c *Core) ResumeInterrupted() {
+	if !c.resumeInterrupted()[OrchestratorID] {
+		c.mu.Lock()
+		o := c.threads[OrchestratorID]
+		// A question Solo asked before the restart still waits; a queued message would move past it.
+		waiting := o != nil && o.row.Status == StatusWaiting
+		c.mu.Unlock()
+		if !waiting {
+			go c.sendQueued(context.Background(), OrchestratorID)
+		}
+	}
+}
+
+// resumeInterrupted does ResumeInterrupted's carrying on, and returns the threads it carries on.
+func (c *Core) resumeInterrupted() map[string]bool {
 	c.mu.Lock()
 	todo := c.resume
 	c.resume = nil
 	off := c.settings.NoResumeAfterRestart
 	c.mu.Unlock()
+	resumed := map[string]bool{}
 	if off || len(todo) == 0 {
-		return
+		return resumed
 	}
 	log := map[string][]int64{} // thread id → unix ms of each continuation
 	_, _ = c.db.GetSetting(resumeLogKey, &log)
@@ -60,16 +77,20 @@ func (c *Core) ResumeInterrupted() {
 			continue
 		}
 		log[r.id] = append(log[r.id], time.Now().UnixMilli())
+		resumed[r.id] = true
 		go c.resumeOne(r)
 	}
 	if err := c.db.SetSetting(resumeLogKey, log); err != nil {
 		c.log.Warn("core: saving the resume log", "err", err)
 	}
+	return resumed
 }
 
 func (c *Core) resumeOne(r resumeInfo) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
+	// Messages the user queued for Solo go after its carrying on, or now if it didn't carry on.
+	defer c.sendQueued(context.Background(), r.id)
 	c.mu.Lock()
 	t := c.threads[r.id]
 	if t == nil || t.row.Status != StatusInterrupted || !t.row.DoneAt.IsZero() {

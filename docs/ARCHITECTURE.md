@@ -84,7 +84,10 @@ Raw `SDKMessage`s are also appended to a per-session JSONL file for debugging an
    **Steer** (t3code's `steerTurn`): move the turn's foreground subagents to the background
    (`backgroundTasks(toolUseId)`, 5 s cap), then offer the message at `priority: "now"`. Claude ends the
    running segment with an `aborted_*` result and carries on in a new segment that answers the steer;
-   the sidecar marks that result `steered`, so the app keeps the turn going.
+   the sidecar marks that result `steered`, so the app keeps the turn going. Only a message to a
+   working **worker** steers. The user's message to Solo while it works never reaches Claude mid-turn:
+   Go queues it (see Orchestrator › Queued messages), because a message offered without `priority` can
+   still be folded into the running turn, which ran two separate requests together.
 8. **MCP registration** can time out. Retry once, and only for resumed opens.
 9. **Probe** capabilities (models, account) with a query whose prompt never yields, then read
    `initializationResult()`, instead of hard-coding the model list.
@@ -99,8 +102,8 @@ Raw `SDKMessage`s are also appended to a per-session JSONL file for debugging an
 - Under `bypassPermissions` the SDK warns that `canUseTool` is shadowed, but **AskUserQuestion is
   still routed to it**, so worker questions reach the app.
 - In-process MCP tools are marked `alwaysLoad`; otherwise Claude spends a ToolSearch round trip first.
-- The CLI also emits `command_lifecycle` (queued/started/completed per send uuid), which is useful
-  for a "queued" state later.
+- The CLI also emits `command_lifecycle` (queued/started/completed per send uuid). Solo's queued
+  messages don't use it: Go holds them itself until Solo's turn ends (Orchestrator › Queued messages).
 - Claude binary: Solo runs the user's own Claude Code, as t3code does, so it shares their install,
   sign-in and updates. `agent.FindClaude` tries the Settings path, then `claude` on PATH, then the
   installers' default locations (a desktop launcher's PATH often lacks `~/.local/bin`). A compiled
@@ -133,6 +136,20 @@ Raw `SDKMessage`s are also appended to a per-session JSONL file for debugging an
   did ("A and B have questions. Solo messaged C."), with the word for what happened in its status's
   color and each thread's name a link to it, and a rule sets the exchanges apart (`gui/summary.go`).
   The sentences are built from fixed wording, not by a model.
+- **Queued messages:** the user's message to Solo while it works (a turn running, or a message just sent
+  whose turn hasn't started) doesn't steer. `core.send` keeps it on the thread (`thread.queue`, shown as
+  `ThreadView.Queued`, saved under the `state.queue.orchestrator` setting) instead of sending it, and so
+  does a message sent while others wait, to keep their order. When Solo's turn ends, however it ends
+  (Stop included: stopping moves on to what waits), `sendQueued` hands Solo the oldest as an ordinary
+  message, which then joins the transcript; the end of that turn hands over the next, so each queued
+  message is a turn of its own, in the order sent. A user message to Solo takes its hidden context (a
+  recap after a fresh session, notes) when it is handed over (`SetSoloContext`), not when it queued. A
+  restart keeps the queue; `ResumeInterrupted` sends it after Solo's own carrying on (or at once, if Solo
+  wasn't carried on, unless it still waits on a question). A message that can't be delivered says so in
+  the transcript, as any message does, and the next one is tried. While Solo waits on its own question
+  (AskUserQuestion), a message isn't queued by Go: it goes to Claude, as before, and the question is
+  answered in its card. Thread updates wait for queued messages, which go first. Sessions rotate only
+  between turns, so a queued message goes to whichever session is current when it is handed over.
 - **To-do list:** `add_todo`, `update_todo`, `remove_todo`, `list_todos` (core/todos.go). Solo judges
   what's a todo; most have no thread. A todo linked to threads is ticked off when their work lands
   (a pull request opened or merged, a merge, or the thread marked done). Thread updates list the open
@@ -267,7 +284,11 @@ Raw `SDKMessage`s are also appended to a per-session JSONL file for debugging an
 - **Slide-over:** a thread's transcript, a diff (`codeedit`, read-only), an input to message it
   directly, and Interrupt / Merge / Discard buttons.
 - **Composer button** (as in t3code): send; while the thread works, a red stop button, which turns into
-  Steer once there is a message. A message sent then steers the turn and is tagged "Steered".
+  Steer once there is a message. A message sent then steers the turn and is tagged "Steered". Solo's
+  composer has no Steer: while Solo works the button is Stop with an empty box and plain Send (Enter)
+  once there is a message, whose tooltip says Solo reads it when it finishes. The message shows at the
+  foot of Solo's chat, after its streaming text and working line, tagged "Queued", until Solo is handed
+  it (Orchestrator › Queued messages). The web client draws the same views from the same `ThreadView`.
 - **"/" and "@" in a message box** (`gui/mention.go`, after t3code's composer): "/" at the start of a
   word lists the skills and commands the conversation can run, as `core.Skills` finds them where Claude
   Code does (`~/.claude/skills` and `commands`, the organization's synced skills as
