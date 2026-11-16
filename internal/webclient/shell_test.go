@@ -146,8 +146,12 @@ func TestPairThenUse(t *testing.T) {
 		t.Errorf("the machine was told %q", d.Name)
 	}
 	u.WaitFor("the machine's UI", func() bool { return u.Has("open-drawer") })
+	// The machine's UI has no control of its own for switching machines.
 	u.Click("open-drawer")
-	u.WaitFor("the machine's name in the drawer", func() bool { return hasText(u, "Machine: workstation") })
+	u.WaitFor("the drawer", func() bool { return u.Has("drawer-solo") })
+	if u.Has("machine") || hasText(u, "Machine: workstation") {
+		t.Error("the machine's UI has a control for switching machines")
+	}
 	if st.load(storeMachines) == "" || st.load(storeKey) == "" {
 		t.Error("nothing was kept on the device")
 	}
@@ -247,10 +251,11 @@ func TestShots(t *testing.T) {
 	m := newMachine(t)
 	_, u := m.page(t, &storage{m: map[string]string{}}, "")
 	save(u, "web-welcome")
+	var s *Shell
 
 	st := &storage{m: map[string]string{}}
 	frag := m.offer(t)
-	_, u = m.page(t, st, frag)
+	s, u = m.page(t, st, frag)
 	u.WaitFor("the question", func() bool { return u.Has("pair") })
 	save(u, "web-confirm")
 	u.Click("pair")
@@ -261,9 +266,9 @@ func TestShots(t *testing.T) {
 	u.WaitFor("the machine's UI", func() bool { return u.Has("open-drawer") })
 	save(u, "web-main")
 	u.Click("open-drawer")
-	u.WaitFor("the drawer", func() bool { return hasText(u, "Machine: workstation") })
+	u.WaitFor("the drawer", func() bool { return u.Has("drawer-solo") })
 	save(u, "web-drawer")
-	u.Click("machine")
+	s.onUI(func() { s.state.screen.Set(screen{kind: screenMachines}) })
 	u.WaitFor("the machines", func() bool { return hasText(u, "Machines") })
 	save(u, "web-machines")
 	u.Click("open-" + m.remote.State().MachineID)

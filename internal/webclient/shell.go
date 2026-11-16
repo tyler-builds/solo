@@ -421,7 +421,6 @@ func (s *Shell) open(m device.Machine) {
 	c.app.RemoteImages = true
 	c.app.ItemLimit = itemLimit
 	c.app.Machine = m.Name
-	c.app.OnMachine = func() { s.state.screen.Set(screen{kind: screenMachines}) }
 	s.mu.Lock()
 	s.current = c
 	s.mu.Unlock()
