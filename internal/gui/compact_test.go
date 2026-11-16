@@ -10,9 +10,18 @@ import (
 // newPhoneUI is the UI on a phone: a narrow window, used with fingers.
 func newPhoneUI(t *testing.T, f *fakeBackend) (*App, *uitest.UI) {
 	t.Helper()
+	return newPhoneUIWith(t, f, nil)
+}
+
+// newPhoneUIWith is newPhoneUI with the app set up before its window opens.
+func newPhoneUIWith(t *testing.T, f *fakeBackend, setup func(*App)) (*App, *uitest.UI) {
+	t.Helper()
 	_, dark := Themes()
 	a := New(f)
 	a.Touch = true
+	if setup != nil {
+		setup(a)
+	}
 	u := uitest.New(t, a.Root, uitest.Size(390, 844), uitest.Theme(dark),
 		uitest.Settings(ui.SystemSettings{Dark: true, CaptionButtons: ":", ReducedMotion: true, CaretWidth: 1}))
 	t.Cleanup(u.Close)

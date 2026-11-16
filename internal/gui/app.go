@@ -50,16 +50,19 @@ type App struct {
 
 	threads *ui.Signal[[]core.ThreadView]
 	todos   *ui.Signal[[]core.Todo] // the open todos
-	repos   *ui.Signal[[]string]
-	plain   *ui.Signal[[]string]                          // searched folders that aren't in git
-	rate    *ui.Signal[[]agent.Event]                     // the latest of each usage limit (usage.go)
-	pending *ui.Signal[map[string][]core.PendingQuestion] // worker questions, by thread
-	navSel  *ui.Signal[string]                            // sidebar: "orchestrator" or "repo:<path>"
-	drawer  *ui.Signal[bool]                              // a compact window's drawer of threads is open
-	compact bool                                          // the window is compact, as of its last render (UI thread only)
-	openID  *ui.Signal[string]                            // the thread in the side panel
-	openTab *ui.Signal[string]
-	cfg     *ui.Signal[core.Settings]
+	// todoFold is whether the user folded the To do list (true) or opened it (false); nil until they
+	// pick, which leaves it to the window: folded in a compact one (see todosFolded).
+	todoFold *ui.Signal[*bool]
+	repos    *ui.Signal[[]string]
+	plain    *ui.Signal[[]string]                          // searched folders that aren't in git
+	rate     *ui.Signal[[]agent.Event]                     // the latest of each usage limit (usage.go)
+	pending  *ui.Signal[map[string][]core.PendingQuestion] // worker questions, by thread
+	navSel   *ui.Signal[string]                            // sidebar: "orchestrator" or "repo:<path>"
+	drawer   *ui.Signal[bool]                              // a compact window's drawer of threads is open
+	compact  bool                                          // the window is compact, as of its last render (UI thread only)
+	openID   *ui.Signal[string]                            // the thread in the side panel
+	openTab  *ui.Signal[string]
+	cfg      *ui.Signal[core.Settings]
 	// The thread panel's share of the center, which the user can drag, and its open/close animation.
 	panelSize   *ui.Signal[ui.Length]
 	panelAnim   *ui.Signal[float32] // 0 closed … 1 open
@@ -121,11 +124,9 @@ type App struct {
 	// Remote is this machine's remote access, which Settings then has a page for; nil leaves the page
 	// out, as a web page does. Set it before Run.
 	Remote api.Remote
-	// Machine names the machine this UI drives when that is another one, as in a web page, and
-	// OnMachine opens whatever lets the user see its connection or pick another. The name is then shown
-	// with the app's own controls. Set them before Run.
-	Machine   string
-	OnMachine func()
+	// Machine names the machine this UI drives when that is another one, as in a web page: Settings
+	// shows its version under that name. Set it before Run.
+	Machine string
 	// ItemLimit is how many of a transcript's newest items are loaded; 0 for the default, 400. A page
 	// holds fewer: its memory, and how long its collector pauses, grow with what it holds. Set it before
 	// Run.
@@ -165,6 +166,7 @@ func New(b Backend) *App {
 		b:           b,
 		threads:     ui.NewSignal(b.Threads()),
 		todos:       ui.NewSignal(b.Todos(false)),
+		todoFold:    ui.NewSignal[*bool](nil),
 		repos:       ui.NewSignal(b.RepoPaths()),
 		plain:       ui.NewSignal(b.PlainFolders()),
 		rate:        ui.NewSignal(b.RateLimits()),
@@ -702,10 +704,6 @@ func (a *App) titleBar(ctx *ui.Context) ui.Element {
 		}
 		trailing = append(trailing, ui.Div().Tooltip("Spent across threads").Child(subtle(ctx, fmt.Sprintf("$%.2f", cost))))
 	}
-	if a.OnMachine != nil {
-		trailing = append(trailing, ui.Button(a.Machine).Icon(icons.Laptop).Ghost().Small().Key("machine").
-			Tooltip("The machine this is connected to").OnClick(a.OnMachine))
-	}
 	trailing = append(trailing, ui.IconButton(icons.Settings).Ghost().Small().Label("Settings").Tooltip("Settings").
 		Key("open-settings").OnClick(func() { a.settings.Set(true) }))
 	return ui.TitleBar().Height(ui.Px(40)).
@@ -789,16 +787,6 @@ func (a *App) threadsDrawer(ctx *ui.Context) ui.Element {
 	body := ui.Div().Column().Size(ui.Full, ui.Full).Background(t.Panel).
 		Child(top).
 		Child(ui.Div().Column().Grow(1).MinHeight(ui.Px(0)).Child(ui.Component(a.rail)))
-	if a.OnMachine != nil {
-		// Which machine this is, at the foot of the drawer, where a phone's thumb reaches.
-		body = body.Child(ui.Div().Row().Align(ui.Center).Gap(space2+2).PaddingX(space4).Height(ui.Px(48)).Shrink(0).
-			BorderEdges(ui.Edges{Top: 1}, t.Border).Cursor(ui.CursorPointer).
-			Role(access.RoleButton).Label("Machine: " + a.Machine).TabIndex(0).Key("machine").
-			OnClick(func() { shut(); a.OnMachine() }).
-			Child(ui.Icon(icons.Laptop).Size(16).Color(t.TextMuted)).
-			Child(ui.Text(a.Machine).FontSize(13).Medium().TextColor(t.Text).Truncate().Grow(1)).
-			Child(ui.Icon(icons.ChevronRight).Size(14).Color(t.TextSubtle)))
-	}
 	winW, _ := ctx.WindowSize()
 	// A style's zero is "unset", so the panel's own padding and gap are taken out with a hair's width.
 	none := ui.All(0.01)

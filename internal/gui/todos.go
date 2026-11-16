@@ -15,22 +15,25 @@ import (
 func (a *App) todoList(ctx *ui.Context) ui.Element {
 	t := ctx.Theme()
 	todos := a.todos.Get()
-	folded := ui.Local(ctx, "folded", false)
+	folded := a.todosFolded(ctx)
 	chevron := icons.ChevronDown
-	if folded.Get() {
+	if folded {
 		chevron = icons.ChevronRight
 	}
 	head := ui.Div().Row().Align(ui.Center).Gap(6).PaddingX(space2).Height(ui.Px(28)).Radius(radiusS).
 		Cursor(ui.CursorPointer).Hover(ui.Style{Background: t.SurfaceHover}).
-		Role(access.RoleButton).Label("To do").TabIndex(0).
-		OnClick(func() { folded.Update(func(f bool) bool { return !f }) }).
+		Role(access.RoleButton).Label("To do").TabIndex(0).Key("todo-fold").
+		OnClick(func() {
+			fold := !folded
+			a.todoFold.Set(&fold)
+		}).
 		Child(ui.Text("To do").FontSize(14).Semibold().NoWrap()).
 		Child(ui.If(len(todos) > 0, ui.Text(fmt.Sprint(len(todos))).FontSize(12).TextColor(t.TextSubtle))).
 		Child(ui.Div().Grow(1)).
 		Child(ui.Icon(chevron).Size(14).Color(t.TextSubtle))
-	col := ui.Div().Column().Gap(2).PaddingX(space2).PaddingTop(space3).PaddingBottom(space2).Shrink(0).
+	col := ui.Div().Column().Gap(2).PaddingX(space2).PaddingTop(space2).PaddingBottom(space1+2).Shrink(0).
 		BorderEdges(ui.Edges{Bottom: 1}, t.Border).Child(head)
-	if folded.Get() {
+	if folded {
 		return col
 	}
 	if len(todos) == 0 {
@@ -59,6 +62,15 @@ func (a *App) todoList(ctx *ui.Context) ui.Element {
 			Child(ui.Text(label).FontSize(12).TextColor(t.TextSubtle)))
 	}
 	return col.Child(ui.Div().Column().MaxHeight(ui.Px(320)).ScrollY().Child(list))
+}
+
+// todosFolded reports whether the To do list is folded: as the user last left it, or else folded in a
+// compact window, where the drawer's height is better spent on the threads, and open in a wider one.
+func (a *App) todosFolded(ctx *ui.Context) bool {
+	if f := a.todoFold.Get(); f != nil {
+		return *f
+	}
+	return isCompact(ctx)
 }
 
 // todoRows is how many todos the rail shows before "Show N more".
