@@ -118,7 +118,7 @@ func TestMergeCardHeader(t *testing.T) {
 			title := u.Get("card-title-" + c.id).Bounds()
 			kind := u.Get("card-kind-" + c.id).Bounds()
 
-			if right, want := repos.X+repos.W, card.X+card.W-space4-1; right < want-2 || right > want+0.5 {
+			if right, want := repos.X+repos.W, card.X+card.W-cardPad-1; right < want-2 || right > want+0.5 {
 				t.Errorf("repositories end at %v, want at the card's right edge %v", right, want)
 			}
 			if d := (repos.Y + repos.H/2) - (kind.Y + kind.H/2); d < -2 || d > 2 {
@@ -130,7 +130,7 @@ func TestMergeCardHeader(t *testing.T) {
 			if title.Y < kind.Y+kind.H || title.Y < repos.Y+repos.H {
 				t.Errorf("title %v not under the top row (%v, %v)", title, kind, repos)
 			}
-			if left := title.X - card.X; left > space4+2 {
+			if left := title.X - card.X; left > cardPad+2 {
 				t.Errorf("title starts %v into the card, want at its left edge", left)
 			}
 			if !strings.Contains(u.Get("card-title-"+c.id).Name(), "INV-2041") && c.id != formsID {

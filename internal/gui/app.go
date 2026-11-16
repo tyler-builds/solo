@@ -50,16 +50,19 @@ type App struct {
 
 	threads *ui.Signal[[]core.ThreadView]
 	todos   *ui.Signal[[]core.Todo] // the open todos
-	repos   *ui.Signal[[]string]
-	plain   *ui.Signal[[]string]                          // searched folders that aren't in git
-	rate    *ui.Signal[[]agent.Event]                     // the latest of each usage limit (usage.go)
-	pending *ui.Signal[map[string][]core.PendingQuestion] // worker questions, by thread
-	navSel  *ui.Signal[string]                            // sidebar: "orchestrator" or "repo:<path>"
-	drawer  *ui.Signal[bool]                              // a compact window's drawer of threads is open
-	compact bool                                          // the window is compact, as of its last render (UI thread only)
-	openID  *ui.Signal[string]                            // the thread in the side panel
-	openTab *ui.Signal[string]
-	cfg     *ui.Signal[core.Settings]
+	// todoFold is whether the user folded the To do list (true) or opened it (false); nil until they
+	// pick, which leaves it to the window: folded in a compact one (see todosFolded).
+	todoFold *ui.Signal[*bool]
+	repos    *ui.Signal[[]string]
+	plain    *ui.Signal[[]string]                          // searched folders that aren't in git
+	rate     *ui.Signal[[]agent.Event]                     // the latest of each usage limit (usage.go)
+	pending  *ui.Signal[map[string][]core.PendingQuestion] // worker questions, by thread
+	navSel   *ui.Signal[string]                            // sidebar: "orchestrator" or "repo:<path>"
+	drawer   *ui.Signal[bool]                              // a compact window's drawer of threads is open
+	compact  bool                                          // the window is compact, as of its last render (UI thread only)
+	openID   *ui.Signal[string]                            // the thread in the side panel
+	openTab  *ui.Signal[string]
+	cfg      *ui.Signal[core.Settings]
 	// The thread panel's share of the center, which the user can drag, and its open/close animation.
 	panelSize   *ui.Signal[ui.Length]
 	panelAnim   *ui.Signal[float32] // 0 closed … 1 open
@@ -163,6 +166,7 @@ func New(b Backend) *App {
 		b:           b,
 		threads:     ui.NewSignal(b.Threads()),
 		todos:       ui.NewSignal(b.Todos(false)),
+		todoFold:    ui.NewSignal[*bool](nil),
 		repos:       ui.NewSignal(b.RepoPaths()),
 		plain:       ui.NewSignal(b.PlainFolders()),
 		rate:        ui.NewSignal(b.RateLimits()),

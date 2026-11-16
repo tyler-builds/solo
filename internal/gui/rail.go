@@ -57,7 +57,7 @@ func matchesQuery(th core.ThreadView, query string) bool {
 
 // railFilterInput narrows the rail by thread title and repository.
 func (a *App) railFilterInput(ctx *ui.Context) ui.Element {
-	return ui.Div().PaddingX(space3).PaddingBottom(space2).Shrink(0).
+	return ui.Div().PaddingX(space3).PaddingBottom(space1 + 2).Shrink(0).
 		Child(ui.TextInput(a.railQuery).Placeholder("Filter threads").Label("Filter threads").Small().Width(ui.Full).
 			Icon(icons.Search).Clearable().
 			Key("rail-filter").
@@ -93,12 +93,12 @@ func (a *App) rail(ctx *ui.Context) ui.Element {
 		ctx.After(time.Second, func() { tick.Update(func(n int) int { return n + 1 }) })
 	}
 
-	head := ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space4).Height(ui.Px(44)).Shrink(0).
+	head := ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space4).Height(ui.Px(38)).Shrink(0).
 		Child(ui.Text("Threads").FontSize(14).Semibold().NoWrap()).
 		Child(ui.Div().Column().Justify(ui.Center).Shrink(1).MinWidth(ui.Px(0)).Child(a.repoMenu(ctx))).
 		Child(ui.Div().Grow(1))
 
-	list := ui.Div().Column().Gap(space1).PaddingX(space2).PaddingBottom(space3)
+	list := ui.Div().Column().Gap(2).PaddingX(space2).PaddingBottom(space2)
 	if len(open) == 0 {
 		list = list.Child(ui.Div().Column().Align(ui.Center).Gap(space2).PaddingY(space8).PaddingX(space4).
 			Child(ui.Icon(icons.Layers).Size(22).Color(t.TextSubtle)).
@@ -144,7 +144,7 @@ func (a *App) rail(ctx *ui.Context) ui.Element {
 // workingGroup is the threads at work, pinned below the scrolling list so they stay in sight. Many at
 // once scroll within it, so the list above keeps its room.
 func (a *App) workingGroup(ctx *ui.Context, title, status string, group []core.ThreadView) ui.Element {
-	col := ui.Div().Column().Gap(space1).PaddingX(space2).PaddingBottom(space1).
+	col := ui.Div().Column().Gap(2).PaddingX(space2).PaddingBottom(space1).
 		Child(groupHeader(ctx, title, len(group), status))
 	for _, th := range group {
 		col = col.Child(a.workingRow(ctx, th))
@@ -222,7 +222,7 @@ func groupHeader(ctx *ui.Context, title string, n int, status string) ui.Element
 	case core.StatusFailed:
 		c = t.Danger
 	}
-	return ui.Div().Row().Align(ui.Center).Gap(6).PaddingX(space2).PaddingTop(space3).PaddingBottom(space1).
+	return ui.Div().Row().Align(ui.Center).Gap(6).PaddingX(space2).PaddingTop(space2).PaddingBottom(2).
 		Child(ui.Text(title).FontSize(11).Medium().TextColor(c)).
 		Child(ui.Text(fmt.Sprint(n)).FontSize(11).TextColor(t.TextSubtle))
 }
@@ -235,7 +235,7 @@ func (a *App) threadRow(ctx *ui.Context, th core.ThreadView) ui.Element {
 	// The mark and the group carry the state; the line stays neutral.
 	line, lineColor := a.activityLine(th), t.TextMuted
 	repo := repoLabel(th)
-	row := ui.Div().Column().Gap(3).PaddingX(space2 + 2).PaddingY(space2).Radius(radiusM).
+	row := ui.Div().Column().Gap(2).PaddingX(space2 + 2).PaddingY(space1 + 2).Radius(radiusM).
 		Cursor(ui.CursorPointer).Hover(ui.Style{Background: t.SurfaceHover}).
 		Role(access.RoleButton).Label(th.Title).TabIndex(0).Key("card-" + th.ID).
 		ContextMenu(func() []ui.MenuItem { return a.folderMenu(th) }).

@@ -315,6 +315,8 @@ func TestShots(t *testing.T) {
 		// A phone: one pane at a time, switched in the title bar.
 		{"phone-main", func(a *App, f *fakeBackend) {}},
 		{"phone-threads", func(a *App, f *fakeBackend) { a.drawer.Set(true) }},
+		// The drawer with Claude's usage limits at its foot, in their one-line form.
+		{"phone-usage", func(a *App, f *fakeBackend) { f.rate = demoLimits(); a.rate.Set(f.rate); a.drawer.Set(true) }},
 		{"phone-thread", func(a *App, f *fakeBackend) { a.openThread("c3d4e5f6-forms", "conversation") }},
 		{"phone-changes", func(a *App, f *fakeBackend) { diffSplit.Set(false); a.openThread("c3d4e5f6-forms", "changes") }},
 		{"phone-working", func(a *App, f *fakeBackend) { a.openThread("a1f3c9d2-oauth", "conversation") }},

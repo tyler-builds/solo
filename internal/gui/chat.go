@@ -568,7 +568,7 @@ func (a *App) userMessage(ctx *ui.Context, v core.ThreadView, text string, image
 	col := ui.Div().Column().Align(ui.End).Gap(space1 + 2).MaxWidth(ui.Percent(85)).
 		Child(a.messageImages(ctx, images, ui.End))
 	if strings.TrimSpace(text) != "" {
-		col = col.Child(ui.Div().PaddingX(space3 + 2).PaddingY(space2 + 2).Radius(radiusL).
+		col = col.Child(ui.Div().PaddingX(space2 + 2).PaddingY(space1 + 2).Radius(radiusL).
 			Background(ctx.Theme().SurfaceActive).
 			Child(a.md(ctx, hardBreaks(text), viewBases(v))))
 	}
@@ -1111,6 +1111,9 @@ func turnView(ctx *ui.Context, d core.TurnData) ui.Element {
 		Child(ui.Text(msg).FontSize(13).TextColor(t.Text).Selectable().Grow(1).MinWidth(ui.Px(0)))
 }
 
+// cardPad is the padding of the cards in a conversation: the merge card and the question card.
+const cardPad = space3
+
 // proposalCard is the orchestrator's recommendation to merge a thread, with the Merge button.
 func (a *App) proposalCard(ctx *ui.Context, d core.ProposalData) ui.Element {
 	return ui.Component(func(ctx *ui.Context) ui.Element {
@@ -1161,7 +1164,7 @@ func (a *App) proposalCard(ctx *ui.Context, d core.ProposalData) ui.Element {
 		if isCompact(ctx) {
 			actions.Wrap()
 		}
-		card := ui.Div().Column().Gap(space3).Padding(space4).Radius(radiusL).Background(t.Surface).Key("proposal-"+d.ThreadID).
+		card := ui.Div().Column().Gap(space3).Padding(cardPad).Radius(radiusL).Background(t.Surface).Key("proposal-"+d.ThreadID).
 			Border(1, t.BorderStrong).
 			Child(a.proposalHeader(ctx, th)).
 			Child(a.agentText(ctx, d.Summary, a.threadBases(d.ThreadID), nil)).
@@ -1283,7 +1286,7 @@ func (a *App) askForm(ctx *ui.Context, threadID, toolUseID string, qs []agent.Qu
 		for _, o := range q.Options {
 			all += "\n" + o.Description
 		}
-		return ui.Div().Column().Gap(space3).Padding(space4).Radius(radiusL).Background(t.Surface).
+		return ui.Div().Column().Gap(space3).Padding(cardPad).Radius(radiusL).Background(t.Surface).
 			Border(1, t.Warning.Alpha(0.4)).
 			ContextMenu(func() []ui.MenuItem { return a.pathMenu(findPaths(all, bases)) }).
 			OnKeyDown(func(e *ui.KeyEvent) {
@@ -1407,6 +1410,14 @@ func (a *App) foldedAsk(ctx *ui.Context, th core.ThreadView, pq core.PendingQues
 		Child(ui.Text("Answer").FontSize(12).Medium().TextColor(t.TextMuted).NoWrap()).
 		Child(ui.Icon(icons.ChevronUp).Size(13).Color(t.TextSubtle))
 }
+
+// The composer's box: its padding, and its height with one line of text.
+const (
+	composerPadL = space2
+	composerPadR = space1
+	composerPadY = space1
+	composerMinH = 44
+)
 
 // composer is a message box: Enter sends, Shift+Enter starts a new line. Images come in by pasting,
 // dropping files on it, or the attach button, and show as thumbnails above the text.
@@ -1557,7 +1568,7 @@ func (a *App) composer(ctx *ui.Context, v core.ThreadView, key, scope, placehold
 		if key != "orch-draft" {
 			boxW = a.panelWidth(ctx) - 2*space4
 		}
-		areaW, below := boxW-space3-space2-2, float32(space2+space1+1)
+		areaW, below := boxW-composerPadL-composerPadR-2, float32(composerPadY+space1+1)
 		if under {
 			below += 26 + space1 // the buttons' row, under the text
 		} else {
@@ -1596,8 +1607,8 @@ func (a *App) composer(ctx *ui.Context, v core.ThreadView, key, scope, placehold
 					submit()
 				}
 			})
-		box := ui.Div().Column().Justify(ui.Center).PaddingLeft(space3).PaddingRight(space2).PaddingY(space2).
-			MinHeight(ui.Px(52)).Radius(radiusXL).Border(1, t.BorderStrong).Background(t.Surface).
+		box := ui.Div().Column().Justify(ui.Center).PaddingLeft(composerPadL).PaddingRight(composerPadR).PaddingY(composerPadY).
+			MinHeight(ui.Px(composerMinH)).Radius(radiusXL).Border(1, t.BorderStrong).Background(t.Surface).
 			FocusWithin(ui.Style{BorderColor: t.TextSubtle}).
 			OnDrop(ui.Drop(func(f ui.Files, _ *ui.DropEvent) {
 				// Images are attached; other files and folders are mentioned, as "@path".

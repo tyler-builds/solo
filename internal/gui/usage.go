@@ -107,12 +107,18 @@ func usageTip(e agent.Event, used float64, known bool, now time.Time) string {
 func percent(used float64) int { return int(used*100 + 0.5) }
 
 // usagePanel shows Claude's usage limits at the foot of the rail: a row per limit with its short label,
-// a thin bar and the percent used. When Claude has said nothing about how much is used, it shows a notice
-// only if a limit is near or reached; otherwise nothing.
+// a thin bar and the percent used. A compact window's drawer is short of height, so there the limits
+// share one line, each a label, a short bar and the percent (miniUsage). When Claude has said nothing
+// about how much is used, it shows a notice only if a limit is near or reached; otherwise nothing.
 func (a *App) usagePanel(ctx *ui.Context) ui.Element {
 	t := ctx.Theme()
 	limits := a.rate.Get()
 	now := a.now()
+	if isCompact(ctx) {
+		if mini := miniUsage(ctx, limits, now); mini != nil {
+			return mini
+		}
+	}
 	box := ui.Div().Column().Gap(6).PaddingX(space4).PaddingY(space3).Shrink(0)
 	rows := 0
 	for _, e := range limits {
@@ -157,4 +163,37 @@ func (a *App) usagePanel(ctx *ui.Context) ui.Element {
 		Background(c.Alpha(0.12)).Key("usage-notice").Tooltip(usageTip(*worst, 0, false, now)).
 		Child(dot(c, 6)).
 		Child(ui.Text(status).FontSize(12).Medium().TextColor(c).Truncate().MinWidth(ui.Px(0))))
+}
+
+// miniUsage is the usage limits in one line, for a compact window: each its short label, a short bar
+// and the percent used, colored as in the full panel, with the same tooltip. It wraps to a second line
+// only when the limits don't fit. Nil when no limit says how much is used.
+func miniUsage(ctx *ui.Context, limits []agent.Event, now time.Time) ui.Element {
+	t := ctx.Theme()
+	line := ui.Div().Row().Wrap().Align(ui.Center).Gap(space2 + 2).PaddingX(space4).PaddingY(space2).Shrink(0).
+		Key("usage-mini")
+	rows := 0
+	for _, e := range limits {
+		used, ok := core.UsedFraction(e)
+		if !ok {
+			continue
+		}
+		rows++
+		short, full := limitName(e.RateLimitType)
+		c := usageColor(t, e, used)
+		pctColor := t.TextMuted
+		if c != t.Accent {
+			pctColor = c
+		}
+		line = line.Child(ui.Div().Row().Align(ui.Center).Gap(3).Height(ui.Px(14)).Shrink(0).
+			Key("usage-" + e.RateLimitType).Tooltip(usageTip(e, used, true, now)).
+			Child(ui.Text(short).FontSize(11).Medium().TextColor(t.TextMuted).NoWrap()).
+			Child(ui.Div().Width(ui.Px(24)).Shrink(0).Child(ui.ProgressBar(used).Label(full).Color(c).HideValue().
+				Width(ui.Full).MinWidth(ui.Px(0)).Styles(ui.ProgressBarStyle{Track: ui.Style{Height: ui.Px(3), Radius: 1.5}, Fill: ui.Style{Radius: 1.5}}))).
+			Child(ui.Text(fmt.Sprintf("%d%%", percent(used))).FontSize(11).TextColor(pctColor).NoWrap()))
+	}
+	if rows == 0 {
+		return nil
+	}
+	return line
 }

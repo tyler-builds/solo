@@ -31,7 +31,7 @@ func (a *App) proposalHeader(ctx *ui.Context, th core.ThreadView) ui.Element {
 		return top
 	}
 	// The card's inner width: the chat column less its padding, and the card's padding and border.
-	room := a.chatWidth(ctx) - 2*space6 - 2*space4 - 2 - used - space3
+	room := a.chatWidth(ctx) - 2*space6 - 2*cardPad - 2 - used - space3
 	top = top.Child(ui.Div().Grow(1)).Child(fitRepos(ctx, th.ID, repoNames(th), room))
 	return ui.Div().Column().Gap(6).MinWidth(ui.Px(0)).
 		Child(top).
