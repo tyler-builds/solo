@@ -144,6 +144,28 @@ func TestShots(t *testing.T) {
 			a.items = map[string]*ui.Signal[[]core.Item]{}
 			a.openThread("c3d4e5f6-forms", "conversation")
 		}},
+		// An agent's chart block draws as a chart where it stands: in Solo's chat, and in a thread's summary.
+		{"agent-chart", func(a *App, f *fakeBackend) {
+			f.add(core.OrchestratorID, core.ItemUser, core.UserData{Text: "Did the test speedup work? Where does the time go now?"})
+			f.add(core.OrchestratorID, core.ItemAssistant, core.TextData{Text: "**Speed up the test suite** is done: the suite " +
+				"runs in 41 s instead of 74 s. Most of the gain is in gui, which no longer starts a window per test.\n\n" + shotChart +
+				"\nstore barely moved; its time is the SQLite setup, which the thread left alone."})
+			a.items = map[string]*ui.Signal[[]core.Item]{}
+		}},
+		{"agent-chart-thread", func(a *App, f *fakeBackend) {
+			f.add("c3d4e5f6-forms", core.ItemAssistant, core.TextData{Text: "Shared one window across the gui tests and " +
+				"cached the fixture repos. Committed on this branch.\n\n" + shotTrend})
+			a.items = map[string]*ui.Signal[[]core.Item]{}
+			a.openThread("c3d4e5f6-forms", "conversation")
+		}},
+		// A chart block Solo can't draw (here, a kind it doesn't know) shows as code.
+		{"agent-chart-fallback", func(a *App, f *fakeBackend) {
+			f.add(core.OrchestratorID, core.ItemUser, core.UserData{Text: "Compare the two branches on each metric."})
+			f.add(core.OrchestratorID, core.ItemAssistant, core.TextData{Text: "Here they are side by side:\n\n" +
+				"```chart\n{\"type\": \"radar\", \"title\": \"Branch comparison\",\n \"series\": [{\"name\": \"main\", " +
+				"\"data\": [[\"speed\", 3], [\"memory\", 4]]}]}\n```\n\nThe branch wins on speed."})
+			a.items = map[string]*ui.Signal[[]core.Item]{}
+		}},
 		{"paths", func(a *App, f *fakeBackend) {
 			dir := filepath.Join(t.TempDir(), "solo-brand")
 			_ = os.MkdirAll(dir, 0o755)
@@ -423,6 +445,16 @@ func longChat(f *fakeBackend) {
 		}
 	}
 }
+
+// shotChart compares the test time of each package before and after a change.
+const shotChart = "```chart\n" + `{"type": "bar", "title": "Test time by package", "x": "Package", "y": "Seconds",
+ "series": [{"name": "main", "data": [["core", 12.5], ["gui", 38.2], ["orchestrator", 9.1], ["store", 4.3], ["remote", 10]]},
+            {"name": "this branch", "data": [["core", 9.8], ["gui", 14.6], ["orchestrator", 6.2], ["store", 4.1], ["remote", 6.4]]}]}` + "\n```\n"
+
+// shotTrend is the suite's time over its last runs.
+const shotTrend = "```chart\n" + `{"type": "line", "title": "Suite time per run", "x": "Run", "y": "Seconds",
+ "series": [{"name": "main", "data": [[1, 74], [2, 76], [3, 73], [4, 75], [5, 74], [6, 77]]},
+            {"name": "this branch", "data": [[1, 74], [2, 61], [3, 52], [4, 47], [5, 43], [6, 41]]}]}` + "\n```\n"
 
 // composerMarkdown is a draft with each kind of inline Markdown the composer formats.
 const composerMarkdown = "Can you check these?\n\n**Skip writes** that change nothing: `Signal.Set` re-renders.\n" +

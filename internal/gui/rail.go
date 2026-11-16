@@ -13,6 +13,7 @@ import (
 	"github.com/tyler-builds/jamb/icons"
 	"github.com/tyler-builds/jamb/ui"
 
+	"github.com/tyler-builds/solo/internal/chartspec"
 	"github.com/tyler-builds/solo/internal/core"
 )
 
@@ -478,10 +479,10 @@ func lastLine(s string) string {
 	return ""
 }
 
-// stripMarkdown removes the emphasis and code marks of a one-line summary, and its images.
+// stripMarkdown removes the emphasis and code marks of a one-line summary, and its images and charts.
 func stripMarkdown(s string) string {
 	r := strings.NewReplacer("**", "", "`", "", "__", "", "# ", "")
-	return strings.TrimLeft(r.Replace(core.DropImages(s)), "-* ")
+	return strings.TrimLeft(r.Replace(core.DropImages(chartspec.Without(s))), "-* ")
 }
 
 // shortAgo is a compact time from t until now (App.now): "now", "4m", "3h", "2d".

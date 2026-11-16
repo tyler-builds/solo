@@ -495,6 +495,7 @@ files at once, with no branch or copy to review first, and other threads may wor
 - End with a short summary of what you changed (each file) and anything left undone, for the user and
   Solo.
 ` + screenshotRules(true) + `
+` + ChartRules + `
 - If you need a decision only the user can make, ask with AskUserQuestion.`
 	}
 	if len(ps) > 1 {
@@ -531,8 +532,23 @@ repository's or your own defaults:
   merge, rebase onto other branches, or switch branches; the user reviews and merges your branch.
 - End with a short summary of what you changed and anything left undone, for the user and Solo.
 ` + screenshotRules(false) + `
+` + ChartRules + `
 - If you need a decision only the user can make, ask with AskUserQuestion.` + rules
 }
+
+// ChartRules tell an agent (a thread, or Solo) when and how to show data as a chart: a chart block,
+// which the app draws where it stands (see chartspec).
+const ChartRules = `- When data reads better as a chart than as text (numbers over time, a comparison across items, parts
+  of a whole), show it as a chart: a fenced code block with the info string chart holding a JSON spec.
+  Not for decoration, or for a number or two. For example:
+  ` + "```chart" + `
+  {"type": "bar", "title": "Test time by package", "x": "Package", "y": "Seconds",
+   "series": [{"name": "main", "data": [["core", 12.5], ["gui", 30.1]]}]}
+  ` + "```" + `
+  type is line, area, bar, scatter, pie or donut; title, x and y (axis labels) are optional. Each point
+  is [x, y]: x a category (a string) or a number, the same kind in every point; y a number. "stacked":
+  true stacks bar or area series; "horizontal": true turns bars sideways. A pie or donut has one series
+  of non-negative values. At most 12 series and 5000 points. An invalid spec shows as code.`
 
 // screenshotRules ask a worker for screenshots of the views it changes, and tell it how to show an
 // image. inPlace: it works in a folder that isn't in git.
