@@ -48,27 +48,29 @@ type Core struct {
 	db    *store.Store
 	agent *agent.Manager
 
-	mu         sync.Mutex
-	settings   Settings
-	threads    map[string]*thread
-	bySession  map[string]*thread
-	jobs       map[string]chan agent.Event // one-off sessions (the PR text agent): their turn ends, by session
-	repos      []string
-	plain      []string // folders searched that aren't repositories (git.ScanAll)
-	subs       map[int]func(Change)
-	nextSub    int
-	tools      ToolHandler
-	orchSpec   func() agent.OpenParams
-	recap      func(ThreadView) string
-	soloBusy   func() bool            // whether thread updates are on their way to Solo (SetSoloBusy)
-	rateLimits map[string]agent.Event // the latest event of each kind of limit (usage.go)
-	closed     bool
-	forges     map[string]forge.Kind // by repository
-	landing    map[string]bool       // threads with a landing action under way (see land)
-	stop       chan struct{}         // closed by Close
-	pollNow    chan struct{}         // asks the pull request watcher to look now
-	fetched    map[string]time.Time  // when each "repo\x00branch" was last fetched to look for landed work
-	lastSweep  time.Time             // when the PR watcher last looked for work landed outside Solo
+	mu        sync.Mutex
+	settings  Settings
+	threads   map[string]*thread
+	bySession map[string]*thread
+	jobs      map[string]chan agent.Event // one-off sessions (the PR text agent): their turn ends, by session
+	repos     []string
+	plain     []string // folders searched that aren't repositories (git.ScanAll)
+	subs      map[int]func(Change)
+	nextSub   int
+	tools     ToolHandler
+	orchSpec  func() agent.OpenParams
+	recap     func(ThreadView) string
+	soloBusy  func() bool // whether thread updates are on their way to Solo (SetSoloBusy)
+	// soloContext takes the hidden context for Solo's next message from the user (SetSoloContext).
+	soloContext func() (string, func())
+	rateLimits  map[string]agent.Event // the latest event of each kind of limit (usage.go)
+	closed      bool
+	forges      map[string]forge.Kind // by repository
+	landing     map[string]bool       // threads with a landing action under way (see land)
+	stop        chan struct{}         // closed by Close
+	pollNow     chan struct{}         // asks the pull request watcher to look now
+	fetched     map[string]time.Time  // when each "repo\x00branch" was last fetched to look for landed work
+	lastSweep   time.Time             // when the PR watcher last looked for work landed outside Solo
 	// resume are the threads that were working when Solo last closed, for ResumeInterrupted.
 	resume []resumeInfo
 	todos  []Todo // the user's to-do list, oldest first (todos.go)
@@ -159,6 +161,9 @@ func New(cfg Config) (*Core, error) {
 			c.keepQuestion(t)
 		case StatusInterrupted:
 			c.settleItems(t.row.ID, false) // stopped before this was done on load
+		}
+		if t.row.ID == OrchestratorID {
+			c.loadQueueLocked(t) // messages to Solo still waiting when it closed; ResumeInterrupted sends them
 		}
 		c.threads[t.row.ID] = t
 		c.bySession[t.row.SessionID] = t

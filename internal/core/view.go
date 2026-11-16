@@ -78,6 +78,9 @@ type ThreadView struct {
 	ActualModel string
 	Retry       string
 	PendingAsk  bool
+	// Queued are the user's messages to Solo that wait for its turn to end, oldest first: a message sent
+	// to Solo while it works doesn't interrupt it, and Solo reads each as a turn of its own.
+	Queued []QueuedMessage
 	// Resolving: the worker is resolving merge conflicts, and its branch merges when it finishes.
 	Resolving bool
 	Live      []LiveBlock
@@ -119,6 +122,14 @@ type ThreadView struct {
 	// sum them up: Changed adds them, the Can flags hold when any part can, and Forge and PR are the
 	// first part's, set only when there is one part.
 	Parts []PartView
+}
+
+// QueuedMessage is a message to Solo waiting to be read (ThreadView.Queued). It joins the transcript as
+// a user item when Solo is handed it.
+type QueuedMessage struct {
+	Text   string    `json:"text"`
+	Images []string  `json:"images,omitempty"`
+	At     time.Time `json:"at"`
 }
 
 // MultiRepo reports whether the thread works in more than one repository.

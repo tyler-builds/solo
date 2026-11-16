@@ -46,6 +46,7 @@ func TestShots(t *testing.T) {
 		"composer-at-solo":     {"orch-draft-area", "Compare the auth code in @"},
 		"composer-at":          {"draft-a1f3c9d2-oauth-area", "Also check @tok"},
 		"composer-at-narrow":   {"draft-a1f3c9d2-oauth-area", "Also check @tok"},
+		"worker-steer":         {"draft-a1f3c9d2-oauth-area", "Use the v2 token endpoint instead"},
 	}
 	shots := []struct {
 		name  string
@@ -156,6 +157,23 @@ func TestShots(t *testing.T) {
 			}
 			a.setThreads(f.Threads())
 		}},
+		// Solo mid-turn with a message typed: the button sends it (to be read when Solo finishes) rather
+		// than steering, as it does for a worker (worker-steer).
+		{"solo-working-draft", func(a *App, f *fakeBackend) {
+			soloWorking(f, nil)
+			a.setThreads(f.Threads())
+			a.orchDraft.Set("Also, can a thread add a dark mode toggle to Settings?")
+		}},
+		// Solo mid-turn with two messages the user sent meanwhile, waiting their turn at the foot of the
+		// chat; the composer is empty, so its button stops the turn.
+		{"solo-queued", func(a *App, f *fakeBackend) {
+			soloWorking(f, []core.QueuedMessage{
+				{Text: "Also, can a thread add a dark mode toggle to Settings?", At: time.Now().Add(-40 * time.Second)},
+				{Text: "And bump the Go version in CI while you're at it.", At: time.Now().Add(-10 * time.Second)},
+			})
+			a.setThreads(f.Threads())
+		}},
+		{"worker-steer", func(a *App, f *fakeBackend) { a.openThread("a1f3c9d2-oauth", "conversation") }},
 		{"land-cards", func(a *App, f *fakeBackend) {
 			// Merge cards in each checks state, a local merge, and one whose Merge is under way.
 			o := core.OrchestratorID
@@ -345,6 +363,20 @@ func TestShots(t *testing.T) {
 			png.Encode(file, u.Screenshot())
 			file.Close()
 			u.Close()
+		}
+	}
+}
+
+// soloWorking puts Solo mid-turn, starting a thread for the user's request, with queued messages waiting.
+func soloWorking(f *fakeBackend, queued []core.QueuedMessage) {
+	o := core.OrchestratorID
+	f.add(o, core.ItemUser, core.UserData{Text: "Can you update my local Solo to match main?"})
+	f.add(o, core.ItemTool, tool("c1", "Bash", map[string]any{"command": "git status"}, "On branch main"))
+	for i := range f.threads {
+		if th := &f.threads[i]; th.ID == o {
+			th.Status, th.InTurn, th.TurnStarted = core.StatusRunning, true, time.Now().Add(-25*time.Second)
+			th.Thought = "**Finding the install script** so the thread knows how to rebuild the AppImage."
+			th.Queued = queued
 		}
 	}
 }

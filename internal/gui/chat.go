@@ -118,6 +118,8 @@ type row struct {
 	thread string       // the thread the folded steps act on, if they all act on one
 	live   *core.LiveBlock
 	busy   bool // the "working" line at the end of a running turn
+	// queued is a message to Solo waiting for its turn to end, shown after everything else.
+	queued *core.QueuedMessage
 	// In Solo's chat (see summary.go): topic marks the first row of an exchange, which a rule sets apart
 	// from the one before; summary is the line that says in words what the threads in said reported and
 	// what Solo did in steps.
@@ -144,6 +146,10 @@ func (a *App) transcript(ctx *ui.Context, v core.ThreadView, items []core.Item, 
 	// A thread's panel pins its working line above the composer; only Solo's transcript says it in line.
 	if v.InTurn && !v.IsWorker && v.Status != core.StatusWaiting && (len(v.Live) == 0 || v.Live[len(v.Live)-1].Thinking) {
 		rows = append(rows, row{key: "busy", busy: true})
+	}
+	// Messages the user sent Solo while it worked come last, each as the exchange it will start.
+	for i := range v.Queued {
+		rows = append(rows, row{key: fmt.Sprintf("queued%d", v.Queued[i].At.UnixNano()), queued: &v.Queued[i], topic: scope == "orch"})
 	}
 	h := a.listHandle(scope)
 	atEnd := ui.Local(ctx, scope+"-at-end", true)
@@ -510,6 +516,12 @@ func (a *App) rowView(ctx *ui.Context, v core.ThreadView, r row) ui.Element {
 			return thinkingView(ctx, r.live.Text, true)
 		}
 		return a.md(ctx, r.live.Text, viewBases(v))
+	case r.queued != nil:
+		tag := ui.Div().Row().Align(ui.Center).Gap(4).PaddingRight(2).
+			Tooltip("Solo reads this when it finishes what it's doing").
+			Child(ui.Icon(icons.Clock).Size(12).Color(t.TextSubtle)).
+			Child(ui.Text("Queued").FontSize(12).TextColor(t.TextSubtle))
+		return a.userMessage(ctx, v, r.queued.Text, r.queued.Images, tag)
 	case r.summary:
 		return a.summaryView(ctx, r)
 	case r.steps != nil:
@@ -533,20 +545,14 @@ func (a *App) rowView(ctx *ui.Context, v core.ThreadView, r row) ui.Element {
 					Background(t.Surface).Border(1, t.Border).
 					Child(a.md(ctx, d.Text, viewBases(v))))
 		}
-		col := ui.Div().Column().Align(ui.End).Gap(space1 + 2).MaxWidth(ui.Percent(85)).
-			Child(a.messageImages(ctx, d.Images, ui.End))
-		if strings.TrimSpace(d.Text) != "" {
-			col = col.Child(ui.Div().PaddingX(space3 + 2).PaddingY(space2 + 2).Radius(radiusL).
-				Background(t.SurfaceActive).
-				Child(a.md(ctx, hardBreaks(d.Text), viewBases(v))))
-		}
+		var tag ui.Element
 		if d.Steer {
-			col = col.Child(ui.Div().Row().Align(ui.Center).Gap(4).PaddingRight(2).
+			tag = ui.Div().Row().Align(ui.Center).Gap(4).PaddingRight(2).
 				Tooltip("Sent while the thread worked: it stopped what it was doing to read this").
 				Child(ui.Icon(icons.CornerUpRight).Size(12).Color(t.TextSubtle)).
-				Child(ui.Text("Steered").FontSize(12).TextColor(t.TextSubtle)))
+				Child(ui.Text("Steered").FontSize(12).TextColor(t.TextSubtle))
 		}
-		return ui.Div().Row().Justify(ui.End).Child(col)
+		return a.userMessage(ctx, v, d.Text, d.Images, tag)
 	case core.ItemAssistant:
 		var d core.TextData
 		it.Decode(&d)
@@ -554,6 +560,22 @@ func (a *App) rowView(ctx *ui.Context, v core.ThreadView, r row) ui.Element {
 	default:
 		return a.stepView(ctx, it, v)
 	}
+}
+
+// userMessage renders a message the user sent: its images, its text in a bubble, and under them tag,
+// if any ("Steered", "Queued").
+func (a *App) userMessage(ctx *ui.Context, v core.ThreadView, text string, images []string, tag ui.Element) ui.Element {
+	col := ui.Div().Column().Align(ui.End).Gap(space1 + 2).MaxWidth(ui.Percent(85)).
+		Child(a.messageImages(ctx, images, ui.End))
+	if strings.TrimSpace(text) != "" {
+		col = col.Child(ui.Div().PaddingX(space3 + 2).PaddingY(space2 + 2).Radius(radiusL).
+			Background(ctx.Theme().SurfaceActive).
+			Child(a.md(ctx, hardBreaks(text), viewBases(v))))
+	}
+	if tag != nil {
+		col = col.Child(tag)
+	}
+	return ui.Div().Row().Justify(ui.End).Child(col)
 }
 
 // stepView renders a single item that isn't a message.
@@ -1474,7 +1496,8 @@ func (a *App) composer(ctx *ui.Context, v core.ThreadView, key, scope, placehold
 			})
 		}
 		empty := strings.TrimSpace(draft.Get()) == "" && len(images.Get()) == 0 && len(quotes.Get()) == 0
-		// As in t3code: while the thread works, the button stops it, or steers it once there's a message.
+		// As in t3code: while a thread works, the button stops it, or steers it once there's a message.
+		// Solo isn't steered: a message to it waits for its turn to end (core.ThreadView.Queued).
 		round := ui.Style{Radius: 999}
 		var sendBtn *ui.ButtonElement
 		switch {
@@ -1485,6 +1508,9 @@ func (a *App) composer(ctx *ui.Context, v core.ThreadView, key, scope, placehold
 				OnClick(func() {
 					a.run("Stopping", func(ctx context.Context) error { return a.b.Interrupt(ctx, id) })
 				})
+		case v.InTurn && !v.PendingAsk && !v.IsWorker:
+			sendBtn = ui.IconButton(icons.ArrowUp).Small().Style(round).Primary().Label("Send").
+				Tooltip("Send (Enter): Solo reads it when it finishes what it's doing").OnClick(submit)
 		case v.InTurn && !v.PendingAsk:
 			sendBtn = ui.IconButton(icons.CornerUpRight).Small().Style(round).Primary().Label("Steer").
 				Tooltip("Steer (Enter): it stops what it's doing and reads this now").OnClick(submit)

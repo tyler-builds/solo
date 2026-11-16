@@ -1431,6 +1431,9 @@ func TestSteerCarriesOnTheTurn(t *testing.T) {
 	if err := e.c.Send(ctx, v.ID, "use tabs"); err != nil {
 		t.Fatal(err)
 	}
+	if v, _ := e.c.Thread(v.ID); len(v.Queued) != 0 {
+		t.Fatalf("a message to a worker queued: %+v", v.Queued) // only Solo's messages wait for the turn
+	}
 	v = waitStatus(t, e.c, v.ID, StatusIdle, StatusInterrupted)
 	if v.Status != StatusIdle || !strings.HasPrefix(v.Summary, "echo: use tabs") {
 		t.Fatalf("after the steer: %s, summary %q", v.Status, v.Summary)

@@ -40,6 +40,16 @@ func (c *Core) SetSoloBusy(f func() bool) {
 	c.mu.Unlock()
 }
 
+// SetSoloContext sets where the hidden context for Solo's next message from the user comes from (a recap
+// after a fresh session, notes): take returns it, and a function that puts it back for when the message
+// doesn't get through. It is taken when Solo is handed the message, so a message that waited for Solo's
+// turn to end gets what is current then.
+func (c *Core) SetSoloContext(take func() (string, func())) {
+	c.mu.Lock()
+	c.soloContext = take
+	c.mu.Unlock()
+}
+
 // EnsureOrchestrator creates the orchestrator thread if it doesn't exist, and returns it.
 func (c *Core) EnsureOrchestrator() (ThreadView, error) {
 	c.mu.Lock()

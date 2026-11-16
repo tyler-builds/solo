@@ -100,6 +100,7 @@ func New(c *core.Core, dataDir string, log *slog.Logger) (*Orchestrator, error) 
 	c.SetToolHandler(o.handleTool)
 	c.SetRecap(o.recap)
 	c.SetSoloBusy(o.busy)
+	c.SetSoloContext(o.takeHidden)
 	c.State(carryKey, &o.carry)
 	c.State(pendingKey, &o.pending)
 	c.State(notesKey, &o.notes)
@@ -114,13 +115,9 @@ func (o *Orchestrator) ID() string { return core.OrchestratorID }
 // Send sends the user's message, with any images (attachment paths), to the orchestrator.
 func (o *Orchestrator) Send(ctx context.Context, text string, images ...string) error {
 	o.rotateIfIdle(ctx)
-	// A recap waiting from a fresh session, and any notes, go before the message, out of the transcript.
-	hidden, restore := o.takeHidden()
-	if err := o.c.SendWithContext(ctx, core.OrchestratorID, hidden, text, images...); err != nil {
-		restore()
-		return err
-	}
-	return nil
+	// A recap waiting from a fresh session, and any notes, go before the message, out of the transcript
+	// (SetSoloContext): when Solo is handed it, which for a message sent while Solo works is after its turn.
+	return o.c.Send(ctx, core.OrchestratorID, text, images...)
 }
 
 // NewConversation starts the orchestrator on a fresh Claude session; its next message carries a recap of
@@ -520,7 +517,8 @@ func (o *Orchestrator) deliver() {
 	o.mu.Lock()
 	o.timer = nil
 	v, ok := o.c.Thread(core.OrchestratorID)
-	if !ok || v.InTurn || v.Status == core.StatusWaiting || len(o.pending) == 0 || o.paused {
+	// Running outside a turn: a message (one the user queued, say) was just sent, and its turn starts next.
+	if !ok || v.InTurn || v.Status == core.StatusWaiting || v.Status == core.StatusRunning || len(o.pending) == 0 || o.paused {
 		// Busy: the end of its turn calls schedule again.
 		o.mu.Unlock()
 		return

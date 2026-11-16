@@ -323,6 +323,9 @@ func (c *Core) onEvent(e agent.Event) {
 		c.schedule()
 		if id == OrchestratorID {
 			c.repostCards() // after the subscribers heard, so Solo has queued what it answers next
+			if e.Kind != agent.EventExited {
+				go c.sendQueued(context.Background(), id) // the next message the user sent while it worked
+			}
 		} else {
 			go c.countChanges(id)
 		}
