@@ -568,8 +568,10 @@ func (a *App) userMessage(ctx *ui.Context, v core.ThreadView, text string, image
 	col := ui.Div().Column().Align(ui.End).Gap(space1 + 2).MaxWidth(ui.Percent(85)).
 		Child(a.messageImages(ctx, images, ui.End))
 	if strings.TrimSpace(text) != "" {
+		// The bubble is as wide as its text up to the column's width: a code block with a long line
+		// scrolls inside it rather than widening it past the column.
 		col = col.Child(ui.Div().PaddingX(space2 + 2).PaddingY(space1 + 2).Radius(radiusL).
-			Background(ctx.Theme().SurfaceActive).
+			MaxWidth(ui.Percent(100)).Background(ctx.Theme().SurfaceActive).
 			Child(a.md(ctx, hardBreaks(text), viewBases(v))))
 	}
 	if tag != nil {
