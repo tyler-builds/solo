@@ -299,8 +299,10 @@ func (o *Orchestrator) openParams() agent.OpenParams {
 		PermissionMode:        agent.PermissionDefault,
 		// Bash may run anything (compound commands, cd, builds, git writes); Edit and Write aren't offered,
 		// as code changes go to workers. The user's to-do list (add_todo) takes the place of TodoWrite.
+		// The Artifact tools read and publish claude.ai artifacts; listing them here doesn't turn them
+		// on, Claude Code does that for Solo's entrypoint (sidecar/src/launch.ts).
 		ToolPolicy:    agent.ToolPolicyAllow,
-		Tools:         []string{"Read", "Grep", "Glob", "Bash", "WebFetch", "WebSearch", "AskUserQuestion"},
+		Tools:         []string{"Read", "Grep", "Glob", "Bash", "WebFetch", "WebSearch", "AskUserQuestion", "Artifact", "ArtifactComments", "ArtifactData"},
 		MCPServerName: "solo",
 		MCPTools:      toolSpecs,
 		ClaudePath:    agent.FindClaude(s.ClaudePath).Path,
