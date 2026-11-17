@@ -136,6 +136,16 @@ type App struct {
 	// before Run.
 	RemoteImages bool
 
+	// The first-run setup (onboarding.go): the step shown, "" when it isn't; the focus of each step's
+	// main button; and what is still being added. hints are the one-time hints (hints.go).
+	setup       *ui.Signal[string]
+	setupFocus  *ui.FocusHandle
+	setupAdding *ui.Signal[[]string] // folders picked whose search hasn't finished
+	setupSave   setupSaver
+	pickFolder  func(done func(paths []string)) // replaces the system's folder picker, in tests
+	focusGained *ui.Signal[int]                 // counts the times the window came to the front
+	hints       hintState
+
 	// Notify shows a desktop notification; nil shows none. Set it before Run.
 	Notify func(Notification)
 	// ClearNotifications removes the notifications Solo has shown. It runs off the UI thread.
@@ -215,6 +225,11 @@ func New(b Backend) *App {
 		return n
 	})
 	a.orchWriting = ui.NewComputed(func() bool { return strings.TrimSpace(a.orchDraft.Get()) != "" })
+	a.setupFocus = ui.NewFocusHandle()
+	a.setupAdding = ui.NewSignal([]string(nil))
+	a.focusGained = ui.NewSignal(0)
+	a.hints.gone = ui.NewSignal(map[string]bool{})
+	a.setup = ui.NewSignal(a.firstRun())
 	a.unsub = b.Subscribe(a.onChange)
 	return a
 }
@@ -652,6 +667,14 @@ func (a *App) Root(ctx *ui.Context) ui.Element {
 		ctx.SetZoom(touchZoom)
 	}
 	a.compact = isCompact(ctx)
+	if a.setup.Get() != "" {
+		// The first-run setup takes the window until it is finished or skipped.
+		return ui.Div().Column().Size(ui.Full, ui.Full).Background(t.Panel).TextColor(t.Text).
+			Child(a.setupBar(ctx)).
+			Child(ui.Div().Column().Grow(1).MinHeight(ui.Px(0)).Child(ui.Component(a.setupView))).
+			Child(ui.Component(a.focusWatch)).
+			Child(ui.Toaster().Key("toaster"))
+	}
 	root := ui.Div().Column().Size(ui.Full, ui.Full).Background(t.Panel).TextColor(t.Text).
 		OnAction(nextAction, a.nextAttention).
 		OnAction(paletteAction, func() { a.palette.Set(true) })

@@ -30,9 +30,7 @@ func (a *App) modelPicker(ctx *ui.Context, v core.ThreadView) ui.Element {
 	t := ctx.Theme()
 	cfg := a.cfg.Get()
 	// Shares Settings' check of Claude Code, which lists the models.
-	claude := ui.Query(ctx, "claude:"+strings.TrimSpace(cfg.ClaudePath), func(c context.Context) (core.ClaudeStatus, error) {
-		return a.b.CheckClaude(c, strings.TrimSpace(cfg.ClaudePath)), nil
-	}, ui.QueryStaleTime(10*time.Minute))
+	claude := a.claudeQuery(ctx, strings.TrimSpace(cfg.ClaudePath), ui.QueryStaleTime(10*time.Minute))
 	models := claude.Data.Models
 	model := v.Model
 	if model == "" {
@@ -78,6 +76,76 @@ func (a *App) modelPicker(ctx *ui.Context, v core.ThreadView) ui.Element {
 		}
 		return items
 	}).Key("model-" + v.ID)
+}
+
+// claudeQuery checks the Claude Code that Solo runs with path as the Settings path ("" to find it). The
+// check is shared by key: Settings, the first-run setup and the model pickers read one result.
+func (a *App) claudeQuery(ctx *ui.Context, path string, opts ...ui.QueryOption) ui.QueryResult[core.ClaudeStatus] {
+	return ui.Query(ctx, "claude:"+path, func(c context.Context) (core.ClaudeStatus, error) {
+		return a.b.CheckClaude(c, path), nil
+	}, opts...)
+}
+
+// claudeWhere says where Claude Code was found: its path and how it was found, with fromSetting for
+// a path the user set.
+func claudeWhere(st core.ClaudeStatus, fromSetting string) string {
+	if st.Path == "" {
+		return "Not found"
+	}
+	return st.Path + " · " + map[string]string{"setting": fromSetting, "PATH": "found on PATH",
+		"default location": "found in its default location", "bundled": "shipped with Solo"}[st.Source]
+}
+
+// withFolder adds a folder to the folders searched for repositories, written as Settings shows
+// folders (~/…), unless it is there already.
+func withFolder(folders []string, f string) []string {
+	f = tildePath(strings.TrimSpace(f))
+	if f == "" || slices.Contains(folders, f) {
+		return folders
+	}
+	return append(slices.Clone(folders), f)
+}
+
+// chooseFolders asks for folders with the system's folder picker and hands over the ones picked; a
+// picker that fails says so in a toast. Tests set App.pickFolder in its place.
+func (a *App) chooseFolders(ctx *ui.Context, done func(paths []string)) {
+	if a.pickFolder != nil {
+		a.pickFolder(done)
+		return
+	}
+	home, _ := os.UserHomeDir()
+	ctx.Window().PickFolder(dialog.FileOptions{Title: "Add a repository folder", Folder: home}, func(r dialog.FileResult) {
+		switch {
+		case r.Err != nil:
+			a.notify(ui.ToastError, "Couldn't open the folder picker", "Type the folder's path instead. "+r.Err.Error())
+		case !r.Canceled && len(r.Paths) > 0:
+			done(r.Paths)
+		}
+	})
+}
+
+// mergeMethods and onChecksFail are the choices for how pull requests merge and what happens when their
+// checks fail, which Settings › Pull requests and the setup both offer.
+var (
+	mergeMethods = []ui.Option[string]{
+		{Value: "squash", Label: "Squash"},
+		{Value: "merge", Label: "Merge commit"},
+		{Value: "rebase", Label: "Rebase"},
+	}
+	onChecksFail = []ui.Option[string]{
+		{Value: core.ChecksFix, Label: "Solo fixes it"},
+		{Value: core.ChecksNotify, Label: "Just notify me"},
+	}
+)
+
+// appCommandHelp says what an app's command setting does, and what its box shows while empty: the app
+// Solo found (found, a command line), or an example when it found none.
+func appCommandHelp(what, found, example string) (help, hint string) {
+	if found == "" {
+		return what + " {path} marks where the folder goes.", "e.g. " + example
+	}
+	prog, _, _ := strings.Cut(found, " ")
+	return what + " Leave empty to use " + filepath.Base(prog) + ".", filepath.Base(prog) + " … {path}"
 }
 
 // placeholderFor says what Solo uses when a command is left empty.
@@ -478,38 +546,25 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 		}
 		closeDialog := func() {
 			saveNow()
+			a.settingsTab = "" // a page asked for opens it once
 			a.settings.Set(false)
 		}
 
-		addPath := func(f string) {
-			f = tildePath(strings.TrimSpace(f))
-			if f == "" || slices.Contains(folders.Peek(), f) {
-				return
-			}
-			folders.Set(append(slices.Clone(folders.Peek()), f))
-		}
+		addPath := func(f string) { folders.Set(withFolder(folders.Peek(), f)) }
 		add := func() {
 			addPath(newFolder.Peek())
 			newFolder.Set("")
 		}
 		pick := func() {
-			home, _ := os.UserHomeDir()
-			ctx.Window().PickFolder(dialog.FileOptions{Title: "Add a repository folder", Folder: home}, func(r dialog.FileResult) {
-				switch {
-				case r.Err != nil:
-					a.notify(ui.ToastError, "Couldn't open the folder picker", "Type the folder's path instead. "+r.Err.Error())
-				case !r.Canceled:
-					for _, p := range r.Paths {
-						addPath(p)
-					}
+			a.chooseFolders(ctx, func(paths []string) {
+				for _, p := range paths {
+					addPath(p)
 				}
 			})
 		}
 
 		// Claude Code: what Solo found, and a path to use instead.
-		claude := ui.Query(ctx, "claude:"+checked.Get(), func(c context.Context) (core.ClaudeStatus, error) {
-			return a.b.CheckClaude(c, checked.Peek()), nil
-		})
+		claude := a.claudeQuery(ctx, checked.Get())
 		check := func() {
 			p := strings.TrimSpace(claudePath.Peek())
 			if p == checked.Peek() {
@@ -531,11 +586,7 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 			if st.Err != "" {
 				icon, color, line = icons.CircleAlert, t.Danger, st.Err
 			}
-			where := "Not found"
-			if st.Path != "" {
-				where = st.Path + " · " + map[string]string{"setting": "from the path below", "PATH": "found on PATH",
-					"default location": "found in its default location", "bundled": "shipped with Solo"}[st.Source]
-			}
+			where := claudeWhere(st, "from the path below")
 			about := ui.Div().Column().Gap(2).Grow(1).MinWidth(ui.Px(0)).
 				Child(ui.Text(line).FontSize(13).Medium().TextColor(t.Text).Truncate()).
 				Child(caption(ctx, where).TruncateHead())
@@ -551,11 +602,7 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 		}
 		input := func(in *ui.TextInputElement) *ui.TextInputElement { return in.Small().Width(ui.Px(280)) }
 		appRow := func(name, what, found, example string, cmd *ui.Signal[string]) ui.Element {
-			help, hint := what+" {path} marks where the folder goes.", "e.g. "+example
-			if found != "" {
-				prog, _, _ := strings.Cut(found, " ")
-				help, hint = what+" Leave empty to use "+filepath.Base(prog)+".", filepath.Base(prog)+" … {path}"
-			}
+			help, hint := appCommandHelp(what, found, example)
 			return settingRow(ctx, name, help,
 				input(ui.TextInput(cmd).Placeholder(hint).Label(name+" command")))
 		}
@@ -566,6 +613,7 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 				settingRow(ctx, "Path to claude", "Leave empty to find it on PATH.",
 					input(ui.TextInput(claudePath).Placeholder("Find automatically").Label("Path to claude").Key("claude-path").
 						OnSubmit(func(string) { check() })))),
+			a.setupAgainSection(ctx, closeDialog),
 			settingsSection(ctx, "Behavior", "", nil,
 				settingRow(ctx, "Notifications", "Alerts when a thread needs you, fails or finishes, while Solo is in the background.",
 					ui.Switch("Notifications", notifications)),
@@ -704,12 +752,8 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 				settingRow(ctx, "Model", "Applies the rules to the thread's commits, changes and summary.", helperPickers("Pull request text", prModel, prEffort))),
 			settingsSection(ctx, "Merging", "", nil,
 				settingRow(ctx, "Auto-merge", "Merge once required checks and reviews pass, with the forge's auto-merge.", ui.Switch("Auto-merge", autoMerge)),
-				settingRow(ctx, "Merge method", "How the branch lands on its base.", ui.Select(mergeMethod, ui.Option[string]{Value: "squash", Label: "Squash"},
-					ui.Option[string]{Value: "merge", Label: "Merge commit"},
-					ui.Option[string]{Value: "rebase", Label: "Rebase"}).Width(ui.Px(180)).Label("Merge method")),
-				settingRow(ctx, "When checks fail", "Solo can send the failure to the thread to fix.", ui.Select(onFail,
-					ui.Option[string]{Value: core.ChecksFix, Label: "Solo fixes it"},
-					ui.Option[string]{Value: core.ChecksNotify, Label: "Just notify me"}).Width(ui.Px(180)).Label("When checks fail"))))
+				settingRow(ctx, "Merge method", "How the branch lands on its base.", ui.Select(mergeMethod, mergeMethods...).Width(ui.Px(180)).Label("Merge method")),
+				settingRow(ctx, "When checks fail", "Solo can send the failure to the thread to fix.", ui.Select(onFail, onChecksFail...).Width(ui.Px(180)).Label("When checks fail"))))
 
 		var page ui.Element
 		switch tab.Get() {
@@ -768,6 +812,12 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 			Default(done).
 			OnClose(closeDialog).Key("settings")
 	})
+}
+
+// openSettings opens Settings on a page.
+func (a *App) openSettings(tab string) {
+	a.settingsTab = tab
+	a.settings.Set(true)
 }
 
 // historyList lists the threads the user marked done, newest first, each with Restore.

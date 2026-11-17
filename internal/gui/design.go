@@ -33,12 +33,58 @@ const (
 	space8 = 32
 )
 
+// The first-run setup's scale (onboarding.go). The setup has the window to itself, so it reads larger and
+// looser than the dense views of the app, and its content grows with the window up to setupMaxWidth.
+const (
+	space10 = 40
+	space12 = 48
+	space16 = 64
+
+	setupMaxWidth   = 1080 // the content's widest
+	setupSplit      = 880  // content at least this wide lays out in two columns
+	setupProseWidth = 660  // a paragraph's widest, so its lines stay easy to read
+)
+
+// setupTitleTop is how far under the setup's progress bar each step's title starts, the same on every
+// step for a window height: more on a tall window, so the page doesn't sit at its top, and little on a
+// short one.
+func setupTitleTop(winH float32) float32 {
+	return min(max((winH-760)/4+space2, space4), space16)
+}
+
+// The setup's type scale: a display title and lead for each step, and its body text.
+func displayTitle(ctx *ui.Context, s string) *ui.TextElement {
+	size := float32(32)
+	if isCompact(ctx) {
+		size = 24
+	}
+	return ui.Text(s).FontSize(size).Semibold().TextColor(ctx.Theme().Text).Key("setup-title")
+}
+
+func leadText(ctx *ui.Context, s string) *ui.TextElement {
+	size := float32(17)
+	if isCompact(ctx) {
+		size = 15
+	}
+	return ui.Text(s).FontSize(size).TextColor(ctx.Theme().TextMuted)
+}
+
+func bodyText(ctx *ui.Context, s string) *ui.TextElement {
+	return ui.Text(s).FontSize(14).TextColor(ctx.Theme().TextMuted)
+}
+
+// sectionLabel names a group of rows: small capitals, as Settings' sections are named.
+func sectionLabel(ctx *ui.Context, s string) *ui.TextElement {
+	return ui.Text(strings.ToUpper(s)).FontSize(12).FontWeight(ui.FontSemibold).TextColor(ctx.Theme().TextSubtle)
+}
+
 // Corner radii.
 const (
 	radiusS  = 6  // buttons, inputs, chips
 	radiusM  = 8  // rows, tool lines
 	radiusL  = 10 // cards
 	radiusXL = 12 // the content panel
+	radius2X = 16 // the setup's large panels
 )
 
 type palette struct {

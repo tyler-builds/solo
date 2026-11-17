@@ -77,6 +77,9 @@ func (a *App) windowFocus(focused bool) {
 		return
 	}
 	a.wasFocused = focused
+	if focused && a.post != nil {
+		a.post(func() { a.focusGained.Update(func(n int) int { return n + 1 }) })
+	}
 	if focused && a.ClearNotifications != nil {
 		go a.ClearNotifications()
 	}

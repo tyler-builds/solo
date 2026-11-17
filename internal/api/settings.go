@@ -50,6 +50,7 @@ var remote = map[string]bool{
 	"workerEffort": true, "namingModel": true, "namingEffort": true, "branchRules": true, "repoBranchRules": true,
 	"prModel": true, "prEffort": true, "prRules": true, "skipPRDescription": true, "autoMerge": true,
 	"mergeMethod": true, "onChecksFail": true,
+	"setup": false, "hints": false, // the first-run setup and its hints run at the machine
 	"commitRules": true, "prTitleRules": true, "prDescriptionRules": true, "prSkills": true, "prSkillMinutes": true,
 }
 

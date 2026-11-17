@@ -47,6 +47,7 @@ func (c *Core) CheckClaude(ctx context.Context, override string) ClaudeStatus {
 		st.Account = "API key (" + acct.APIKeySource + ")"
 	default:
 		st.Err = "Not signed in. Run claude in a terminal and sign in with /login."
+		st.SignedOut = true
 	}
 	return st
 }

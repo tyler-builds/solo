@@ -348,6 +348,12 @@ type Settings struct {
 	MergeMethod string `json:"mergeMethod,omitempty"`
 	// OnChecksFail is what happens when a pull request's checks fail: ChecksFix or ChecksNotify.
 	OnChecksFail string `json:"onChecksFail,omitempty"`
+
+	// Setup is where the first-run setup stands: "" before it ever showed, the step to resume at
+	// while it is under way, or SetupDone once it was finished or skipped (gui/onboarding.go).
+	Setup string `json:"setup,omitempty"`
+	// Hints are the one-time hints the UI has shown, by name, so each shows once.
+	Hints []string `json:"hints,omitempty"`
 }
 
 // What happens when a pull request's checks fail.
@@ -435,6 +441,9 @@ func (s Settings) BranchRulesFor(repo string) string {
 	return strings.TrimSpace(s.BranchRules)
 }
 
+// SetupDone is Settings.Setup once the first-run setup was finished or skipped.
+const SetupDone = "done"
+
 // ClaudeStatus is what Settings shows about Claude Code.
 type ClaudeStatus struct {
 	Path    string // the executable Solo runs; "" when none was found
@@ -442,8 +451,36 @@ type ClaudeStatus struct {
 	Version string
 	Account string // such as "you@example.com · Max"; "" when unknown
 	Err     string // why Claude Code can't be used; "" when it can
-	Models  []agent.ModelInfo
+	// SignedOut: Claude Code runs, but no account or API key is signed in (Err says so too).
+	SignedOut bool `json:",omitempty"`
+	Models    []agent.ModelInfo
 }
+
+// FolderSuggestion is a folder that commonly holds projects, such as ~/code, found to hold git
+// repositories: offered in the first-run setup for the user to add.
+type FolderSuggestion struct {
+	Path  string   // the folder, such as /home/you/code
+	Repos []string // the repositories found in it
+}
+
+// ForgeStatus says whether the command-line tool of a forge the repositories push to is ready to open
+// pull requests: installed and signed in.
+type ForgeStatus struct {
+	Kind  forge.Kind
+	CLI   string   // "gh" or "glab"
+	Repos []string // the repositories that push there
+	Path  string   // where the CLI is; "" when it isn't installed
+	// SignedIn: it is signed in, as Account (such as "octocat on github.com") when it said who.
+	SignedIn bool
+	Account  string
+	Err      string // why it can't be checked, when it can't
+	// Install is a command that installs the CLI on this system, or ""; InstallURL is its install page.
+	// Login is the command that signs it in.
+	Install, InstallURL, Login string
+}
+
+// Ready reports whether pull requests can be opened there.
+func (f ForgeStatus) Ready() bool { return f.Path != "" && f.SignedIn }
 
 // SearchHit is a message that matched a search.
 type SearchHit struct {

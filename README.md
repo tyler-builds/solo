@@ -18,9 +18,14 @@ cd sidecar && bun install && cd ..
 go run ./cmd/solo
 ```
 
-Open Settings › Repositories and add the folders that hold your repositories. A project that isn't in git works too:
-its threads edit the folder directly, without their own copy or a diff, until you click "Put in git". Data lives in `~/.local/share/solo`
-(`%LOCALAPPDATA%\Solo` on Windows); `SOLO_DEBUG=1` also records raw SDK messages under `logs/` there.
+The first run walks you through a short setup: it checks that Claude Code is installed and signed in, lets you
+pick the models and effort for Solo and its threads, adds the folders that hold your repositories (suggesting ones
+such as `~/code` when they hold any), checks `gh` or `glab` for pull requests and how they merge, and sets a few
+preferences. Every step can be skipped and keeps its defaults; all of it is in Settings later, and Settings ›
+General can run the setup again. A project that isn't in git works too: its threads edit the folder directly, without their own copy or
+a diff, until you click "Put in git". Data lives in `~/.local/share/solo` (`%LOCALAPPDATA%\Solo` on Windows;
+`SOLO_DATA_DIR` picks another folder, such as an empty one to see the setup again); `SOLO_DEBUG=1` also records raw
+SDK messages under `logs/` there.
 
 ## Package
 
@@ -50,6 +55,6 @@ Running the workflow by hand builds them as an artifact without releasing.
 go test ./...                                   # unit tests, with a fake sidecar
 cd sidecar && bun test                          # sidecar tests, with recorded SDK sessions
 go test -tags live -run Live ./internal/...     # real Claude, small cost
-SOLO_SHOTS=/tmp/shots go test ./internal/gui -run TestShots   # screenshots for review
+SOLO_SHOTS=/tmp/shots go test ./internal/gui -run 'TestShots|TestSetupShots'   # screenshots for review
 go run ./cmd/solo-harness -cwd <repo> "<task>"  # one session in the terminal
 ```
