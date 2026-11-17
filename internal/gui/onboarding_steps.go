@@ -43,21 +43,20 @@ func (a *App) setupModels(ctx *ui.Context) ui.Element {
 	models := q.Data.Models
 	def := core.DefaultSettings()
 	solo := modelRole{key: "solo", name: "Solo", icon: brandMark(22),
-		does:  "Plans the work, follows the threads and reviews what they make. A capable model here plans and reviews better.",
+		does:  "Plans the work and reviews what the threads make.",
 		model: cmp.Or(cfg.OrchestratorModel, def.OrchestratorModel), effort: cfg.OrchestratorEffort, recommended: def.OrchestratorModel,
 		set: func(s *core.Settings, m, e string) { s.OrchestratorModel, s.OrchestratorEffort = m, e }}
 	threads := modelRole{key: "threads", name: "Threads", icon: ui.Icon(icons.GitBranch).Size(20).Color(t.TextMuted),
-		does:  "Write the code, often several at once, and use most of your plan. Faster models do more for less; capable ones take on harder tasks.",
+		does:  "Write the code, several at once, and use most of your plan.",
 		model: cmp.Or(cfg.WorkerModel, def.WorkerModel), effort: cfg.WorkerEffort, recommended: def.WorkerModel,
 		set: func(s *core.Settings, m, e string) { s.WorkerModel, s.WorkerEffort = m, e }}
-	var note ui.Element = bodyText(ctx, "Effort is how long a model thinks before it acts: higher is more careful, but slower and uses more, and Default leaves it to Claude. Solo can give a thread another model when a task calls for it, and Settings › Models has these choices too.").
-		MaxWidth(ui.Px(setupProseWidth))
+	var note ui.Element
 	if q.Loading {
 		note = checking(ctx, "Asking Claude Code which models you have…")
 	}
-	return ui.Div().Column().Gap(space8).
+	return ui.Div().Column().Gap(space6).
 		Child(setupHead(ctx, "Models",
-			"Choose the Claude model and effort for Solo and for its threads. More capable models handle harder work, but they are slower and use more of your plan.")).
+			"More capable models handle harder work, but are slower and use more of your plan. Settings › Models has these choices too.")).
 		Child(setupPairView(l, a.modelChooser(ctx, l, models, solo), a.modelChooser(ctx, l, models, threads))).
 		Child(note)
 }
@@ -88,26 +87,19 @@ func (a *App) modelChooser(ctx *ui.Context, l setupLayout, models []agent.ModelI
 			ring = ui.Div().Center().Size(ui.Px(18), ui.Px(18)).Radius(9).Border(1.5, t.Text).Shrink(0).
 				Child(ui.Div().Size(ui.Px(8), ui.Px(8)).Radius(4).Background(t.Text))
 		}
-		// The model's name, and Claude Code's words for it beside it (under it, in a compact window).
-		name := ui.Div().Row().Align(ui.Center).Gap(space2).Shrink(0).
-			Child(ui.Text(c.Label).FontSize(15).Medium().TextColor(t.Text).NoWrap()).
-			Child(ui.If(value == r.recommended, chip(ctx, "Recommended")))
-		text := ui.Div().Row().Align(ui.Center).Gap(space3).Grow(1).MinWidth(ui.Px(0)).Child(name)
-		if l.compact {
-			text = ui.Div().Column().Gap(2).Grow(1).MinWidth(ui.Px(0)).Child(name)
-		}
+		// Every row alike: the model's name over Claude Code's words for it, which wrap rather than
+		// being cut off, and the recommended one's tag at the row's end.
+		text := ui.Div().Column().Gap(2).Grow(1).MinWidth(ui.Px(0)).
+			Child(ui.Text(c.Label).FontSize(14).Medium().TextColor(t.Text))
 		if d := about[value]; d != "" {
-			desc := bodyText(ctx, d)
-			if !l.compact {
-				desc = desc.Truncate().Grow(1).MinWidth(ui.Px(0))
-			}
-			text = text.Child(desc)
+			text = text.Child(ui.Text(d).FontSize(13).TextColor(t.TextMuted))
 		}
-		card := ui.Div().Row().Align(ui.Center).Gap(space3).PaddingX(space4).PaddingY(space2).MinHeight(ui.Px(44)).
+		card := ui.Div().Row().Align(ui.Center).Gap(space3).PaddingX(space4).PaddingY(6).MinHeight(ui.Px(46)).
 			Radius(radiusL+2).Border(1, t.Border).Background(t.Background).Cursor(ui.CursorPointer).
 			Role(access.RoleRadioButton).Label(c.Label).AccessChecked(on).TabIndex(0).Key("model-" + r.key + "-" + value).
 			OnClick(func() { set(value, r.effort) }).
-			Child(ring).Child(text)
+			Child(ring).Child(text).
+			Child(ui.If(value == r.recommended, chip(ctx, "Recommended")))
 		if on {
 			card = card.Border(1, t.TextSubtle).Background(t.SurfaceActive)
 		} else {
@@ -155,7 +147,10 @@ func (a *App) modelChooser(ctx *ui.Context, l setupLayout, models []agent.ModelI
 				Child(sectionLabel(ctx, "Model")).Child(ui.Div().Grow(1)).Child(more)).
 			Child(list),
 		ui.Div().Column().Gap(space3).
-			Child(sectionLabel(ctx, "Effort")).
+			Child(ui.Div().Row().Wrap().Align(ui.Center).Gap(space2).
+				Child(sectionLabel(ctx, "Effort")).
+				Child(ui.Div().Tooltip("How long the model thinks before it acts. Default leaves it to Claude.").
+					Child(caption(ctx, "Higher thinks longer: more careful, but slower.")))).
 			Child(ui.Div().Row().Child(effortControl))).
 		Key("models-" + r.key)
 }
@@ -384,7 +379,7 @@ func (a *App) setupPRs(ctx *ui.Context) ui.Element {
 	l := setupLayoutOf(ctx)
 	repos := a.repos.Get()
 	head := setupHead(ctx, "Pull requests",
-		"Optional. Solo opens pull requests with GitHub's gh or GitLab's glab, signed in as you. Without them, work merges on this machine.")
+		"Optional. Solo opens pull requests with gh or glab, signed in as you; without them, work merges here.")
 	sb := a.setupBackend()
 	if len(repos) == 0 || sb == nil {
 		return ui.Div().Column().Gap(space8).Child(head).Child(setupPanel(ctx,
@@ -431,7 +426,7 @@ func (a *App) setupPRs(ctx *ui.Context) ui.Element {
 			status = statusLine(ctx, icons.CircleAlert, t.Warning, f.CLI+" isn't signed in",
 				bodyText(ctx, "Run this in a terminal and follow its steps."), commandBox(ctx, f.Login))
 		}
-		rows = append(rows, ui.Div().Column().Gap(space4).Padding(space5).Key("forge-"+string(f.Kind)).
+		rows = append(rows, ui.Div().Column().Gap(space3).Padding(space4).Key("forge-"+string(f.Kind)).
 			Child(ui.Div().Row().Wrap().Align(ui.Center).Gap(space2).
 				Child(ui.Icon(icons.GitPullRequest).Size(16).Color(t.TextMuted)).
 				Child(ui.Text(name).FontSize(15).Semibold().TextColor(t.Text)).
@@ -441,16 +436,19 @@ func (a *App) setupPRs(ctx *ui.Context) ui.Element {
 	local := slices.DeleteFunc(slices.Clone(repos), func(r string) bool { return slices.Contains(remote, r) })
 	if len(local) > 0 {
 		what := count(len(local), "repository has", "repositories have")
-		rows = append(rows, ui.Div().Padding(space5).Key("forge-local").Child(
+		rows = append(rows, ui.Div().Padding(space4).Key("forge-local").Child(
 			statusLine(ctx, icons.GitMerge, t.TextMuted, "Merge locally",
 				bodyText(ctx, what+" no GitHub or GitLab remote: "+nameList(local, 4)+". Their work merges on this machine, with nothing to set up."))))
 	}
-	tools := ui.Div().Column().Gap(space4).Child(setupCard(ctx, rows...))
+	// Over the card, what it is, and when something needs fixing, the way to check again.
+	toolsHead := ui.Div().Row().Wrap().Align(ui.Center).Gap(space3).MinHeight(ui.Px(28)).
+		Child(sectionLabel(ctx, "Command-line tools")).Child(ui.Div().Grow(1))
 	if problem {
-		tools = tools.Child(ui.Div().Row().Wrap().Align(ui.Center).Gap(space3).
-			Child(ui.Button("Check again").Icon(icons.RefreshCw).Secondary().Key("forges-again").Loading(busy).OnClick(q.Refetch)).
-			Child(caption(ctx, "Solo checks again when you come back to this window.")))
+		toolsHead = toolsHead.
+			Child(caption(ctx, "Checked again when you come back to this window")).
+			Child(ui.Button("Check again").Icon(icons.RefreshCw).Secondary().Small().Key("forges-again").Loading(busy).OnClick(q.Refetch))
 	}
+	tools := ui.Div().Column().Gap(space3).Child(toolsHead).Child(setupCard(ctx, rows...))
 	left := ui.Div().Column().Gap(space8).Child(head)
 	if len(q.Data) == 0 {
 		return left.Child(tools.MaxWidth(ui.Px(setupProseWidth + 120)))

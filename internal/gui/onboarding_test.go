@@ -4,6 +4,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tyler-builds/jamb/access"
 	"github.com/tyler-builds/jamb/ui/uitest"
@@ -681,14 +682,32 @@ func TestSetupPrefs(t *testing.T) {
 	}
 }
 
-// The setup holds at Solo's smallest window and at a mid width: one column, and nothing wider than
-// the window.
+// overflow is how far the setup's step scrolls: it is scrolled down as far as it goes, and the title's
+// move is measured, then it is scrolled back. 0 when the step fits.
+func overflow(u *uitest.UI) float32 {
+	before := u.Get("setup-title").Bounds().Y
+	u.Get("setup-scroll").Scroll(0, 5000)
+	for i := 0; i < 10; i++ {
+		u.Advance(50 * time.Millisecond)
+	}
+	moved := before - u.Get("setup-title").Bounds().Y
+	u.Get("setup-scroll").Scroll(0, -5000)
+	for i := 0; i < 10; i++ {
+		u.Advance(50 * time.Millisecond)
+	}
+	return moved
+}
+
+// The setup holds at Solo's smallest window, at a mid width and at the default size: nothing wider
+// than the window, each step's title at the same height as every other's, and at the default size
+// every step fits without scrolling, Models with a pinned version on both sides too.
 func TestSetupSizes(t *testing.T) {
+	_, dark := Themes()
 	for _, size := range [][2]float32{{360, 480}, {1000, 760}, {1440, 900}} {
+		titleTop := float32(-1)
 		for _, step := range setupSteps {
 			f := newSetupFake().projects().withFolders("~/code")
 			f.settings.Setup = step.key
-			_, dark := Themes()
 			a := New(f)
 			u := uitest.New(t, a.Root, uitest.Size(size[0], size[1]), uitest.Theme(dark))
 			started(a, u)
@@ -699,8 +718,71 @@ func TestSetupSizes(t *testing.T) {
 				}
 				return true
 			})
+			top := u.Get("setup-title").Bounds().Y
+			if titleTop < 0 {
+				titleTop = top
+			} else if top != titleTop {
+				t.Errorf("%v: the %s step's title is at %.0f, the welcome step's at %.0f", size, step.key, top, titleTop)
+			}
+			if size[0] == 1440 {
+				if o := overflow(u); o > 0 {
+					t.Errorf("%v: the %s step needs %.0f px of scrolling", size, step.key, o)
+				}
+			}
 			u.Close()
 			a.Close()
 		}
+	}
+
+	// The steps at their longest also fit at 1440×900.
+	for _, tc := range []struct {
+		name string
+		prep func(f *setupFake)
+		want string // a key the state shows
+	}{
+		{"Models with a pinned version on both sides, five cards a side", func(f *setupFake) {
+			f.settings.Setup = "models"
+			f.settings.OrchestratorModel, f.settings.WorkerModel = "claude-opus-5", "claude-sonnet-4-6"
+		}, "model-threads-claude-sonnet-4-6"},
+		{"Claude Code missing, with the path field open", func(f *setupFake) {
+			f.settings.Setup, f.claude, f.settings.ClaudePath = "claude", &claudeMissing, ""
+		}, "claude-again"},
+		{"Pull requests with gh missing and glab signed out", func(f *setupFake) {
+			f.settings.Setup = "prs"
+			f.forges[0] = core.ForgeStatus{Kind: forge.GitHub, CLI: "gh", Repos: f.forges[0].Repos, Login: "gh auth login",
+				Install: "sudo dnf install gh", InstallURL: "https://cli.github.com"}
+		}, "forges-again"},
+	} {
+		f := newSetupFake().projects().withFolders("~/code")
+		tc.prep(f)
+		a := New(f)
+		u := uitest.New(t, a.Root, uitest.Size(1440, 900), uitest.Theme(dark))
+		started(a, u)
+		u.WaitForQueries()
+		if tc.name[0] == 'C' {
+			u.Click("claude-path-open")
+			u.Frame()
+		}
+		if !u.Has(tc.want) {
+			t.Errorf("%s: no %s", tc.name, tc.want)
+		}
+		if o := overflow(u); o > 0 {
+			t.Errorf("%s needs %.0f px of scrolling at 1440×900", tc.name, o)
+		}
+		u.Close()
+		a.Close()
+	}
+}
+
+// Adding a folder fills the Repositories step downward: its title stays where it was.
+func TestSetupTitleStaysOnAdd(t *testing.T) {
+	f := newSetupFake().projects()
+	f.settings.Setup = "repos"
+	_, u := newSetupUI(t, f, 1440)
+	before := u.Get("setup-title").Bounds().Y
+	u.Click("suggest-add-~/code")
+	u.WaitFor("the folder searched", func() bool { return u.Has("repos-found") })
+	if after := u.Get("setup-title").Bounds().Y; after != before {
+		t.Errorf("the title moved from %.0f to %.0f when a folder was added", before, after)
 	}
 }

@@ -66,6 +66,12 @@ func TestSetupShots(t *testing.T) {
 			f.settings.WorkerModel, f.settings.WorkerEffort = "claude-sonnet-4-6", "low"
 			return f
 		}, setup: step("models")},
+		// A pinned version on both sides: five cards in each panel, which still fit.
+		{name: "setup-models-pinned", light: true, back: func() *setupFake {
+			f := fresh()
+			f.settings.OrchestratorModel, f.settings.WorkerModel = "claude-opus-5", "claude-sonnet-4-6"
+			return f
+		}, setup: step("models")},
 		// Before Claude Code reports its models: the fallback list.
 		{name: "setup-models-unknown", back: func() *setupFake { f := fresh(); f.claude = &claudeMissing; return f }, setup: step("models")},
 		{name: "setup-repos-empty", light: true, back: fresh, setup: step("repos"), sizes: true},

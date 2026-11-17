@@ -310,13 +310,11 @@ func (a *App) setupView(ctx *ui.Context) ui.Element {
 	if l.compact {
 		head = head.PaddingTop(space4)
 	}
-	// The step sits in the middle of the space between the steps and the buttons, a little above it,
-	// and scrolls when it is taller.
-	inner := band().MinHeight(ui.Full).PaddingTop(space5).PaddingBottom(space8).
+	// Each step's title starts at the same place under the steps, so moving between steps, or adding
+	// to one, never moves it; the step fills down from there, and scrolls when it is taller.
+	_, winH := ctx.WindowSize()
+	inner := band().PaddingTop(setupTitleTop(winH)).PaddingBottom(space5).
 		Child(content().Key("setup-step-" + setupSteps[i].key).Child(body))
-	if !l.compact {
-		inner = inner.Justify(ui.Center)
-	}
 	scroll := ui.Div().Column().Grow(1).MinHeight(ui.Px(0)).ScrollY().Key("setup-scroll").Child(inner)
 
 	main := ui.Button(primary).Primary().Key("setup-next").FocusHandle(a.setupFocus).OnClick(next)
@@ -434,7 +432,7 @@ func setupPairView(l setupLayout, first, second ui.Element) ui.Element {
 // setupPanel is one of the setup's large panels.
 func setupPanel(ctx *ui.Context, children ...ui.Element) *ui.DivElement {
 	t := ctx.Theme()
-	pad := float32(space6)
+	pad := float32(space5)
 	if isCompact(ctx) {
 		pad = space4
 	}
@@ -551,15 +549,15 @@ func count(n int, one, many string) string {
 // each works on its own branch, and you review and land what they made.
 func (a *App) setupWelcome(ctx *ui.Context) ui.Element {
 	l := setupLayoutOf(ctx)
-	mark := float32(56)
+	mark := float32(40) // as tall as the title's line, beside it, so the title starts where every step's does
 	if l.compact {
-		mark = 44
+		mark = 30
 	}
 	return ui.Div().Column().Gap(space10).
-		Child(ui.Div().Column().Gap(space5).
-			Child(brandMark(mark)).
-			Child(setupHead(ctx, "Welcome to Solo",
-				"You tell Solo what you want done, and it runs each task as a thread on its own branch until the work is ready for you to land."))).
+		Child(ui.Div().Row().Align(ui.Start).Gap(space4).
+			Child(ui.Div().Shrink(0).Child(brandMark(mark))).
+			Child(ui.Div().Column().Grow(1).MinWidth(ui.Px(0)).Child(setupHead(ctx, "Welcome to Solo",
+				"You tell Solo what you want done, and it runs each task as a thread on its own branch until the work is ready for you to land.")))).
 		Child(a.loopPicture(ctx, l)).
 		Child(bodyText(ctx, "Next: Claude Code, models, your repositories, pull requests and a few preferences. Each takes a moment, and you can skip any of them.").
 			MaxWidth(ui.Px(setupProseWidth)))
