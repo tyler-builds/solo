@@ -6,6 +6,8 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/tyler-builds/solo/internal/agent"
 	"github.com/tyler-builds/solo/internal/core"
@@ -109,6 +111,26 @@ func (s *setupFake) PlainFolders() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return slices.Clone(s.plain)
+}
+
+// remoteSaves saves the settings as a backend on another machine does (rpc.Client.UpdateSettings): the
+// change is made to the settings read before the save and sent whole, a moment later. most is the
+// most saves it had in flight at once.
+type remoteSaves struct {
+	*setupFake
+	inFlight, most atomic.Int32
+}
+
+func (s *remoteSaves) UpdateSettings(fn func(*core.Settings)) error {
+	n := s.inFlight.Add(1)
+	defer s.inFlight.Add(-1)
+	for m := s.most.Load(); n > m && !s.most.CompareAndSwap(m, n); m = s.most.Load() {
+	}
+	next := s.Settings()
+	next.Folders = slices.Clone(next.Folders)
+	fn(&next)
+	time.Sleep(5 * time.Millisecond) // the round trip to the other machine
+	return s.setupFake.UpdateSettings(func(cur *core.Settings) { *cur = next })
 }
 
 // homeDir is a folder under the home folder, as the setup shows it and Settings keeps it.
