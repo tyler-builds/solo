@@ -138,7 +138,7 @@ func TestSettingsPatchCheckRemote(t *testing.T) {
 		}
 	}
 	for name := range settingFields {
-		if want := name == "claudePath" || name == "editorCommand" || name == "terminalCommand"; DesktopOnly(name) != want {
+		if want := name == "claudePath" || name == "editorCommand" || name == "terminalCommand" || name == "setup" || name == "hints"; DesktopOnly(name) != want {
 			t.Errorf("DesktopOnly(%q) = %v", name, !want)
 		}
 		// Every setting is listed, one way or the other: a new one must be decided, not defaulted.

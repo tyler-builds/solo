@@ -57,6 +57,7 @@ func (a *App) orchestratorView(ctx *ui.Context) ui.Element {
 		Child(ui.Div().Column().Align(ui.Center).PaddingX(gutter(ctx)).PaddingBottom(gutter(ctx) - space2).Shrink(0).
 			Child(ui.Div().Column().Gap(space2).Width(ui.Full).MaxWidth(ui.Px(chatMaxWidth)).
 				// A component of its own: what it reads re-renders it, not the conversation.
+				Child(ui.Component(a.hintBar)).
 				Child(ui.Component(a.questionStrip)).
 				Child(a.composer(ctx, v, "orch-draft", "orch", "Message Solo…", func(text string, images []string) error {
 					return a.b.SendToOrchestrator(context.Background(), text, images...)
@@ -86,28 +87,28 @@ func (a *App) orchState(ctx *ui.Context, v core.ThreadView) *ui.DivElement {
 	return state
 }
 
+// welcome is Solo's empty chat: what to do, and a few tasks to start with, written about the user's
+// own repositories (hints.go). Without any, it offers to add them.
 func (a *App) welcome(ctx *ui.Context) ui.Element {
-	repos := a.repos.Get()
-	col := ui.Div().Column().Align(ui.Center).Gap(space3).MaxWidth(ui.Px(520)).
+	repos, plain := a.repos.Get(), a.plain.Get()
+	col := ui.Div().Column().Align(ui.Center).Gap(space3).Width(ui.Full).MaxWidth(ui.Px(520)).
 		Child(brandMark(48)).
 		Child(title("What should we work on?").MarginTop(space2)).
 		Child(muted(ctx, "Tell Solo what you want done. It starts a thread for each task, each one working in its own branch, keeps track of them, and reports back. You review and merge.").
 			Align(ui.Center))
-	if len(repos) == 0 {
-		col = col.Child(ui.Button("Add repository folders").Icon(icons.FolderGit2).Primary().
-			OnClick(func() { a.settings.Set(true) }))
-	} else {
-		var names []string
-		for i, r := range repos {
-			if i == 6 {
-				names = append(names, fmt.Sprintf("and %d more", len(repos)-6))
-				break
-			}
-			names = append(names, filepath.Base(r))
+	if prompts := starterPrompts(repos, plain); len(prompts) > 0 {
+		col = col.Child(ui.Div().Column().Gap(space2).Width(ui.Full).MarginTop(space4).
+			Child(subtle(ctx, "Try one of these, or write your own")).
+			Child(a.starterList(ctx, prompts)))
+		if len(repos) > 0 {
+			col = col.Child(caption(ctx, "Solo knows "+count(len(repos), "repository", "repositories")+": "+nameList(repos, 6)).
+				Align(ui.Center).MarginTop(space2))
 		}
-		col = col.Child(caption(ctx, fmt.Sprintf("Knows %d repositories: %s", len(repos), strings.Join(names, ", "))).Align(ui.Center))
+	} else {
+		col = col.Child(ui.Button("Add repository folders").Icon(icons.FolderGit2).Primary().Key("add-folders").
+			OnClick(func() { a.openSettings("repos") }))
 	}
-	return ui.Div().Column().Center().Grow(1).Padding(space6).Child(col)
+	return ui.Div().Column().Center().Grow(1).Padding(space6).ScrollY().Child(col)
 }
 
 // row is one entry of a transcript list.

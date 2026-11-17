@@ -346,6 +346,19 @@ Raw `SDKMessage`s are also appended to a per-session JSONL file for debugging an
   thread asks, fails or finishes, a PR's checks fail or it merges, and when Solo replies. A click
   opens the thread. Solo is a single instance; on Windows its AppID is the installer's identity.
 - Text deltas are coalesced (~30 ms) before signals update, to keep re-renders cheap.
+- **First run** (`gui/onboarding.go`, `gui/hints.go`): a new user gets a four-step setup in place of the main
+  view: Welcome (what Solo is, and a picture of the loop drawn with the app's own pieces), Claude Code
+  (`CheckClaude`, with what to run when it is missing or signed out, and the path setting), Repositories (the folder
+  picker, `api.Setup.SuggestFolders`' usual project folders that hold repositories, offered and never added by
+  themselves, and what the search found in each), and Pull requests (`api.Setup.CheckForges`: `gh`/`glab` installed
+  and signed in, per forge the repositories push to). Each step changes the settings as Settings does; a problem is
+  checked again when the window comes back to the front. Where it stands is `Settings.Setup` (a step to resume at, or
+  `done`); anyone with folders, threads or a conversation with Solo counts as set up, so updating shows nothing. Skip
+  setup is always there, and Settings › General runs it again. After it, Solo's empty chat offers three tasks written
+  about the user's repositories (a click fills the message box), and one-time hints, one at a time above the message
+  box, explain the first thread, the first pinned question and the first merge card, and suggest pairing a phone once
+  work has landed (`Settings.Hints`). A web page's backend isn't an `api.Setup`: it shows the starter tasks, not the
+  setup or the hints.
 - **Compact windows:** under 700 px wide, as on a phone, there is room for one conversation
   (`isCompact`, `compactCenter`): Solo's, or the open thread's. One bar tops the window (`compactBar`):
   the button that opens the drawer, with a count of the threads that need you, then Solo or the
