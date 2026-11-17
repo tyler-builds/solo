@@ -388,3 +388,77 @@ func TestSearchPaths(t *testing.T) {
 		t.Error("Solo's conversation has a folder to search")
 	}
 }
+
+// openPRWithSkill sets up a thread with changes to open a pull request for, with the PR text written by
+// a skill that runs command, and opens it as a click does: with a deadline far shorter than the skill
+// takes. It returns what gh pr create was given, the core and the thread.
+func openPRWithSkill(t *testing.T, command string) (string, *Core, ThreadView) {
+	t.Helper()
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("no sh")
+	}
+	gh := fakeGH(t)
+	dir := fakeClaudeDir(t)
+	writeFile(t, filepath.Join(dir, "skills", "slow", "SKILL.md"), "---\nname: slow\n---\nRun `"+command+"`\n")
+	e := newEnv(t)
+	withOrigin(t, e)
+	e.c.UpdateSettings(func(s *Settings) { s.PRSkills = []string{"slow"} })
+	v, err := e.c.CreateWorker(context.Background(), WorkerSpec{Repo: "proj", Title: "Add hello", Prompt: "write hello.txt hi"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	v = waitStatus(t, e.c, v.ID, StatusIdle)
+	for deadline := time.Now().Add(5 * time.Second); !v.CanOpenPR && time.Now().Before(deadline); v, _ = e.c.Thread(v.ID) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	if _, err := e.c.OpenPR(ctx, v.ID, false); err != nil {
+		t.Fatalf("OpenPR: %v", err)
+	}
+	create, _ := os.ReadFile(filepath.Join(gh, "create"))
+	v, _ = e.c.Thread(v.ID)
+	if v.PR == nil || v.PR.Number != 7 {
+		t.Errorf("the thread's pull request is %+v", v.PR)
+	}
+	return string(create), e.c, v
+}
+
+// A skill that takes longer than the click's deadline still gets its full time, and the pull request
+// opens with its text.
+func TestPRSkillOutlivesClickDeadline(t *testing.T) {
+	create, c, v := openPRWithSkill(t, "sleep 1 && echo SLOW-TEXT-1")
+	if want := "--title Add hello --body SLOW-TEXT-1"; !strings.Contains(create, want) {
+		t.Errorf("gh pr create %q, want %q", create, want)
+	}
+	if hasNotice(t, c, v.ID, "Couldn't") {
+		t.Error("the PR text fell back, or the pull request didn't open")
+	}
+}
+
+// A skill that takes longer than the PR text's limit costs its text, not the pull request: it opens
+// with the thread's summary, and the warning says what happened in plain words.
+func TestPRSkillTimeoutStillOpensPR(t *testing.T) {
+	old := prAgentTimeout
+	prAgentTimeout = 500 * time.Millisecond
+	t.Cleanup(func() { prAgentTimeout = old })
+	create, c, v := openPRWithSkill(t, "sleep 2 && echo TOO-LATE")
+	if !strings.Contains(create, "--title Add hello --body") || strings.Contains(create, "TOO-LATE") {
+		t.Errorf("gh pr create %q, want the thread's title and summary", create)
+	}
+	if !hasNotice(t, c, v.ID, "Couldn't write the PR text (the skill /slow took longer than 500ms), so it uses the thread's summary.") {
+		t.Error("no plain warning that the skill took too long")
+	}
+	if hasNotice(t, c, v.ID, "deadline") || hasNotice(t, c, v.ID, "Couldn't open") {
+		t.Error("a notice says deadline, or the pull request didn't open")
+	}
+}
+
+func TestInWords(t *testing.T) {
+	for d, want := range map[time.Duration]string{5 * time.Minute: "5 minutes", time.Minute: "1 minute",
+		75 * time.Second: "75 seconds", 90 * time.Minute: "90 minutes", 1500 * time.Millisecond: "1.5s"} {
+		if got := inWords(d); got != want {
+			t.Errorf("inWords(%s) = %q, want %q", d, got, want)
+		}
+	}
+}

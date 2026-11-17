@@ -35,6 +35,10 @@ const (
 	connectWait = 15 * time.Second
 	// maxTries is how often a request is sent while connections drop under it.
 	maxTries = 3
+	// openPRWait is how long opening pull requests is waited for. The machine runs it to its end, each
+	// step with its own limit, and the PR text can take minutes per repository, longer than the UI waits
+	// for a click; this only keeps an answer that never comes from leaving the UI waiting for good.
+	openPRWait = time.Hour
 )
 
 // uploadPace is the wait after each part of a large upload. A part is four of the relay's frames, so
@@ -902,6 +906,8 @@ func (c *Client) OpenPR(ctx context.Context, threadID string, draft bool) (forge
 }
 
 func (c *Client) OpenPRFor(ctx context.Context, threadID, repo string, draft bool) ([]forge.PR, error) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), openPRWait)
+	defer cancel()
 	var out []forge.PR
 	err := c.do(ctx, "openPR", repoParams{Thread: threadID, Repo: repo, Draft: draft}, &out)
 	return out, err
