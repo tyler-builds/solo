@@ -346,19 +346,29 @@ Raw `SDKMessage`s are also appended to a per-session JSONL file for debugging an
   thread asks, fails or finishes, a PR's checks fail or it merges, and when Solo replies. A click
   opens the thread. Solo is a single instance; on Windows its AppID is the installer's identity.
 - Text deltas are coalesced (~30 ms) before signals update, to keep re-renders cheap.
-- **First run** (`gui/onboarding.go`, `gui/hints.go`): a new user gets a four-step setup in place of the main
-  view: Welcome (what Solo is, and a picture of the loop drawn with the app's own pieces), Claude Code
-  (`CheckClaude`, with what to run when it is missing or signed out, and the path setting), Repositories (the folder
-  picker, `api.Setup.SuggestFolders`' usual project folders that hold repositories, offered and never added by
-  themselves, and what the search found in each), and Pull requests (`api.Setup.CheckForges`: `gh`/`glab` installed
-  and signed in, per forge the repositories push to). Each step changes the settings as Settings does; a problem is
-  checked again when the window comes back to the front. Where it stands is `Settings.Setup` (a step to resume at, or
-  `done`); anyone with folders, threads or a conversation with Solo counts as set up, so updating shows nothing. Skip
-  setup is always there, and Settings › General runs it again. After it, Solo's empty chat offers three tasks written
-  about the user's repositories (a click fills the message box), and one-time hints, one at a time above the message
-  box, explain the first thread, the first pinned question and the first merge card, and suggest pairing a phone once
-  work has landed (`Settings.Hints`). A web page's backend isn't an `api.Setup`: it shows the starter tasks, not the
-  setup or the hints.
+- **First run** (`gui/onboarding.go`, `gui/onboarding_steps.go`, `gui/hints.go`): a new user gets a six-step
+  setup in place of the main view. Welcome says what Solo is, with a picture of the loop drawn with the app's
+  own pieces. Claude Code is `CheckClaude`, with what to run when it is missing or signed out, and the path
+  setting. Models picks the model and effort for Solo and for threads, from the list Settings › Models
+  offers (Claude Code's models, with its words for each; its family names on cards, every version in a
+  menu). Repositories has the folder picker, `api.Setup.SuggestFolders`' usual project folders that hold
+  repositories (offered, never added by themselves), and what the search found in each. Pull requests is
+  `api.Setup.CheckForges` (`gh`/`glab` installed and signed in, per forge the repositories push to) and,
+  where a forge is in play, the merge method, auto-merge and what happens when checks fail. Preferences has
+  notifications, costs, and the editor and terminal a thread's folder opens in. The rest (branch, commit
+  and PR text rules, PR skills, the helper models, scan depth, session size) stays in Settings. The setup
+  has a larger scale than the app's views (`design.go`): its content grows with the window to 1,080 px,
+  sits in the middle of the space between the steps and the buttons, and puts a step's two kinds of
+  content side by side from 880 px. Every choice is saved as Settings saves it (`UpdateSettings`, in
+  order; typed text once the typing stops), so Settings shows it, skipping keeps the defaults, and running
+  the setup again shows the current values. A problem is checked again when the window comes back to the
+  front. Where it stands is `Settings.Setup` (a step to resume at, or `done`); anyone with folders, threads
+  or a conversation with Solo counts as set up, so updating shows nothing. Skip setup is always there, and
+  Settings › General runs it again. After it, Solo's empty chat offers three tasks written about the
+  user's repositories (a click fills the message box), and one-time hints, one at a time above the message
+  box, explain the first thread, the first pinned question and the first merge card, and suggest pairing a
+  phone once work has landed (`Settings.Hints`). A web page's backend isn't an `api.Setup`: it shows the
+  starter tasks, not the setup or the hints.
 - **Compact windows:** under 700 px wide, as on a phone, there is room for one conversation
   (`isCompact`, `compactCenter`): Solo's, or the open thread's. One bar tops the window (`compactBar`):
   the button that opens the drawer, with a count of the threads that need you, then Solo or the

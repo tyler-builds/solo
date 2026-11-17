@@ -33,12 +33,50 @@ const (
 	space8 = 32
 )
 
+// The first-run setup's scale (onboarding.go). The setup has the window to itself, so it reads larger and
+// looser than the dense views of the app, and its content grows with the window up to setupMaxWidth.
+const (
+	space10 = 40
+	space12 = 48
+
+	setupMaxWidth   = 1080 // the content's widest
+	setupSplit      = 880  // content at least this wide lays out in two columns
+	setupProseWidth = 660  // a paragraph's widest, so its lines stay easy to read
+)
+
+// The setup's type scale: a display title and lead for each step, and its body text.
+func displayTitle(ctx *ui.Context, s string) *ui.TextElement {
+	size := float32(32)
+	if isCompact(ctx) {
+		size = 24
+	}
+	return ui.Text(s).FontSize(size).Semibold().TextColor(ctx.Theme().Text)
+}
+
+func leadText(ctx *ui.Context, s string) *ui.TextElement {
+	size := float32(17)
+	if isCompact(ctx) {
+		size = 15
+	}
+	return ui.Text(s).FontSize(size).TextColor(ctx.Theme().TextMuted)
+}
+
+func bodyText(ctx *ui.Context, s string) *ui.TextElement {
+	return ui.Text(s).FontSize(14).TextColor(ctx.Theme().TextMuted)
+}
+
+// sectionLabel names a group of rows: small capitals, as Settings' sections are named.
+func sectionLabel(ctx *ui.Context, s string) *ui.TextElement {
+	return ui.Text(strings.ToUpper(s)).FontSize(12).FontWeight(ui.FontSemibold).TextColor(ctx.Theme().TextSubtle)
+}
+
 // Corner radii.
 const (
 	radiusS  = 6  // buttons, inputs, chips
 	radiusM  = 8  // rows, tool lines
 	radiusL  = 10 // cards
 	radiusXL = 12 // the content panel
+	radius2X = 16 // the setup's large panels
 )
 
 type palette struct {

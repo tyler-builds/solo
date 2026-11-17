@@ -124,6 +124,30 @@ func (a *App) chooseFolders(ctx *ui.Context, done func(paths []string)) {
 	})
 }
 
+// mergeMethods and onChecksFail are the choices for how pull requests merge and what happens when their
+// checks fail, which Settings › Pull requests and the setup both offer.
+var (
+	mergeMethods = []ui.Option[string]{
+		{Value: "squash", Label: "Squash"},
+		{Value: "merge", Label: "Merge commit"},
+		{Value: "rebase", Label: "Rebase"},
+	}
+	onChecksFail = []ui.Option[string]{
+		{Value: core.ChecksFix, Label: "Solo fixes it"},
+		{Value: core.ChecksNotify, Label: "Just notify me"},
+	}
+)
+
+// appCommandHelp says what an app's command setting does, and what its box shows while empty: the app
+// Solo found (found, a command line), or an example when it found none.
+func appCommandHelp(what, found, example string) (help, hint string) {
+	if found == "" {
+		return what + " {path} marks where the folder goes.", "e.g. " + example
+	}
+	prog, _, _ := strings.Cut(found, " ")
+	return what + " Leave empty to use " + filepath.Base(prog) + ".", filepath.Base(prog) + " … {path}"
+}
+
 // placeholderFor says what Solo uses when a command is left empty.
 func placeholderFor(detected, what string) string {
 	if detected == "" {
@@ -576,11 +600,7 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 		}
 		input := func(in *ui.TextInputElement) *ui.TextInputElement { return in.Small().Width(ui.Px(280)) }
 		appRow := func(name, what, found, example string, cmd *ui.Signal[string]) ui.Element {
-			help, hint := what+" {path} marks where the folder goes.", "e.g. "+example
-			if found != "" {
-				prog, _, _ := strings.Cut(found, " ")
-				help, hint = what+" Leave empty to use "+filepath.Base(prog)+".", filepath.Base(prog)+" … {path}"
-			}
+			help, hint := appCommandHelp(what, found, example)
 			return settingRow(ctx, name, help,
 				input(ui.TextInput(cmd).Placeholder(hint).Label(name+" command")))
 		}
@@ -722,12 +742,8 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 				settingRow(ctx, "Model", "Applies the rules to the thread's commits, changes and summary.", helperPickers("Pull request text", prModel, prEffort))),
 			settingsSection(ctx, "Merging", "", nil,
 				settingRow(ctx, "Auto-merge", "Merge once required checks and reviews pass, with the forge's auto-merge.", ui.Switch("Auto-merge", autoMerge)),
-				settingRow(ctx, "Merge method", "How the branch lands on its base.", ui.Select(mergeMethod, ui.Option[string]{Value: "squash", Label: "Squash"},
-					ui.Option[string]{Value: "merge", Label: "Merge commit"},
-					ui.Option[string]{Value: "rebase", Label: "Rebase"}).Width(ui.Px(180)).Label("Merge method")),
-				settingRow(ctx, "When checks fail", "Solo can send the failure to the thread to fix.", ui.Select(onFail,
-					ui.Option[string]{Value: core.ChecksFix, Label: "Solo fixes it"},
-					ui.Option[string]{Value: core.ChecksNotify, Label: "Just notify me"}).Width(ui.Px(180)).Label("When checks fail"))))
+				settingRow(ctx, "Merge method", "How the branch lands on its base.", ui.Select(mergeMethod, mergeMethods...).Width(ui.Px(180)).Label("Merge method")),
+				settingRow(ctx, "When checks fail", "Solo can send the failure to the thread to fix.", ui.Select(onFail, onChecksFail...).Width(ui.Px(180)).Label("When checks fail"))))
 
 		var page ui.Element
 		switch tab.Get() {

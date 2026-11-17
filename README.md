@@ -18,10 +18,11 @@ cd sidecar && bun install && cd ..
 go run ./cmd/solo
 ```
 
-The first run walks you through a short setup: it checks that Claude Code is installed and signed in, adds the
-folders that hold your repositories (suggesting ones such as `~/code` when they hold any), and checks `gh` or `glab`
-for pull requests. Every step can be skipped; all of it is in Settings later, and Settings › General can run the
-setup again. A project that isn't in git works too: its threads edit the folder directly, without their own copy or
+The first run walks you through a short setup: it checks that Claude Code is installed and signed in, lets you
+pick the models and effort for Solo and its threads, adds the folders that hold your repositories (suggesting ones
+such as `~/code` when they hold any), checks `gh` or `glab` for pull requests and how they merge, and sets a few
+preferences. Every step can be skipped and keeps its defaults; all of it is in Settings later, and Settings ›
+General can run the setup again. A project that isn't in git works too: its threads edit the folder directly, without their own copy or
 a diff, until you click "Put in git". Data lives in `~/.local/share/solo` (`%LOCALAPPDATA%\Solo` on Windows;
 `SOLO_DATA_DIR` picks another folder, such as an empty one to see the setup again); `SOLO_DEBUG=1` also records raw
 SDK messages under `logs/` there.

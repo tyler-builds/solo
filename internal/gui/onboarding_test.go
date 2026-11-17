@@ -136,7 +136,7 @@ func TestSetupNavigation(t *testing.T) {
 	savedSetup(t, u, f, "claude")
 	u.WaitFor("the focus on Continue", func() bool { return u.Get("setup-next").Focused() })
 	u.Click("setup-next")
-	u.WaitFor("the repositories step", func() bool { return a.setup.Peek() == "repos" })
+	u.WaitFor("the models step", func() bool { return a.setup.Peek() == "models" })
 	u.Click("setup-back")
 	u.WaitFor("back to Claude Code", func() bool { return a.setup.Peek() == "claude" })
 	u.Click("setup-go-prs") // a step can be picked from the progress bar
@@ -150,6 +150,8 @@ func TestSetupNavigation(t *testing.T) {
 	}
 	b.Close()
 
+	u.Click("setup-next")
+	u.WaitFor("the preferences step", func() bool { return a.setup.Peek() == "prefs" })
 	u.Click("setup-next") // Start using Solo
 	u.WaitFor("the chat", func() bool { return u.Has("orch-draft-area") })
 	savedSetup(t, u, f, core.SetupDone)
@@ -161,7 +163,7 @@ func TestSetupNavigation(t *testing.T) {
 
 // Skip setup is there on every step and leaves a working app, with today's fallbacks.
 func TestSkipSetup(t *testing.T) {
-	for _, step := range []string{"welcome", "claude", "repos", "prs"} {
+	for _, step := range []string{"welcome", "claude", "models", "repos", "prs", "prefs"} {
 		t.Run(step, func(t *testing.T) {
 			f := newSetupFake()
 			f.settings.Setup = step
@@ -183,10 +185,10 @@ func TestSkipSetup(t *testing.T) {
 func TestSetupCompact(t *testing.T) {
 	f := newSetupFake().projects()
 	a, u := newSetupUI(t, f, 560)
-	mustShow(t, u, "Step 1 of 4 · Welcome", "Skip setup")
+	mustShow(t, u, "Step 1 of 6 · Welcome", "Skip setup")
 	u.Click("setup-next")
 	u.WaitFor("the Claude Code step", func() bool { return a.setup.Peek() == "claude" })
-	mustShow(t, u, "Step 2 of 4 · Claude Code")
+	mustShow(t, u, "Step 2 of 6 · Claude Code")
 }
 
 // The Claude Code step shows what was found, in each state, with what to do about a problem.
@@ -525,5 +527,180 @@ func TestHintKinds(t *testing.T) {
 	started(a, u)
 	if u.Has("hint-" + hintRemote) {
 		t.Error("pairing is suggested with a device paired")
+	}
+}
+
+// The Models step offers the models Settings › Models offers, from the same list: Claude Code's own,
+// by family on cards and every version in a menu, each with its effort levels. What is picked is saved
+// as Settings saves it, survives a close halfway, and shows in Settings.
+func TestSetupModels(t *testing.T) {
+	f := newSetupFake()
+	f.settings.Setup = "models"
+	a, u := newSetupUI(t, f, 1440)
+	if !u.Get("model-solo-opus").Checked() || !u.Get("model-threads-sonnet").Checked() {
+		t.Error("the defaults aren't picked")
+	}
+	if !u.Has("model-solo-fable") || !u.Has("model-threads-haiku") {
+		t.Error("Claude Code's models have no cards")
+	}
+	if u.Has("model-solo-claude-opus-5") {
+		t.Error("a pinned version has a card of its own")
+	}
+
+	u.Click("model-threads-haiku")
+	u.Get("effort-solo").ByName("High").Click()
+	u.WaitFor("the choices to be saved", func() bool {
+		s := f.Settings()
+		return s.WorkerModel == "haiku" && s.OrchestratorEffort == "high"
+	})
+	if !u.Get("model-threads-haiku").Checked() || u.Get("model-threads-sonnet").Checked() {
+		t.Error("the card picked isn't the one shown picked")
+	}
+
+	// A version from the menu, which lists every model Settings lists.
+	u.Click("model-more-solo")
+	u.Frame()
+	for _, c := range modelChoices(claudeModels, "opus") {
+		if !u.HasName(c.Label) {
+			t.Errorf("the menu doesn't offer %s", c.Label)
+		}
+	}
+	u.ByName("Sonnet 4.6").Click()
+	u.WaitFor("the version to be saved", func() bool { return f.Settings().OrchestratorModel == "claude-sonnet-4-6" })
+	u.WaitFor("its card", func() bool {
+		return u.Has("model-solo-claude-sonnet-4-6") && u.Get("model-solo-claude-sonnet-4-6").Checked()
+	})
+
+	// Closed here, it resumes here, with what was picked.
+	b := New(f)
+	if b.setup.Peek() != "models" {
+		t.Errorf("after a restart the setup is at %q", b.setup.Peek())
+	}
+	b.Close()
+	_, v := newSetupUI(t, f, 1440)
+	if !v.Get("model-threads-haiku").Checked() || !v.Get("model-solo-claude-sonnet-4-6").Checked() {
+		t.Error("the choices aren't shown after a restart")
+	}
+
+	// Settings › Models shows them.
+	u.Click("setup-skip")
+	a.openSettings("models")
+	u.Frame()
+	u.WaitForQueries()
+	if got := u.ByRole(access.RoleComboBox, "Threads model").Value(); got != "Haiku 5.5" {
+		t.Errorf("Settings shows the threads' model as %q", got)
+	}
+	if got := u.ByRole(access.RoleComboBox, "Solo effort").Value(); got != "High" {
+		t.Errorf("Settings shows Solo's effort as %q", got)
+	}
+}
+
+// Skipping leaves the defaults; running the setup again shows the current values, not the defaults.
+func TestSetupKeepsValues(t *testing.T) {
+	f := newSetupFake()
+	a, u := newSetupUI(t, f, 1440)
+	u.Click("setup-skip")
+	savedSetup(t, u, f, core.SetupDone)
+	s, def := f.Settings(), core.DefaultSettings()
+	s.Setup = ""
+	if s.OrchestratorModel != def.OrchestratorModel || s.WorkerModel != def.WorkerModel || s.MergeMethod != def.MergeMethod ||
+		s.NoNotifications || s.ShowCosts {
+		t.Errorf("skipping changed the defaults: %+v", s)
+	}
+
+	_ = f.UpdateSettings(func(s *core.Settings) { s.WorkerModel, s.MergeMethod, s.ShowCosts = "haiku", "rebase", true })
+	a.cfg.Set(f.Settings())
+	a.startSetup()
+	u.Frame()
+	u.Click("setup-go-models")
+	u.WaitFor("the models step", func() bool { return u.Has("model-threads-haiku") })
+	if !u.Get("model-threads-haiku").Checked() {
+		t.Error("running the setup again doesn't show the threads' model")
+	}
+	u.Click("setup-go-prefs")
+	u.WaitFor("the preferences step", func() bool { return u.Has("pref-costs") })
+	if !u.Get("pref-costs").Checked() {
+		t.Error("running the setup again doesn't show costs as on")
+	}
+}
+
+// How pull requests land is offered where a forge is in play, and saved as Settings saves it; where
+// none is, it isn't offered.
+func TestSetupLanding(t *testing.T) {
+	f := newSetupFake().projects().withFolders("~/code")
+	f.settings.Setup = "prs"
+	a, u := newSetupUI(t, f, 1440)
+	mustShow(t, u, "When work is ready to land", "Each thread's work lands as one commit on the base branch.")
+	u.Get("merge-method").ByName("Rebase").Click()
+	u.Click("auto-merge")
+	u.Get("on-fail").ByName("Just notify me").Click()
+	u.WaitFor("the choices to be saved", func() bool {
+		s := f.Settings()
+		return s.MergeMethod == "rebase" && s.AutoMerge && s.OnChecksFail == core.ChecksNotify
+	})
+	mustShow(t, u, "The thread's commits land one by one on top of the base branch.", "the thread waits for you")
+	u.Click("setup-skip")
+	a.openSettings("prs")
+	u.Frame()
+	if got := u.ByRole(access.RoleComboBox, "Merge method").Value(); got != "Rebase" {
+		t.Errorf("Settings shows the merge method as %q", got)
+	}
+
+	local := newSetupFake().projects().withFolders("~/code")
+	local.forges = nil
+	local.settings.Setup = "prs"
+	_, w := newSetupUI(t, local, 1440)
+	if w.Has("landing") {
+		t.Error("how pull requests land is offered without a forge")
+	}
+	mustShow(t, w, "Merge locally")
+}
+
+// The preferences: notifications and costs save at once, the apps once the typing stops (or the step
+// changes), and Settings shows them.
+func TestSetupPrefs(t *testing.T) {
+	f := newSetupFake()
+	f.settings.Setup = "prefs"
+	a, u := newSetupUI(t, f, 1440)
+	if !u.Get("pref-notify").Checked() || u.Get("pref-costs").Checked() {
+		t.Error("the defaults aren't shown")
+	}
+	u.Click("pref-notify")
+	u.Click("pref-costs")
+	u.Get("pref-editor").Focus()
+	u.Type("zed {path}")
+	u.WaitFor("the switches to be saved", func() bool { s := f.Settings(); return s.NoNotifications && s.ShowCosts })
+	mustShow(t, u, "Branch names, commit and pull request rules")
+	u.Click("setup-back") // the typed command is saved when the step changes, if not before
+	u.WaitFor("the editor to be saved", func() bool { return f.Settings().EditorCommand == "zed {path}" })
+	u.Click("setup-skip")
+	a.openSettings("general")
+	u.Frame()
+	if got := u.ByName("Editor command").Value(); got != "zed {path}" {
+		t.Errorf("Settings shows the editor as %q", got)
+	}
+}
+
+// The setup holds at Solo's smallest window and at a mid width: one column, and nothing wider than
+// the window.
+func TestSetupSizes(t *testing.T) {
+	for _, size := range [][2]float32{{360, 480}, {1000, 760}, {1440, 900}} {
+		for _, step := range setupSteps {
+			f := newSetupFake().projects().withFolders("~/code")
+			f.settings.Setup = step.key
+			_, dark := Themes()
+			a := New(f)
+			u := uitest.New(t, a.Root, uitest.Size(size[0], size[1]), uitest.Theme(dark))
+			started(a, u)
+			u.WaitForQueries()
+			u.Tree().Walk(func(n *access.Node) bool {
+				if n.Bounds.W > 0 && n.Bounds.X+n.Bounds.W > size[0]+0.5 && n.Role != access.RoleWindow {
+					t.Errorf("%v %s: %s %q reaches %.0f, past the window's %v", size, step.key, n.Role, n.Name, n.Bounds.X+n.Bounds.W, size[0])
+				}
+				return true
+			})
+			u.Close()
+			a.Close()
+		}
 	}
 }

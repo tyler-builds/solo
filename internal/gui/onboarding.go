@@ -1,22 +1,23 @@
 package gui
 
-// The first-run setup: four short steps in place of the main view (Welcome, Claude Code,
-// Repositories, Pull requests) that check the machine and set up what Solo needs, then land in Solo's
-// chat. Every step can be skipped, and so can the whole setup. Each step reads the machine through the
-// backend's own checks (CheckClaude, api.Setup) and changes it through the settings, as Settings does,
-// so what is set here shows there. Where it stands is kept in Settings.Setup: a step to resume at, or
-// done. A web page never shows it (its backend isn't an api.Setup): its machine is set up at the
-// machine.
+// The first-run setup: six short steps in place of the main view (Welcome, Claude Code, Models,
+// Repositories, Pull requests, Preferences) that check the machine and set what a new user wants set
+// from the start, then land in Solo's chat. Every step can be skipped, and so can the whole setup, which
+// leaves the defaults. Each step reads the machine through the backend's own checks (CheckClaude,
+// api.Setup) and changes the same settings Settings does, through UpdateSettings, so what is set here
+// shows there and running the setup again shows the current values. Where it stands is kept in
+// Settings.Setup: a step to resume at, or done. A web page never shows it (its backend isn't an
+// api.Setup): its machine is set up at the machine. The steps themselves are in onboarding_steps.go.
 
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/tyler-builds/jamb/access"
 	"github.com/tyler-builds/jamb/icons"
@@ -25,24 +26,22 @@ import (
 
 	"github.com/tyler-builds/solo/internal/api"
 	"github.com/tyler-builds/solo/internal/core"
-	"github.com/tyler-builds/solo/internal/forge"
 )
 
 // setupSteps are the setup's steps, in order, by the name Settings.Setup keeps.
 var setupSteps = []struct{ key, title string }{
 	{"welcome", "Welcome"},
 	{"claude", "Claude Code"},
+	{"models", "Models"},
 	{"repos", "Repositories"},
 	{"prs", "Pull requests"},
+	{"prefs", "Preferences"},
 }
 
 // setupIndex is a step's place in setupSteps, or -1.
 func setupIndex(key string) int {
 	return slices.IndexFunc(setupSteps, func(s struct{ key, title string }) bool { return s.key == key })
 }
-
-// setupWidth is the width of the setup's column.
-const setupWidth = 640
 
 // setupBackend is the backend's side that checks the machine, or nil when it drives another machine.
 func (a *App) setupBackend() api.Setup {
@@ -96,46 +95,106 @@ func (a *App) usedBefore(cfg core.Settings) bool {
 	return len(items) > 0
 }
 
-// setupSaver keeps Settings.Setup: saves run off the UI thread, one at a time, and each saves the
-// latest step, so two quick steps can't land in the wrong order.
+// setupSaver saves what the setup changes in the settings: off the UI thread, in the order the changes
+// were made, with changes that come while one saves joined into the next save. Typed text waits until
+// the typing stops (saveLater).
 type setupSaver struct {
-	mu   sync.Mutex // held while saving
-	want string
-	wmu  sync.Mutex // guards want
+	mu      sync.Mutex
+	queue   []func(*core.Settings)
+	running bool
+
+	later map[string]func(*core.Settings) // typed changes not saved yet, by field (UI thread only)
+	timer *time.Timer
 }
 
-// saveSetup records where the setup stands.
-func (a *App) saveSetup(step string) {
-	a.setupSave.wmu.Lock()
-	a.setupSave.want = step
-	a.setupSave.wmu.Unlock()
-	go func() {
-		a.setupSave.mu.Lock()
-		defer a.setupSave.mu.Unlock()
-		a.setupSave.wmu.Lock()
-		v := a.setupSave.want
-		a.setupSave.wmu.Unlock()
-		if a.b.Settings().Setup == v {
+// saveSettings changes the settings as Settings does (UpdateSettings), showing the change at once.
+func (a *App) saveSettings(f func(*core.Settings)) {
+	next := a.cfg.Peek()
+	f(&next)
+	a.cfg.Set(next)
+	sv := &a.setupSave
+	sv.mu.Lock()
+	sv.queue = append(sv.queue, f)
+	start := !sv.running
+	sv.running = true
+	sv.mu.Unlock()
+	if start {
+		go a.drainSettings()
+	}
+}
+
+// drainSettings saves the changes queued, until there are none.
+func (a *App) drainSettings() {
+	sv := &a.setupSave
+	for {
+		sv.mu.Lock()
+		fs := sv.queue
+		sv.queue = nil
+		if len(fs) == 0 {
+			sv.running = false
+			sv.mu.Unlock()
 			return
 		}
-		if err := a.b.UpdateSettings(func(s *core.Settings) { s.Setup = v }); err != nil {
-			a.notify(ui.ToastError, "Couldn't save the setup", err.Error())
+		sv.mu.Unlock()
+		err := a.b.UpdateSettings(func(s *core.Settings) {
+			for _, f := range fs {
+				f(s)
+			}
+		})
+		if err != nil {
+			a.notify(ui.ToastError, "Couldn't save the settings", err.Error())
 		}
-	}()
+		a.onUI(func() {
+			sv.mu.Lock()
+			idle := len(sv.queue) == 0
+			sv.mu.Unlock()
+			if idle { // a later change shown already would be undone until its own save
+				a.cfg.Set(a.b.Settings())
+			}
+		})
+	}
+}
+
+// saveLater saves a typed change once the typing stops, or when the step changes. UI thread only.
+func (a *App) saveLater(field string, f func(*core.Settings)) {
+	sv := &a.setupSave
+	if sv.later == nil {
+		sv.later = map[string]func(*core.Settings){}
+	}
+	sv.later[field] = f
+	if sv.timer != nil {
+		sv.timer.Stop()
+	}
+	sv.timer = time.AfterFunc(600*time.Millisecond, func() { a.onUI(a.flushLater) })
+}
+
+// flushLater saves the typed changes that wait. UI thread only.
+func (a *App) flushLater() {
+	sv := &a.setupSave
+	if sv.timer != nil {
+		sv.timer.Stop()
+		sv.timer = nil
+	}
+	for _, f := range sv.later {
+		a.saveSettings(f)
+	}
+	sv.later = nil
 }
 
 // goSetup shows a step of the setup and puts the focus on its main button, so Enter carries on.
 func (a *App) goSetup(step string) {
+	a.flushLater()
 	a.setup.Set(step)
 	a.setupFocus.Focus()
-	a.saveSetup(step)
+	a.saveSettings(func(s *core.Settings) { s.Setup = step })
 }
 
 // finishSetup ends the setup, finished or skipped, and lands in Solo's chat with the caret in its
-// message box.
+// message box. What wasn't chosen keeps its default.
 func (a *App) finishSetup() {
+	a.flushLater()
 	a.setup.Set("")
-	a.saveSetup(core.SetupDone)
+	a.saveSettings(func(s *core.Settings) { s.Setup = core.SetupDone })
 	a.orchFocus.Focus()
 }
 
@@ -156,7 +215,7 @@ func (a *App) setupAgainSection(ctx *ui.Context, closeSettings func()) ui.Elemen
 		return nil
 	}
 	return settingsSection(ctx, "Setup", "", nil,
-		settingRow(ctx, "First-run setup", "Checks Claude Code, your repository folders and pull request tools again.",
+		settingRow(ctx, "First-run setup", "Checks Claude Code and your folders, and goes through models, pull requests and preferences again.",
 			ui.Button("Run setup again").Icon(icons.RotateCcw).Secondary().Small().Key("run-setup").
 				OnClick(func() {
 					closeSettings()
@@ -176,16 +235,43 @@ func (a *App) setupBar(ctx *ui.Context) ui.Element {
 			Child(brandMark(20)).
 			Child(ui.Text("Set up Solo").FontSize(13).Medium().NoWrap())).
 		Trailing(ui.Button("Skip setup").Ghost().Small().Key("setup-skip").
-			Tooltip("Go straight to Solo. Settings has all of this, and can run the setup again.").
+			Tooltip("Go straight to Solo with the defaults. Settings has all of this, and can run the setup again.").
 			OnClick(a.finishSetup))
 }
 
-// setupView is the setup: where it stands, the step, and the buttons that move between steps.
+// setupLayout is how the setup lays out in the window: the content's width, the space at its sides,
+// and whether a step can put its two kinds of content side by side.
+type setupLayout struct {
+	w, gutter float32
+	two       bool
+	compact   bool
+}
+
+// setupLayoutOf lays the setup out for the window: the content grows with it up to setupMaxWidth.
+func setupLayoutOf(ctx *ui.Context) setupLayout {
+	winW, _ := ctx.WindowSize()
+	l := setupLayout{compact: isCompact(ctx)}
+	panelW := winW - 2*space2 - 2 // the content panel, inset in the window
+	switch {
+	case l.compact:
+		l.gutter, panelW = space4, winW
+	case winW < 1200:
+		l.gutter = space8
+	default:
+		l.gutter = space12
+	}
+	l.w = max(min(panelW-2*l.gutter, setupMaxWidth), 200)
+	l.two = l.w >= setupSplit
+	return l
+}
+
+// setupView is the setup: where it stands at the top, the step in the middle of the space under it, and
+// the buttons that move between steps at the foot, all as wide as the step's content.
 func (a *App) setupView(ctx *ui.Context) ui.Element {
 	t := ctx.Theme()
 	step := a.setup.Get()
 	i := max(setupIndex(step), 0)
-	compact := isCompact(ctx)
+	l := setupLayoutOf(ctx)
 	next := func() {
 		if i+1 < len(setupSteps) {
 			a.goSetup(setupSteps[i+1].key)
@@ -206,41 +292,55 @@ func (a *App) setupView(ctx *ui.Context) ui.Element {
 		body, primary = ui.Component(a.setupWelcome), "Get started"
 	case "claude":
 		body = ui.Component(a.setupClaude)
+	case "models":
+		body = ui.Component(a.setupModels)
 	case "repos":
 		body = ui.Component(a.setupRepos)
 	case "prs":
-		body, primary, icon = ui.Component(a.setupPRs), "Start using Solo", nil
+		body = ui.Component(a.setupPRs)
+	case "prefs":
+		body, primary, icon = ui.Component(a.setupPrefs), "Start using Solo", nil
 	}
-	gutterX := float32(space6)
-	if compact {
-		gutterX = space4
+	band := func() *ui.DivElement { // a band across the panel, with the content's width in its middle
+		return ui.Div().Column().Align(ui.Center).Width(ui.Full).PaddingX(l.gutter).Shrink(0)
 	}
-	column := func() *ui.DivElement {
-		return ui.Div().Column().Width(ui.Full).MaxWidth(ui.Px(setupWidth))
+	content := func() *ui.DivElement { return ui.Div().Column().Width(ui.Px(l.w)) }
+
+	head := band().PaddingTop(space8).PaddingBottom(space2).Child(content().Child(a.setupProgress(ctx, i)))
+	if l.compact {
+		head = head.PaddingTop(space4)
 	}
-	content := ui.Div().Column().Align(ui.Center).Grow(1).MinHeight(ui.Px(0)).ScrollY().
-		PaddingX(gutterX).PaddingTop(space8).PaddingBottom(space8).Key("setup-scroll").
-		Child(column().Gap(space8).
-			Child(a.setupProgress(ctx, i)).
-			Child(ui.Div().Key("setup-step-" + setupSteps[i].key).Child(body)))
+	// The step sits in the middle of the space between the steps and the buttons, a little above it,
+	// and scrolls when it is taller.
+	inner := band().MinHeight(ui.Full).PaddingTop(space5).PaddingBottom(space8).
+		Child(content().Key("setup-step-" + setupSteps[i].key).Child(body))
+	if !l.compact {
+		inner = inner.Justify(ui.Center)
+	}
+	scroll := ui.Div().Column().Grow(1).MinHeight(ui.Px(0)).ScrollY().Key("setup-scroll").Child(inner)
 
 	main := ui.Button(primary).Primary().Key("setup-next").FocusHandle(a.setupFocus).OnClick(next)
+	if !l.compact {
+		main = main.Large()
+	}
 	if icon != nil {
 		main = main.IconEnd(icon)
 	}
-	footRow := column().Row().Align(ui.Center).Gap(space2)
+	footRow := content().Row().Align(ui.Center).Gap(space3)
 	if i > 0 {
 		prev := setupSteps[i-1].key
-		footRow = footRow.Child(ui.Button("Back").Icon(icons.ArrowLeft).Ghost().Key("setup-back").
-			OnClick(func() { a.goSetup(prev) }))
+		back := ui.Button("Back").Icon(icons.ArrowLeft).Ghost().Key("setup-back").OnClick(func() { a.goSetup(prev) })
+		if !l.compact {
+			back = back.Large()
+		}
+		footRow = footRow.Child(back)
 	}
 	footRow = footRow.Child(ui.Div().Grow(1))
-	if !compact && !a.Touch {
+	if !l.compact && !a.Touch {
 		footRow = footRow.Child(ui.Kbd("Enter"))
 	}
 	footRow = footRow.Child(main)
-	foot := ui.Div().Column().Align(ui.Center).Shrink(0).PaddingX(gutterX).PaddingY(space3).
-		BorderEdges(ui.Edges{Top: 1}, t.Border).Child(footRow)
+	foot := band().PaddingY(space4).BorderEdges(ui.Edges{Top: 1}, t.Border).Child(footRow)
 
 	panel := ui.Div().Column().Size(ui.Full, ui.Full).
 		OnKeyDown(func(e *ui.KeyEvent) {
@@ -250,8 +350,8 @@ func (a *App) setupView(ctx *ui.Context) ui.Element {
 				next()
 			}
 		}).
-		Child(content).Child(foot)
-	if compact {
+		Child(head).Child(scroll).Child(foot)
+	if l.compact {
 		return ui.Div().Column().Size(ui.Full, ui.Full).Background(t.Background).
 			BorderEdges(ui.Edges{Top: 1}, t.Border).Child(panel)
 	}
@@ -271,12 +371,12 @@ func (a *App) setupProgress(ctx *ui.Context, cur int) ui.Element {
 		if i <= cur {
 			c = t.Text
 		}
-		label := ui.Text(s.title).FontSize(12).TextColor(t.TextSubtle).NoWrap().Truncate()
+		label := ui.Text(s.title).FontSize(13).TextColor(t.TextSubtle).NoWrap().Truncate()
 		switch {
 		case i == cur:
-			label = ui.Text(s.title).FontSize(12).Semibold().TextColor(t.Text).NoWrap().Truncate()
+			label = ui.Text(s.title).FontSize(13).Semibold().TextColor(t.Text).NoWrap().Truncate()
 		case i < cur:
-			label = ui.Text(s.title).FontSize(12).TextColor(t.TextMuted).NoWrap().Truncate()
+			label = ui.Text(s.title).FontSize(13).TextColor(t.TextMuted).NoWrap().Truncate()
 		}
 		state := "to do"
 		if i == cur {
@@ -304,15 +404,53 @@ func (a *App) setupProgress(ctx *ui.Context, cur int) ui.Element {
 
 // setupHead is a step's title and what it is about.
 func setupHead(ctx *ui.Context, heading, lead string) ui.Element {
-	return ui.Div().Column().Gap(space2).
-		Child(title(heading)).
-		Child(ui.Text(lead).FontSize(14).TextColor(ctx.Theme().TextMuted))
+	return ui.Div().Column().Gap(space3).
+		Child(displayTitle(ctx, heading)).
+		Child(leadText(ctx, lead).MaxWidth(ui.Px(setupProseWidth)))
 }
 
-// setupCard is a rounded card of rows, as Settings draws them.
+// setupSplit lays out a step's two kinds of content side by side where there is room, the second a
+// little wider, and one over the other where there isn't.
+func setupSplitView(l setupLayout, left, right ui.Element) ui.Element {
+	if !l.two || right == nil {
+		return ui.Div().Column().Gap(space8).Width(ui.Full).Child(left).Child(right)
+	}
+	return ui.Div().Row().Align(ui.Start).Gap(space12).Width(ui.Full).
+		Child(ui.Div().Column().Grow(5).Basis(ui.Px(0)).MinWidth(ui.Px(0)).Child(left)).
+		Child(ui.Div().Column().Grow(6).Basis(ui.Px(0)).MinWidth(ui.Px(0)).Child(right))
+}
+
+// setupPairView lays out two panels of one kind side by side, as wide as each other, where there is
+// room, and one over the other where there isn't.
+func setupPairView(l setupLayout, first, second ui.Element) ui.Element {
+	if !l.two || second == nil {
+		return ui.Div().Column().Gap(space6).Width(ui.Full).Child(first).Child(second)
+	}
+	return ui.Div().Row().Align(ui.Stretch).Gap(space6).Width(ui.Full).
+		Child(ui.Div().Column().Grow(1).Basis(ui.Px(0)).MinWidth(ui.Px(0)).Child(first)).
+		Child(ui.Div().Column().Grow(1).Basis(ui.Px(0)).MinWidth(ui.Px(0)).Child(second))
+}
+
+// setupPanel is one of the setup's large panels.
+func setupPanel(ctx *ui.Context, children ...ui.Element) *ui.DivElement {
+	t := ctx.Theme()
+	pad := float32(space6)
+	if isCompact(ctx) {
+		pad = space4
+	}
+	p := ui.Div().Column().Gap(space4).Padding(pad).Radius(radius2X).Border(1, t.Border).Background(t.Surface)
+	for _, c := range children {
+		if c != nil {
+			p = p.Child(c)
+		}
+	}
+	return p
+}
+
+// setupCard is a rounded card of rows, divided by rules, as Settings draws them.
 func setupCard(ctx *ui.Context, rows ...ui.Element) *ui.DivElement {
 	t := ctx.Theme()
-	card := ui.Div().Column().Radius(radiusL).Border(1, t.Border).Background(t.Surface)
+	card := ui.Div().Column().Radius(radiusL+2).Border(1, t.Border).Background(t.Surface)
 	n := 0
 	for _, r := range rows {
 		if r == nil {
@@ -331,32 +469,44 @@ func setupCard(ctx *ui.Context, rows ...ui.Element) *ui.DivElement {
 // statusLine is a check's result: an icon in its color, a line in words, and what follows under it.
 func statusLine(ctx *ui.Context, icon *icons.Icon, c ui.Color, line string, under ...ui.Element) *ui.DivElement {
 	t := ctx.Theme()
-	col := ui.Div().Column().Gap(space1).Grow(1).MinWidth(ui.Px(0)).
-		Child(ui.Text(line).FontSize(13).Medium().TextColor(t.Text))
+	col := ui.Div().Column().Gap(space2).Grow(1).MinWidth(ui.Px(0)).
+		Child(ui.Text(line).FontSize(16).Semibold().TextColor(t.Text))
 	for _, u := range under {
 		if u != nil {
 			col = col.Child(u)
 		}
 	}
 	return ui.Div().Row().Align(ui.Start).Gap(space3).
-		Child(ui.Div().PaddingTop(1).Child(ui.Icon(icon).Size(16).Color(c))).
+		Child(ui.Div().PaddingTop(1).Child(ui.Icon(icon).Size(20).Color(c))).
 		Child(col)
 }
 
 // commandBox is a command to run in a terminal, with a button that copies it.
 func commandBox(ctx *ui.Context, cmd string) ui.Element {
 	t := ctx.Theme()
-	return ui.Div().Row().Align(ui.Center).Gap(space2).PaddingLeft(space3).PaddingRight(space1).Height(ui.Px(34)).
-		MarginTop(space1).Radius(radiusS).Border(1, t.Border).Background(t.Background).
-		Child(ui.Text(cmd).Mono().FontSize(12).TextColor(t.Text).Selectable().Truncate().Grow(1).MinWidth(ui.Px(0))).
+	return ui.Div().Row().Align(ui.Center).Gap(space2).PaddingLeft(space3).PaddingRight(space1).Height(ui.Px(40)).
+		MarginTop(space1).Radius(radiusM).Border(1, t.Border).Background(t.Background).
+		Child(ui.Text(cmd).Mono().FontSize(13).TextColor(t.Text).Selectable().Truncate().Grow(1).MinWidth(ui.Px(0))).
 		Child(ui.CopyButton(cmd).Small().Tooltip("Copy the command").Key("copy-" + cmd))
 }
 
 // checking is a check under way.
 func checking(ctx *ui.Context, what string) ui.Element {
 	return ui.Div().Row().Align(ui.Center).Gap(space3).
-		Child(ui.ProgressRing().Size(16)).
-		Child(muted(ctx, what))
+		Child(ui.ProgressRing().Size(18)).
+		Child(bodyText(ctx, what))
+}
+
+// setupRow is a choice in one of the setup's panels: its name and what it does, with its control
+// beside it (under it, where there is no room).
+func setupRow(ctx *ui.Context, name, help string, control ui.Element) ui.Element {
+	t := ctx.Theme()
+	label := ui.Div().Column().Gap(space1).Grow(1).Basis(ui.Px(200)).MinWidth(ui.Px(0)).
+		Child(ui.Text(name).FontSize(15).Medium().TextColor(t.Text)).
+		Child(bodyText(ctx, help))
+	return ui.Div().Row().Wrap().Align(ui.Center).Gap(space4).
+		Child(label).
+		Child(ui.Div().Row().Align(ui.Center).MaxWidth(ui.Full).Child(control))
 }
 
 // recheckOnFocus fetches a check again when the window comes back to the front while it shows a
@@ -400,72 +550,98 @@ func count(n int, one, many string) string {
 // setupWelcome says what Solo is, with a picture of how work goes round: you ask, Solo starts threads,
 // each works on its own branch, and you review and land what they made.
 func (a *App) setupWelcome(ctx *ui.Context) ui.Element {
-	return ui.Div().Column().Gap(space6).
-		Child(ui.Div().Column().Gap(space4).
-			Child(brandMark(44)).
+	l := setupLayoutOf(ctx)
+	mark := float32(56)
+	if l.compact {
+		mark = 44
+	}
+	return ui.Div().Column().Gap(space10).
+		Child(ui.Div().Column().Gap(space5).
+			Child(brandMark(mark)).
 			Child(setupHead(ctx, "Welcome to Solo",
 				"You tell Solo what you want done, and it runs each task as a thread on its own branch until the work is ready for you to land."))).
-		Child(a.loopPicture(ctx)).
-		Child(caption(ctx, "Three short checks follow: Claude Code, your repositories, and pull requests. You can skip any of them."))
+		Child(a.loopPicture(ctx, l)).
+		Child(bodyText(ctx, "Next: Claude Code, models, your repositories, pull requests and a few preferences. Each takes a moment, and you can skip any of them.").
+			MaxWidth(ui.Px(setupProseWidth)))
 }
 
 // loopPicture draws the loop with the app's own pieces: a message, threads at work, a branch, and a
-// merge card's button.
-func (a *App) loopPicture(ctx *ui.Context) ui.Element {
+// merge card's button. Four across where they fit, two by two where they don't, and a list in a
+// compact window. The numbers keep their order where there are no arrows.
+func (a *App) loopPicture(ctx *ui.Context, l setupLayout) ui.Element {
 	t := ctx.Theme()
-	compact := isCompact(ctx)
 	threadLine := func(title string) ui.Element {
-		return ui.Div().Row().Align(ui.Center).Gap(6).
+		return ui.Div().Row().Align(ui.Center).Gap(space2).
 			Child(statusMark(ctx, core.StatusRunning)).
-			Child(ui.Text(title).FontSize(12).TextColor(t.Text).NoWrap())
+			Child(ui.Text(title).FontSize(13).TextColor(t.Text).NoWrap())
 	}
 	tiles := []struct {
 		label, detail string
 		visual        ui.Element
 	}{
-		{"You ask", "in plain words", ui.Div().PaddingX(space2 + 2).PaddingY(space1 + 2).Radius(radiusL).Background(t.SurfaceActive).
-			Child(ui.Text("Fix the flaky login test").FontSize(12).TextColor(t.Text))},
-		{"Solo starts threads", "one for each task", ui.Div().Column().Gap(space1 + 2).
+		{"You ask", "In plain words, as you would a colleague.", ui.Div().PaddingX(space3).PaddingY(space2).Radius(radiusL).Background(t.SurfaceActive).
+			Child(ui.Text("Fix the flaky login test").FontSize(13).TextColor(t.Text))},
+		{"Solo starts threads", "One for each task, working at once.", ui.Div().Column().Gap(space2).
 			Child(threadLine("Fix login test")).Child(threadLine("Add retry test"))},
-		{"Each on its own branch", "in a copy of the repository", ui.Div().Row().Align(ui.Center).Gap(6).PaddingX(space2).Height(ui.Px(24)).
+		{"Each on its own branch", "In a copy of the repository.", ui.Div().Row().Align(ui.Center).Gap(6).PaddingX(space3).Height(ui.Px(30)).
 			Radius(radiusS).Border(1, t.Border).Background(t.Background).
-			Child(ui.Icon(icons.GitBranch).Size(12).Color(t.TextMuted)).
-			Child(ui.Text("solo/login").Mono().FontSize(11).TextColor(t.TextMuted).NoWrap())},
-		{"You review and land", "only you can merge", ui.Div().Row().Align(ui.Center).Gap(space2).
-			Child(ui.Icon(icons.GitMerge).Size(14).Color(t.Success)).
-			Child(ui.Div().Row().Align(ui.Center).PaddingX(space3).Height(ui.Px(24)).Radius(radiusS).Background(t.Accent).
-				Child(ui.Text("Merge").FontSize(12).Medium().TextColor(t.AccentText)))},
+			Child(ui.Icon(icons.GitBranch).Size(14).Color(t.TextMuted)).
+			Child(ui.Text("solo/login-fix").Mono().FontSize(12).TextColor(t.TextMuted).NoWrap())},
+		{"You review and land", "Only you can merge the work.", ui.Div().Row().Align(ui.Center).Gap(space3).
+			Child(ui.Icon(icons.GitMerge).Size(16).Color(t.Success)).
+			Child(ui.Div().Row().Align(ui.Center).PaddingX(space4).Height(ui.Px(30)).Radius(radiusS).Background(t.Accent).
+				Child(ui.Text("Merge").FontSize(13).Medium().TextColor(t.AccentText)))},
 	}
-	pic := ui.Div().Role(access.RoleImage).
+	pic := ui.Div().Role(access.RoleImage).Width(ui.Full).
 		Label("You ask. Solo starts threads, one for each task. Each works on its own branch. You review and land the work.")
-	if compact {
-		col := ui.Div().Column().Gap(space1).AccessHidden()
+	number := func(n int) ui.Element {
+		return ui.Div().Center().Size(ui.Px(22), ui.Px(22)).Radius(11).Background(t.SurfaceActive).Shrink(0).
+			Child(ui.Text(fmt.Sprint(n)).FontSize(12).Semibold().TextColor(t.TextMuted))
+	}
+	if l.compact {
+		col := ui.Div().Column().Gap(space2).AccessHidden()
 		for i, tl := range tiles {
-			if i > 0 {
-				col = col.Child(ui.Div().PaddingLeft(space4 + 4).Child(ui.Icon(icons.ArrowDown).Size(14).Color(t.TextSubtle)))
-			}
-			col = col.Child(ui.Div().Row().Align(ui.Center).Gap(space3).PaddingX(space3).PaddingY(space3).
-				Radius(radiusL).Border(1, t.Border).Background(t.Surface).
-				Child(ui.Div().Column().Gap(2).Width(ui.Px(130)).Shrink(0).
-					Child(subhead(tl.label)).Child(caption(ctx, tl.detail))).
-				Child(ui.Div().Row().Grow(1).MinWidth(ui.Px(0)).ClipContent().Child(tl.visual)))
+			col = col.Child(ui.Div().Column().Gap(space3).Padding(space4).
+				Radius(radiusL+2).Border(1, t.Border).Background(t.Surface).
+				Child(ui.Div().Row().Align(ui.Center).Gap(space3).
+					Child(number(i + 1)).
+					Child(ui.Div().Column().Gap(2).Grow(1).MinWidth(ui.Px(0)).
+						Child(ui.Text(tl.label).FontSize(15).Semibold().TextColor(t.Text)).
+						Child(caption(ctx, tl.detail)))).
+				Child(ui.Div().Row().PaddingLeft(22 + space3).MinWidth(ui.Px(0)).ClipContent().Child(tl.visual)))
 		}
 		return pic.Child(col)
 	}
-	row := ui.Div().Row().Align(ui.Stretch).Gap(space1).AccessHidden()
-	for i, tl := range tiles {
-		if i > 0 {
-			row = row.Child(ui.Div().Column().Justify(ui.Center).Shrink(0).
-				Child(ui.Icon(icons.ArrowRight).Size(14).Color(t.TextSubtle)))
-		}
-		row = row.Child(ui.Div().Column().Gap(space3).Grow(1).Basis(ui.Px(0)).MinWidth(ui.Px(0)).
-			PaddingX(space3).PaddingY(space3).Radius(radiusL).Border(1, t.Border).Background(t.Surface).ClipContent().
-			Child(ui.Div().Column().Justify(ui.Center).Height(ui.Px(48)).Child(tl.visual)).
-			Child(ui.Div().Column().Gap(2).
-				Child(ui.Text(tl.label).FontSize(13).Medium().TextColor(t.Text)).
-				Child(caption(ctx, tl.detail))))
+	tile := func(i int) *ui.DivElement {
+		tl := tiles[i]
+		return ui.Div().Column().Gap(space4).Grow(1).Basis(ui.Px(0)).MinWidth(ui.Px(0)).
+			Padding(space5).Radius(radius2X).Border(1, t.Border).Background(t.Surface).ClipContent().
+			Child(number(i + 1)).
+			Child(ui.Div().Column().Justify(ui.Center).Height(ui.Px(72)).Child(tl.visual)).
+			Child(ui.Div().Column().Gap(space1).
+				Child(ui.Text(tl.label).FontSize(15).Semibold().TextColor(t.Text)).
+				Child(bodyText(ctx, tl.detail)))
 	}
-	return pic.Child(row)
+	if l.w >= 860 { // four across; with arrows between them where there is room for those too
+		arrows := l.w >= 1000
+		row := ui.Div().Row().Align(ui.Stretch).Gap(space2).AccessHidden()
+		if !arrows {
+			row = row.Gap(space3)
+		}
+		for i := range tiles {
+			if i > 0 && arrows {
+				row = row.Child(ui.Div().Column().Justify(ui.Center).Shrink(0).
+					Child(ui.Icon(icons.ArrowRight).Size(16).Color(t.TextSubtle)))
+			}
+			row = row.Child(tile(i))
+		}
+		return pic.Child(row)
+	}
+	grid := ui.Div().Column().Gap(space4).AccessHidden()
+	for i := 0; i < len(tiles); i += 2 {
+		grid = grid.Child(ui.Div().Row().Align(ui.Stretch).Gap(space4).Child(tile(i)).Child(tile(i + 1)))
+	}
+	return pic.Child(grid)
 }
 
 // ---- Claude Code ----
@@ -482,13 +658,15 @@ func claudeInstall() string {
 // checks again when the window comes back to the front. A path can be set, as in Settings › General.
 func (a *App) setupClaude(ctx *ui.Context) ui.Element {
 	t := ctx.Theme()
+	l := setupLayoutOf(ctx)
 	path := strings.TrimSpace(a.cfg.Get().ClaudePath)
 	q := a.claudeQuery(ctx, path)
 	st := q.Data
 	busy := q.Loading || q.Fetching
 	a.recheckOnFocus(ctx, !busy && st.Err != "", q.Refetch)
 
-	again := ui.Button("Check again").Icon(icons.RefreshCw).Secondary().Small().Key("claude-again").OnClick(q.Refetch)
+	again := ui.Div().Row().PaddingTop(space2).
+		Child(ui.Button("Check again").Icon(icons.RefreshCw).Secondary().Key("claude-again").OnClick(q.Refetch))
 	where := caption(ctx, claudeWhere(st, "the path you set")).TruncateHead()
 	var status ui.Element
 	switch {
@@ -496,37 +674,35 @@ func (a *App) setupClaude(ctx *ui.Context) ui.Element {
 		status = checking(ctx, "Looking for Claude Code…")
 	case st.Path == "":
 		status = statusLine(ctx, icons.CircleAlert, t.Warning, "Claude Code isn't installed",
-			muted(ctx, "Install it with this command in a terminal, then run claude once to sign in. Solo checks again when you come back to this window."),
-			commandBox(ctx, claudeInstall()),
-			ui.Div().Row().PaddingTop(space2).Child(again))
+			bodyText(ctx, "Install it with this command in a terminal, then run claude once to sign in. Solo checks again when you come back to this window."),
+			commandBox(ctx, claudeInstall()), again)
 	case st.SignedOut:
 		status = statusLine(ctx, icons.CircleAlert, t.Warning, "Claude Code isn't signed in",
-			muted(ctx, "Run claude in a terminal and sign in with /login. Solo checks again when you come back to this window."),
-			commandBox(ctx, "claude"),
-			where,
-			ui.Div().Row().PaddingTop(space2).Child(again))
+			bodyText(ctx, "Run claude in a terminal and sign in with /login. Solo checks again when you come back to this window."),
+			commandBox(ctx, "claude"), where, again)
 	case st.Err != "":
 		status = statusLine(ctx, icons.CircleAlert, t.Danger, "Solo can't use this Claude Code",
-			muted(ctx, st.Err), where,
-			ui.Div().Row().PaddingTop(space2).Child(again))
+			bodyText(ctx, st.Err), where, again)
 	default:
-		line := "Claude Code " + st.Version + " is ready"
 		var who ui.Element
 		if st.Account != "" {
-			who = muted(ctx, "Signed in as "+st.Account)
+			who = bodyText(ctx, "Signed in as "+st.Account)
 		}
-		status = statusLine(ctx, icons.CircleCheck, t.Success, line, who, where)
+		status = statusLine(ctx, icons.CircleCheck, t.Success, "Claude Code "+st.Version+" is ready", who, where)
 	}
 	var note ui.Element
 	if !busy && st.Err != "" {
-		note = caption(ctx, "You can carry on and fix this later: Settings › General shows the same check. Solo can't start threads until Claude Code works.")
+		note = bodyText(ctx, "You can carry on and fix this later: Settings › General shows the same check. Solo can't start threads until Claude Code works.")
 	}
-	return ui.Div().Column().Gap(space6).
+	left := ui.Div().Column().Gap(space8).
 		Child(setupHead(ctx, "Claude Code",
-			"Solo runs your own Claude Code, with its sign-in and plan. If it works in your terminal, there is nothing to do here.")).
-		Child(setupCard(ctx, ui.Div().Padding(space4).Key("claude-status").Child(status))).
-		Child(a.claudePathField(ctx, path)).
-		Child(note)
+			"Solo runs your own Claude Code, with its sign-in and plan. If it works in your terminal, there is nothing to do here."))
+	statusPanel := setupPanel(ctx, ui.Div().Key("claude-status").MinHeight(ui.Px(48)).Child(status))
+	if !l.two {
+		return left.Child(statusPanel).Child(a.claudePathField(ctx, path)).Child(note)
+	}
+	left = left.Child(a.claudePathField(ctx, path)).Child(note)
+	return setupSplitView(l, left, statusPanel)
 }
 
 // claudePathField sets the path of the claude to run, the setting Settings › General shows. It is
@@ -535,7 +711,7 @@ func (a *App) claudePathField(ctx *ui.Context, path string) ui.Element {
 	open := ui.Local(ctx, "path-open", path != "")
 	text := ui.Local(ctx, "path", path)
 	if !open.Get() {
-		return ui.Div().Row().Child(ui.Button("Claude Code is somewhere else?").Ghost().Small().Key("claude-path-open").
+		return ui.Div().Row().Child(ui.Button("Claude Code is somewhere else?").Ghost().Key("claude-path-open").
 			OnClick(func() { open.Set(true) }))
 	}
 	save := func(p string) {
@@ -546,287 +722,19 @@ func (a *App) claudePathField(ctx *ui.Context, path string) ui.Element {
 			return err
 		})
 	}
-	row := ui.Div().Row().Align(ui.Center).Gap(space2).
-		Child(ui.TextInput(text).Placeholder("Path to claude").Label("Path to claude").Small().Grow(1).
-			Key("claude-path").AutoFocus().OnSubmit(save)).
-		Child(ui.Button("Use this path").Secondary().Small().Key("claude-path-use").
+	row := ui.Div().Row().Wrap().Align(ui.Center).Gap(space2).
+		Child(ui.Div().Grow(1).Basis(ui.Px(220)).MinWidth(ui.Px(0)).
+			Child(ui.TextInput(text).Placeholder("Path to claude").Label("Path to claude").Width(ui.Full).
+				Key("claude-path").AutoFocus().OnSubmit(save))).
+		Child(ui.Button("Use this path").Secondary().Key("claude-path-use").
 			Disabled(strings.TrimSpace(text.Get()) == "" || strings.TrimSpace(text.Get()) == path).
 			OnClick(func() { save(text.Peek()) }))
 	if path != "" {
-		row = row.Child(ui.Button("Find it myself").Ghost().Small().Key("claude-path-clear").
+		row = row.Child(ui.Button("Find it myself").Ghost().Key("claude-path-clear").
 			Tooltip("Forget this path, and look on PATH and where the installer puts it").
 			OnClick(func() { text.Set(""); save("") }))
 	}
 	return ui.Div().Column().Gap(space2).
-		Child(caption(ctx, "The claude program Solo runs. Leave it empty to find it on PATH or where the installer puts it.")).
+		Child(bodyText(ctx, "The claude program Solo runs. Leave it empty to find it on PATH or where the installer puts it.")).
 		Child(row)
-}
-
-// ---- Repositories ----
-
-// expandHome undoes tildePath.
-func expandHome(p string) string {
-	if p == "~" || strings.HasPrefix(p, "~/") || strings.HasPrefix(p, `~\`) {
-		if home, err := os.UserHomeDir(); err == nil {
-			return filepath.Join(home, p[1:])
-		}
-	}
-	return filepath.Clean(p)
-}
-
-// inFolder lists the paths that are folder or inside it.
-func inFolder(paths []string, folder string) []string {
-	dir := expandHome(folder)
-	var out []string
-	for _, p := range paths {
-		if p == dir || strings.HasPrefix(p, dir+string(filepath.Separator)) {
-			out = append(out, p)
-		}
-	}
-	return out
-}
-
-// addFolders adds folders to the ones searched, as Settings › Repositories does, and shows what the
-// search finds as soon as it is done.
-func (a *App) addFolders(paths []string) {
-	var add []string
-	for _, p := range paths {
-		if p = tildePath(strings.TrimSpace(p)); p != "" && !slices.Contains(a.cfg.Peek().Folders, p) {
-			add = append(add, p)
-		}
-	}
-	if len(add) == 0 {
-		return
-	}
-	a.setupAdding.Set(append(slices.Clone(a.setupAdding.Peek()), add...))
-	a.run("Adding the folder", func(context.Context) error {
-		err := a.b.UpdateSettings(func(s *core.Settings) {
-			for _, p := range add {
-				s.Folders = withFolder(s.Folders, p)
-			}
-		})
-		a.onUI(func() {
-			a.setupAdding.Set(slices.DeleteFunc(slices.Clone(a.setupAdding.Peek()), func(p string) bool { return slices.Contains(add, p) }))
-			a.syncFolders()
-		})
-		return err
-	})
-}
-
-// removeFolder stops searching a folder.
-func (a *App) removeFolder(folder string) {
-	a.run("Removing the folder", func(context.Context) error {
-		err := a.b.UpdateSettings(func(s *core.Settings) {
-			s.Folders = slices.DeleteFunc(slices.Clone(s.Folders), func(f string) bool { return f == folder })
-		})
-		a.onUI(a.syncFolders)
-		return err
-	})
-}
-
-// syncFolders reads the folders and what was found in them now, rather than at the next refresh.
-func (a *App) syncFolders() {
-	a.cfg.Set(a.b.Settings())
-	a.repos.Set(a.b.RepoPaths())
-	a.plain.Set(a.b.PlainFolders())
-}
-
-// setupRepos adds the folders that hold the user's projects, with the system's folder picker or from
-// the usual places Solo found, and shows at once what it found in each.
-func (a *App) setupRepos(ctx *ui.Context) ui.Element {
-	t := ctx.Theme()
-	folders := a.cfg.Get().Folders
-	repos, plain := a.repos.Get(), a.plain.Get()
-	adding := a.setupAdding.Get()
-	typed := ui.Local(ctx, "typed", "")
-
-	choose := ui.Button("Choose a folder…").Icon(icons.FolderOpen).Secondary().Key("repos-choose").
-		OnClick(func() { a.chooseFolders(ctx, a.addFolders) })
-	addTyped := func() {
-		a.addFolders([]string{typed.Peek()})
-		typed.Set("")
-	}
-	pickRow := ui.Div().Row().Wrap().Align(ui.Center).Gap(space2).
-		Child(choose).
-		Child(ui.Div().Row().Align(ui.Center).Gap(space2).Grow(1).Basis(ui.Px(220)).
-			Child(ui.TextInput(typed).Placeholder("or type a path, such as ~/projects").Label("Folder to add").Small().
-				Grow(1).Key("repos-path").OnSubmit(func(string) { addTyped() })).
-			Child(ui.Button("Add").Secondary().Small().Key("repos-path-add").
-				Disabled(strings.TrimSpace(typed.Get()) == "").OnClick(addTyped)))
-
-	col := ui.Div().Column().Gap(space6).
-		Child(setupHead(ctx, "Your repositories",
-			"Add the folders that hold your projects. Solo finds the git repositories in them, up to three folders deep.")).
-		Child(ui.Div().Column().Gap(space3).
-			Child(pickRow).
-			Child(caption(ctx, "A folder that isn't in git works too: its threads edit it in place, without a branch of their own.")))
-
-	// What was found, over the folders searched.
-	var rows []ui.Element
-	shown := append(slices.Clone(folders), adding...)
-	for _, f := range shown {
-		folder := f
-		pending := slices.Contains(adding, f) && !slices.Contains(folders, f)
-		found, outside := inFolder(repos, f), inFolder(plain, f)
-		var detail ui.Element
-		switch {
-		case pending:
-			detail = ui.Div().Row().Align(ui.Center).Gap(space2).
-				Child(ui.ProgressRing().Size(12)).Child(caption(ctx, "Looking for repositories…"))
-		case len(found) > 0:
-			line := count(len(found), "repository", "repositories") // the line over the folders names them
-			if len(outside) > 0 {
-				line += " · " + count(len(outside), "folder", "folders") + " not in git"
-			}
-			detail = caption(ctx, line)
-		case len(outside) == 1 && outside[0] == expandHome(f):
-			detail = caption(ctx, "Not in git. Threads work in it directly.")
-		case len(outside) > 0:
-			detail = caption(ctx, "No repositories; "+count(len(outside), "folder", "folders")+" not in git: "+nameList(outside, 4))
-		default:
-			detail = ui.Text("Nothing found here. Pick the folder that holds your projects.").FontSize(12).TextColor(t.Warning)
-		}
-		icon := icons.FolderGit2
-		if !pending && len(found) == 0 {
-			icon = icons.Folder
-		}
-		row := ui.Div().Row().Align(ui.Center).Gap(space3).PaddingLeft(space4).PaddingRight(space2).PaddingY(space3).
-			Key("folder-" + folder).
-			Child(ui.Icon(icon).Size(16).Color(t.TextMuted)).
-			Child(ui.Div().Column().Gap(2).Grow(1).MinWidth(ui.Px(0)).
-				Child(ui.Text(folder).FontSize(13).Medium().TextColor(t.Text).TruncateHead()).
-				Child(detail))
-		if !pending {
-			row = row.Child(ui.IconButton(icons.X).Ghost().Small().Label("Remove " + folder).Tooltip("Stop searching here").
-				OnClick(func() { a.removeFolder(folder) }))
-		}
-		rows = append(rows, row)
-	}
-	if len(rows) > 0 {
-		var head ui.Element
-		var all []string
-		for _, f := range folders {
-			all = append(all, inFolder(repos, f)...)
-		}
-		if len(all) > 0 {
-			head = ui.Div().Row().Align(ui.Center).Gap(space2).Key("repos-found").
-				Child(ui.Icon(icons.CircleCheck).Size(16).Color(t.Success)).
-				Child(ui.Text("Found " + count(len(all), "repository", "repositories") + ": " + nameList(all, 6)).
-					FontSize(13).Medium().TextColor(t.Text).Grow(1).MinWidth(ui.Px(0)))
-		}
-		col = col.Child(ui.Div().Column().Gap(space3).Child(head).Child(setupCard(ctx, rows...)))
-	}
-
-	// Folders where projects usually are, found to hold repositories: the user adds them, or not.
-	if sb := a.setupBackend(); sb != nil {
-		q := ui.Query(ctx, "setup-suggest", func(c context.Context) ([]core.FolderSuggestion, error) {
-			return sb.SuggestFolders(c), nil
-		})
-		var sugg []ui.Element
-		for _, s := range q.Data {
-			p := tildePath(s.Path)
-			if slices.Contains(shown, p) {
-				continue
-			}
-			sugg = append(sugg, ui.Div().Row().Align(ui.Center).Gap(space3).PaddingLeft(space4).PaddingRight(space3).PaddingY(space3).
-				Key("suggest-"+p).
-				Child(ui.Icon(icons.FolderSearch).Size(16).Color(t.TextMuted)).
-				Child(ui.Div().Column().Gap(2).Grow(1).MinWidth(ui.Px(0)).
-					Child(ui.Text(p).FontSize(13).Medium().TextColor(t.Text).TruncateHead()).
-					Child(caption(ctx, count(len(s.Repos), "repository", "repositories")+": "+nameList(s.Repos, 5)))).
-				Child(ui.Button("Add").Icon(icons.Plus).Secondary().Small().Label("Add "+p).Key("suggest-add-"+p).
-					OnClick(func() { a.addFolders([]string{p}) })))
-		}
-		if len(sugg) > 0 {
-			col = col.Child(ui.Div().Column().Gap(space2).
-				Child(ui.Text("FOUND ON THIS COMPUTER").FontSize(11).FontWeight(ui.FontSemibold).TextColor(t.TextSubtle)).
-				Child(setupCard(ctx, sugg...)))
-		}
-	}
-	if len(shown) == 0 {
-		col = col.Child(caption(ctx, "You can also add folders later, in Settings › Repositories."))
-	}
-	return col
-}
-
-// ---- Pull requests ----
-
-// forgeName is a forge's name.
-func forgeName(k forge.Kind) string {
-	return map[forge.Kind]string{forge.GitHub: "GitHub", forge.GitLab: "GitLab"}[k]
-}
-
-// setupPRs shows, for each forge the repositories push to, whether its CLI is ready to open pull
-// requests, and the one command to run when it isn't. It is optional: without one, work merges locally.
-func (a *App) setupPRs(ctx *ui.Context) ui.Element {
-	t := ctx.Theme()
-	repos := a.repos.Get()
-	col := ui.Div().Column().Gap(space6).
-		Child(setupHead(ctx, "Pull requests",
-			"Optional. Solo opens pull requests with GitHub's gh or GitLab's glab, signed in as you. Without them, work merges on this machine."))
-	sb := a.setupBackend()
-	if len(repos) == 0 || sb == nil {
-		return col.Child(setupCard(ctx, ui.Div().Padding(space4).Child(
-			statusLine(ctx, icons.Info, t.TextMuted, "No repositories yet",
-				muted(ctx, "Once you add repositories, this shows what they need. Settings › General can run the setup again.")))))
-	}
-	q := ui.Query(ctx, "setup-forges:"+strings.Join(repos, "\n"), func(c context.Context) ([]core.ForgeStatus, error) {
-		return sb.CheckForges(c), nil
-	})
-	busy := q.Loading || q.Fetching
-	problem := slices.ContainsFunc(q.Data, func(f core.ForgeStatus) bool { return !f.Ready() })
-	a.recheckOnFocus(ctx, !busy && problem, q.Refetch)
-	if q.Loading {
-		return col.Child(setupCard(ctx, ui.Div().Padding(space4).Child(checking(ctx, "Checking where your repositories push…"))))
-	}
-	var rows []ui.Element
-	var remote []string
-	for _, f := range q.Data {
-		remote = append(remote, f.Repos...)
-		name := forgeName(f.Kind)
-		var status ui.Element
-		switch {
-		case f.Ready():
-			line := f.CLI + " is signed in"
-			if f.Account != "" {
-				line += " as " + f.Account
-			}
-			status = statusLine(ctx, icons.CircleCheck, t.Success, line)
-		case f.Path == "":
-			var cmd, then ui.Element
-			if f.Install != "" {
-				cmd = commandBox(ctx, f.Install)
-				then = caption(ctx, "Then sign in with "+f.Login+". Or see "+f.InstallURL+".")
-			} else {
-				then = caption(ctx, "Install it from "+f.InstallURL+", then sign in with "+f.Login+".")
-			}
-			status = statusLine(ctx, icons.CircleAlert, t.Warning, f.CLI+" isn't installed",
-				muted(ctx, "Solo needs it to open "+map[forge.Kind]string{forge.GitHub: "pull requests", forge.GitLab: "merge requests"}[f.Kind]+" on "+name+"."), cmd, then)
-		case f.Err != "":
-			status = statusLine(ctx, icons.CircleAlert, t.Danger, "Couldn't check "+f.CLI, muted(ctx, f.Err))
-		default:
-			status = statusLine(ctx, icons.CircleAlert, t.Warning, f.CLI+" isn't signed in",
-				muted(ctx, "Run this in a terminal and follow its steps."), commandBox(ctx, f.Login))
-		}
-		rows = append(rows, ui.Div().Column().Gap(space3).Padding(space4).Key("forge-"+string(f.Kind)).
-			Child(ui.Div().Row().Align(ui.Center).Gap(space2).
-				Child(ui.Icon(icons.GitPullRequest).Size(15).Color(t.TextMuted)).
-				Child(subhead(name)).
-				Child(caption(ctx, count(len(f.Repos), "repository", "repositories")+": "+nameList(f.Repos, 4)).Truncate().MinWidth(ui.Px(0)))).
-			Child(status))
-	}
-	local := slices.DeleteFunc(slices.Clone(repos), func(r string) bool { return slices.Contains(remote, r) })
-	if len(local) > 0 {
-		what := count(len(local), "repository has", "repositories have")
-		rows = append(rows, ui.Div().Padding(space4).Key("forge-local").Child(
-			statusLine(ctx, icons.GitMerge, t.TextMuted, "Merge locally",
-				muted(ctx, what+" no GitHub or GitLab remote: "+nameList(local, 4)+". Their work merges on this machine, with nothing to set up."))))
-	}
-	col = col.Child(setupCard(ctx, rows...))
-	if problem {
-		col = col.Child(ui.Div().Row().Align(ui.Center).Gap(space3).
-			Child(ui.Button("Check again").Icon(icons.RefreshCw).Secondary().Small().Key("forges-again").Loading(busy).OnClick(q.Refetch)).
-			Child(caption(ctx, "Solo checks again when you come back to this window.")))
-	}
-	return col
 }

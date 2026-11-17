@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/tyler-builds/solo/internal/agent"
 	"github.com/tyler-builds/solo/internal/core"
 	"github.com/tyler-builds/solo/internal/forge"
 )
@@ -25,8 +26,26 @@ type setupFake struct {
 }
 
 func newSetupFake() *setupFake {
-	return &setupFake{fakeBackend: &fakeBackend{items: map[string][]core.Item{}}, found: map[string][2][]string{}}
+	return &setupFake{fakeBackend: &fakeBackend{items: map[string][]core.Item{}, settings: core.DefaultSettings()},
+		found: map[string][2][]string{}}
 }
+
+// claudeModels are the models Claude Code 2.1.325 reported, with its words for each.
+var claudeModels = func() []agent.ModelInfo {
+	all := []string{"low", "medium", "high", "xhigh", "max"}
+	return []agent.ModelInfo{
+		{Value: "default", DisplayName: "Default (recommended)", Description: "Opus 5.5 · Best for everyday, complex tasks", EffortLevels: all},
+		{Value: "opus", DisplayName: "Opus 5.5", Description: "For complex work and everyday tasks", EffortLevels: all},
+		{Value: "fable", DisplayName: "Fable 5.2", Description: "For your toughest challenges", EffortLevels: all},
+		{Value: "sonnet", DisplayName: "Sonnet 5.5", Description: "Most efficient for simpler tasks", EffortLevels: all},
+		{Value: "haiku", DisplayName: "Haiku 5.5", Description: "Fastest for quick answers", EffortLevels: all},
+		{Value: "claude-fable-5-1", DisplayName: "Fable 5.1", Description: "Most capable for your hardest and longest-running tasks", EffortLevels: all},
+		{Value: "claude-sonnet-5", DisplayName: "Sonnet 5", Description: "Efficient for routine tasks", EffortLevels: all},
+		{Value: "claude-opus-5", DisplayName: "Opus 5", Description: "Best for everyday, complex tasks", EffortLevels: all},
+		{Value: "claude-sonnet-4-6", DisplayName: "Sonnet 4.6", Description: "Efficient for routine tasks", EffortLevels: []string{"low", "medium", "high", "max"}},
+		{Value: "claude-haiku-4-5-20251001", DisplayName: "Haiku 4.5", Description: "Fastest for quick answers"},
+	}
+}()
 
 func (s *setupFake) CheckClaude(ctx context.Context, override string) core.ClaudeStatus {
 	s.smu.Lock()
@@ -34,7 +53,11 @@ func (s *setupFake) CheckClaude(ctx context.Context, override string) core.Claud
 	st := s.claude
 	s.smu.Unlock()
 	if st == nil || override != "" {
-		return s.fakeBackend.CheckClaude(ctx, override)
+		out := s.fakeBackend.CheckClaude(ctx, override)
+		if out.Err == "" {
+			out.Models = claudeModels
+		}
+		return out
 	}
 	return *st
 }

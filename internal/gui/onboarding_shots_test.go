@@ -33,19 +33,24 @@ func TestSetupShots(t *testing.T) {
 	light, dark := Themes()
 	step := func(s string) func(*App) { return func(a *App) { a.setup.Set(s) } }
 	fresh := func() *setupFake { return newSetupFake().projects() }
-	shots := []struct {
+	type shot struct {
 		name  string
 		light bool // also in the light theme
 		back  func() *setupFake
 		setup func(a *App)
 		typed [2]string // a field's key and what is typed in it once the window is up
-	}{
-		{name: "setup-welcome", light: true, back: fresh},
-		{name: "setup-welcome-narrow", light: true, back: fresh},
-		{name: "setup-claude-ok", light: true, back: fresh, setup: step("claude")},
-		{name: "setup-claude-ok-narrow", back: fresh, setup: step("claude")},
-		{name: "setup-claude-missing", light: true, back: func() *setupFake { f := fresh(); f.claude = &claudeMissing; return f }, setup: step("claude")},
-		{name: "setup-claude-missing-narrow", back: func() *setupFake { f := fresh(); f.claude = &claudeMissing; return f }, setup: step("claude")},
+		sizes bool      // also at a mid width (-mid) and at Solo's smallest window (-min)
+	}
+	ghMissing := func() *setupFake {
+		f := fresh().withFolders("~/code")
+		f.forges[0] = core.ForgeStatus{Kind: forge.GitHub, CLI: "gh", Repos: f.forges[0].Repos, Login: "gh auth login",
+			Install: "sudo dnf install gh", InstallURL: "https://cli.github.com"}
+		return f
+	}
+	steps := []shot{
+		{name: "setup-welcome", light: true, back: fresh, sizes: true},
+		{name: "setup-claude-ok", light: true, back: fresh, setup: step("claude"), sizes: true},
+		{name: "setup-claude-missing", light: true, back: func() *setupFake { f := fresh(); f.claude = &claudeMissing; return f }, setup: step("claude"), sizes: true},
 		{name: "setup-claude-signed-out", back: func() *setupFake { f := fresh(); f.claude = &claudeSignedOut; return f }, setup: step("claude")},
 		{name: "setup-claude-error", back: func() *setupFake { f := fresh(); f.claude = &claudeBroken; return f }, setup: step("claude")},
 		{name: "setup-claude-path", back: func() *setupFake {
@@ -53,11 +58,19 @@ func TestSetupShots(t *testing.T) {
 			f.settings.ClaudePath = "~/tools/claude"
 			return f
 		}, setup: step("claude")},
-		{name: "setup-repos-empty", light: true, back: fresh, setup: step("repos")},
-		{name: "setup-repos-empty-narrow", back: fresh, setup: step("repos")},
+		{name: "setup-models", light: true, back: fresh, setup: step("models"), sizes: true},
+		// Other choices than the defaults, among them a pinned version from the list under the cards.
+		{name: "setup-models-picked", back: func() *setupFake {
+			f := fresh()
+			f.settings.OrchestratorModel, f.settings.OrchestratorEffort = "fable", "high"
+			f.settings.WorkerModel, f.settings.WorkerEffort = "claude-sonnet-4-6", "low"
+			return f
+		}, setup: step("models")},
+		// Before Claude Code reports its models: the fallback list.
+		{name: "setup-models-unknown", back: func() *setupFake { f := fresh(); f.claude = &claudeMissing; return f }, setup: step("models")},
+		{name: "setup-repos-empty", light: true, back: fresh, setup: step("repos"), sizes: true},
 		{name: "setup-repos-none-suggested", back: func() *setupFake { f := fresh(); f.suggest = nil; return f }, setup: step("repos")},
-		{name: "setup-repos-found", light: true, back: func() *setupFake { return fresh().withFolders("~/code", "~/notes") }, setup: step("repos")},
-		{name: "setup-repos-found-narrow", light: true, back: func() *setupFake { return fresh().withFolders("~/code", "~/notes") }, setup: step("repos")},
+		{name: "setup-repos-found", light: true, back: func() *setupFake { return fresh().withFolders("~/code", "~/notes") }, setup: step("repos"), sizes: true},
 		{name: "setup-repos-nothing", back: func() *setupFake { return fresh().withFolders("~/empty") }, setup: func(a *App) {
 			a.setup.Set("repos")
 			a.setupAdding.Set([]string{"~/src"})
@@ -66,20 +79,24 @@ func TestSetupShots(t *testing.T) {
 			f := fresh().withFolders("~/code")
 			f.forges[1].SignedIn, f.forges[1].Account = true, "octocat on gitlab.com"
 			return f
-		}, setup: step("prs")},
-		{name: "setup-prs-problems", light: true, back: func() *setupFake {
-			f := fresh().withFolders("~/code")
-			f.forges[0] = core.ForgeStatus{Kind: forge.GitHub, CLI: "gh", Repos: f.forges[0].Repos, Login: "gh auth login",
-				Install: "sudo dnf install gh", InstallURL: "https://cli.github.com"}
-			return f
-		}, setup: step("prs")},
-		{name: "setup-prs-problems-narrow", light: true, back: func() *setupFake {
-			f := fresh().withFolders("~/code")
-			f.forges[0] = core.ForgeStatus{Kind: forge.GitHub, CLI: "gh", Repos: f.forges[0].Repos, Login: "gh auth login",
-				Install: "sudo dnf install gh", InstallURL: "https://cli.github.com"}
-			return f
-		}, setup: step("prs")},
+		}, setup: step("prs"), sizes: true},
+		{name: "setup-prs-problems", light: true, back: ghMissing, setup: step("prs"), sizes: true},
+		{name: "setup-prs-local-only", back: func() *setupFake { f := fresh().withFolders("~/code"); f.forges = nil; return f }, setup: step("prs")},
 		{name: "setup-prs-no-repos", back: fresh, setup: step("prs")},
+		{name: "setup-prefs", light: true, back: fresh, setup: step("prefs"), sizes: true},
+	}
+	var shots []shot
+	for _, sh := range steps {
+		shots = append(shots, sh)
+		if sh.sizes {
+			for _, size := range []string{"-mid", "-min"} {
+				v := sh
+				v.name += size
+				shots = append(shots, v)
+			}
+		}
+	}
+	shots = append(shots, []shot{
 		// After the setup: the empty chat's tasks to start with, and without repositories.
 		{name: "chat-starters", light: true, back: func() *setupFake { return done(fresh().withFolders("~/code")) }},
 		{name: "chat-starters-narrow", back: func() *setupFake { return done(fresh().withFolders("~/code")) }},
@@ -97,7 +114,7 @@ func TestSetupShots(t *testing.T) {
 		// Settings › General, with Run setup again.
 		{name: "settings-setup-again", light: true, back: func() *setupFake { return done(fresh().withFolders("~/code")) },
 			setup: func(a *App) { a.settings.Set(true) }},
-	}
+	}...)
 	for _, theme := range []struct {
 		name string
 		t    *ui.Theme
@@ -121,8 +138,13 @@ func TestSetupShots(t *testing.T) {
 				sh.setup(a)
 			}
 			w, h := float32(1440), float32(900)
-			if strings.HasSuffix(sh.name, "-narrow") {
+			switch {
+			case strings.HasSuffix(sh.name, "-narrow"):
 				w, h = 560, 900
+			case strings.HasSuffix(sh.name, "-mid"):
+				w, h = 1000, 760
+			case strings.HasSuffix(sh.name, "-min"):
+				w, h = 360, 480 // Solo's smallest window
 			}
 			if phone {
 				w, h = 390, 844

@@ -65,9 +65,15 @@ func TestLiveSetup(t *testing.T) {
 	shot(u, "2-claude")
 	t.Logf("Claude Code: %v", texts(u)[len(texts(u))/3:])
 	u.Click("setup-next")
+	u.WaitFor("the models step", func() bool { return a.setup.Peek() == "models" })
+	u.WaitForQueries()
+	shot(u, "3-models")
+	u.Click("model-threads-haiku") // from Claude Code's own list
+	u.WaitFor("the model to be saved", func() bool { return c.Settings().WorkerModel == "haiku" })
+	u.Click("setup-next")
 	u.WaitFor("the repositories step", func() bool { return a.setup.Peek() == "repos" })
 	u.WaitForQueries()
-	shot(u, "3-repos")
+	shot(u, "4-repos")
 
 	// Closed halfway, it resumes here.
 	a.Close()
@@ -94,17 +100,20 @@ func TestLiveSetup(t *testing.T) {
 	if key != "" {
 		u.Click("suggest-add-" + key)
 		u.WaitFor("the folder searched", func() bool { return u.Has("repos-found") })
-		shot(u, "4-repos-added")
+		shot(u, "5-repos-added")
 		t.Logf("found: %d repositories in %s", len(c.RepoPaths()), key)
 	}
 	u.Click("setup-next")
 	u.WaitFor("the pull requests step", func() bool { return a.setup.Peek() == "prs" })
 	u.WaitForQueries()
-	shot(u, "5-prs")
+	shot(u, "6-prs")
+	u.Click("setup-next")
+	u.WaitFor("the preferences step", func() bool { return a.setup.Peek() == "prefs" })
+	shot(u, "7-prefs")
 	u.Click("setup-next")
 	u.WaitFor("the chat", func() bool { return u.Has("orch-draft-area") })
 	u.WaitFor("the setup saved as done", func() bool { return c.Settings().Setup == core.SetupDone })
-	shot(u, "6-chat")
+	shot(u, "8-chat")
 	a.Close()
 	u.Close()
 	c.Close()
@@ -114,6 +123,9 @@ func TestLiveSetup(t *testing.T) {
 	defer c.Close()
 	if key != "" && !slices.Contains(c.Settings().Folders, key) {
 		t.Errorf("folders %v, want %s", c.Settings().Folders, key)
+	}
+	if c.Settings().WorkerModel != "haiku" {
+		t.Errorf("the threads' model is %q after a restart, want haiku", c.Settings().WorkerModel)
 	}
 	if New(Live{Core: c}).setup.Peek() != "" {
 		t.Error("the setup shows again after it was finished")
