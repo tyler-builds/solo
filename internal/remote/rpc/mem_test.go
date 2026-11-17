@@ -13,6 +13,7 @@ import (
 	"github.com/tyler-builds/solo/internal/agent"
 	"github.com/tyler-builds/solo/internal/api"
 	"github.com/tyler-builds/solo/internal/core"
+	"github.com/tyler-builds/solo/internal/forge"
 )
 
 // pipe is a pair of links joined in memory. Each end counts what it sent.
@@ -81,6 +82,7 @@ type mem struct {
 	merges   int
 	images   map[string][]byte
 	onMerge  func() (string, error)
+	onOpenPR func() ([]forge.PR, error)
 
 	claudeChecks atomic.Int32
 }
@@ -253,6 +255,13 @@ func (m *mem) Merge(context.Context, string) (string, error) {
 		return f()
 	}
 	return "abc123", nil
+}
+
+func (m *mem) OpenPRFor(context.Context, string, string, bool) ([]forge.PR, error) {
+	m.mu.Lock()
+	f := m.onOpenPR
+	m.mu.Unlock()
+	return f()
 }
 
 func (m *mem) SaveImageData(_ context.Context, data []byte) (string, error) {

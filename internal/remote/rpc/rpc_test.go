@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/tyler-builds/solo/internal/core"
+	"github.com/tyler-builds/solo/internal/forge"
 )
 
 func asJSON(v any) string {
@@ -387,6 +388,24 @@ func TestRetriedRequestRunsOnce(t *testing.T) {
 	}
 	if m.merges != 1 {
 		t.Errorf("the merge ran %d times", m.merges)
+	}
+}
+
+// Opening pull requests outlasts the click's deadline: the machine runs it to its end, so the device
+// waits for its answer rather than failing while the pull request still opens.
+func TestOpenPRWaitsForTheMachine(t *testing.T) {
+	m := newMem()
+	m.addThread("a", core.StatusIdle)
+	r := newRig(t, m, Device{ID: "d1"})
+	m.onOpenPR = func() ([]forge.PR, error) {
+		time.Sleep(300 * time.Millisecond)
+		return []forge.PR{{Number: 7, URL: "https://github.com/acme/proj/pull/7"}}, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	pr, err := r.c.OpenPR(ctx, "a", false)
+	if err != nil || pr.Number != 7 {
+		t.Fatalf("OpenPR: %+v %v", pr, err)
 	}
 }
 

@@ -334,6 +334,9 @@ type Settings struct {
 	// above: a Claude Code agent loads them in the branch's worktree and can run their scripts. None by
 	// default.
 	PRSkills []string `json:"prSkills,omitempty"`
+	// PRSkillMinutes is how long the agent writing the pull request text with PRSkills may take, in
+	// minutes (PRSkillMinutesMin to PRSkillMinutesMax); 0 for the default. See PRSkillTimeout.
+	PRSkillMinutes int `json:"prSkillMinutes,omitempty"`
 	// PRRules are the rules for titles and descriptions together, from before they were split. They
 	// are only read: normalize moves them to both PRTitleRules and PRDescriptionRules.
 	PRRules string `json:"prRules,omitempty"`
@@ -387,6 +390,36 @@ func (s *Settings) normalize() {
 	}
 	s.PRRules = ""
 	s.PRSkills = cleanSkillNames(s.PRSkills)
+	if s.PRSkillMinutes < PRSkillMinutesMin || s.PRSkillMinutes > PRSkillMinutesMax || s.PRSkillMinutes == PRSkillMinutesDefault {
+		s.PRSkillMinutes = 0
+	}
+}
+
+// The time the PR text agent may take, in minutes (Settings.PRSkillMinutes).
+const (
+	PRSkillMinutesDefault = 5
+	PRSkillMinutesMin     = 1
+	PRSkillMinutesMax     = 30
+)
+
+// PRStepTimeout is how long each step of opening a pull request may take besides its text: committing
+// and pushing, and the forge's calls that open it.
+const PRStepTimeout = 2 * time.Minute
+
+// PRSkillTimeout is how long the agent writing the pull request text with skills may take: the
+// default when PRSkillMinutes is unset or out of range.
+func (s Settings) PRSkillTimeout() time.Duration {
+	m := s.PRSkillMinutes
+	if m < PRSkillMinutesMin || m > PRSkillMinutesMax {
+		m = PRSkillMinutesDefault
+	}
+	return time.Duration(m) * time.Minute
+}
+
+// OpenPRTimeout is the longest opening pull requests in repos repositories takes on the machine:
+// each repository's commit and push, text and forge calls, then linking them to each other.
+func (s Settings) OpenPRTimeout(repos int) time.Duration {
+	return time.Duration(max(repos, 1))*(2*PRStepTimeout+s.PRSkillTimeout()) + PRStepTimeout
 }
 
 // cleanSkillNames trims names of skills and drops empty and repeated ones.

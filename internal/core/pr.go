@@ -54,12 +54,17 @@ func (c *Core) OpenPR(ctx context.Context, threadID string, draft bool) (forge.P
 
 // OpenPRFor is OpenPR for one of the worker's repositories (by path or folder name; "" for all).
 // Pull requests a thread opens in several repositories link to each other.
+//
+// Once started it runs to its end whatever ctx's deadline, each step with its own limit (see
+// Settings.OpenPRTimeout): the PR text alone may take Settings.PRSkillTimeout per repository, longer than a caller waits for a click, and a pull
+// request given up on after its text was written helps nobody.
 func (c *Core) OpenPRFor(ctx context.Context, threadID, repo string, draft bool) ([]forge.PR, error) {
 	release, err := c.land(threadID)
 	if err != nil {
 		return nil, err
 	}
 	defer release()
+	ctx = context.WithoutCancel(ctx)
 	v, ok := c.Thread(threadID)
 	if !ok {
 		return nil, fmt.Errorf("no thread %s", threadID)
@@ -87,7 +92,9 @@ func (c *Core) OpenPRFor(ctx context.Context, threadID, repo string, draft bool)
 		bodies[pr.URL] = body
 	}
 	if v.MultiRepo() {
-		c.linkPRs(ctx, threadID, bodies)
+		lctx, cancel := context.WithTimeout(ctx, PRStepTimeout)
+		c.linkPRs(lctx, threadID, bodies)
+		cancel()
 	}
 	c.pokePRs()
 	return opened, nil
@@ -98,13 +105,21 @@ func (c *Core) openOne(ctx context.Context, v ThreadView, p PartView, draft bool
 	if err != nil {
 		return forge.PR{}, "", err
 	}
-	if _, err := git.CommitAll(ctx, p.Worktree, uncommittedPrefix+v.Title); err != nil {
+	pctx, cancel := context.WithTimeout(ctx, PRStepTimeout)
+	if _, err := git.CommitAll(pctx, p.Worktree, uncommittedPrefix+v.Title); err != nil {
+		cancel()
 		return forge.PR{}, "", fmt.Errorf("committing %s's changes: %w", p.Name, err)
 	}
-	if err := git.Push(ctx, p.Worktree, p.Branch); err != nil {
+	err = git.Push(pctx, p.Worktree, p.Branch)
+	cancel()
+	if err != nil {
 		return forge.PR{}, "", fmt.Errorf("pushing %s to %s: %w", p.Branch, p.Name, err)
 	}
 	title, body := c.prText(ctx, v, p)
+	// The forge gets its own time, however long the text took: a slow skill costs its text, not the
+	// pull request.
+	ctx, cancel = context.WithTimeout(ctx, PRStepTimeout)
+	defer cancel()
 	pr, err := client.Open(ctx, p.Worktree, p.BaseBranch, p.Branch, title, body, draft)
 	if err != nil {
 		c.addNotice(v.ID, "error", fmt.Sprintf("Couldn't open the %s in %s: %v", p.Forge.Noun(), p.Name, err))
@@ -256,8 +271,12 @@ const (
 // run its scripts. Claude Code runs Bash with a POSIX shell, Git Bash on Windows, never PowerShell.
 var prAgentTools = []string{"Skill", "Bash", "Read", "Glob", "Grep"}
 
-// prAgentTimeout is how long the PR text agent may take: skills can run scripts and read the change.
-const prAgentTimeout = 5 * time.Minute
+// prMinute is a minute of Settings.PRSkillMinutes: a variable, so that tests take milliseconds.
+var prMinute = time.Minute
+
+// prModelTimeout is how long the PR text model may take without skills: one answer, with no tools.
+// The agent with skills takes Settings.PRSkillTimeout.
+const prModelTimeout = 75 * time.Second
 
 // prText writes a pull request's title and description following Settings' rules and skills; without
 // a description when Settings says so. With skills it runs a Claude Code agent in the branch's worktree,
@@ -287,10 +306,13 @@ func (c *Core) prText(ctx context.Context, v ThreadView, p PartView) (string, st
 	if len(pp.skills) > 0 {
 		text, err = c.prAgentText(ctx, v, p, s, pp)
 	} else {
-		pctx, cancel := context.WithTimeout(ctx, 75*time.Second)
+		pctx, cancel := context.WithTimeout(ctx, prModelTimeout)
 		text, err = c.agent.Complete(pctx, agent.CompleteParams{Model: s.PRModel, Effort: s.PREffort, System: pp.system,
 			Prompt: pp.prompt, ClaudePath: agent.FindClaude(s.ClaudePath).Path, TimeoutMs: 70_000})
 		cancel()
+		if errors.Is(err, context.DeadlineExceeded) {
+			err = fmt.Errorf("the PR text model took longer than %s", inWords(prModelTimeout))
+		}
 	}
 	if err != nil {
 		c.addNotice(v.ID, "warning", "Couldn't write the PR text ("+err.Error()+"), so it uses the thread's summary.")
@@ -317,7 +339,8 @@ func (c *Core) prAgentText(ctx context.Context, v ThreadView, p PartView, s Sett
 	for i, sk := range pp.skills {
 		names[i] = sk.name
 	}
-	c.addNotice(v.ID, "info", fmt.Sprintf("Writing the PR text%s with %s. This can take a few minutes.", inRepo(v, p), skillList(names)))
+	timeout := s.PRSkillTimeout() / time.Minute * prMinute
+	c.addNotice(v.ID, "info", fmt.Sprintf("Writing the PR text%s with %s. This can take up to %s.", inRepo(v, p), skillList(names), inWords(timeout)))
 	before := readTree(ctx, p.Worktree)
 	text, err := c.runJob(ctx, agent.OpenParams{
 		Cwd:            p.Worktree,
@@ -330,12 +353,29 @@ func (c *Core) prAgentText(ctx context.Context, v ThreadView, p PartView, s Sett
 		ToolPolicy:     agent.ToolPolicyAllow,
 		ClaudePath:     agent.FindClaude(s.ClaudePath).Path,
 		Ephemeral:      true,
-	}, pp.prompt, prAgentTimeout)
+	}, pp.prompt, timeout)
 	c.keepTree(v, p, before)
-	if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
-		err = fmt.Errorf("it took longer than %s", prAgentTimeout)
+	if errors.Is(err, context.DeadlineExceeded) {
+		err = fmt.Errorf("%s took longer than %s", skillList(names), inWords(timeout))
 	}
 	return text, err
+}
+
+// inWords is a time limit as a person says it: "5 minutes", "75 seconds".
+func inWords(d time.Duration) string {
+	n, unit := 0, ""
+	switch {
+	case d >= time.Minute && d%time.Minute == 0:
+		n, unit = int(d/time.Minute), "minute"
+	case d >= time.Second && d%time.Second == 0:
+		n, unit = int(d/time.Second), "second"
+	default:
+		return d.String()
+	}
+	if n != 1 {
+		unit += "s"
+	}
+	return fmt.Sprintf("%d %s", n, unit)
 }
 
 // runJob sends prompt to a new one-off session and returns its answer, closing the session after. It
