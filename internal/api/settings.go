@@ -50,7 +50,7 @@ var remote = map[string]bool{
 	"workerEffort": true, "namingModel": true, "namingEffort": true, "branchRules": true, "repoBranchRules": true,
 	"prModel": true, "prEffort": true, "prRules": true, "skipPRDescription": true, "autoMerge": true,
 	"mergeMethod": true, "onChecksFail": true,
-	"commitRules": true, "prTitleRules": true, "prDescriptionRules": true, "prSkills": true,
+	"commitRules": true, "prTitleRules": true, "prDescriptionRules": true, "prSkills": true, "prSkillMinutes": true,
 }
 
 // DesktopOnly reports whether the setting with this JSON name can be changed at the machine only.
@@ -205,6 +205,9 @@ func (p SettingsPatch) CheckRemote(isDir func(path string) bool) error {
 		if len(v) > maxSettingName || strings.ContainsAny(v, "\x00\r\n") {
 			return fmt.Errorf("%q isn't a valid value", name)
 		}
+	}
+	if v := s.PRSkillMinutes; v != 0 && (v < core.PRSkillMinutesMin || v > core.PRSkillMinutesMax) {
+		return fmt.Errorf("the PR text may take %d to %d minutes", core.PRSkillMinutesMin, core.PRSkillMinutesMax)
 	}
 	if v := s.MergeMethod; v != "" && v != "squash" && v != "merge" && v != "rebase" {
 		return fmt.Errorf("the merge method is squash, merge or rebase")

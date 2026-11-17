@@ -1,6 +1,7 @@
 package core
 
 import (
+	"cmp"
 	"context"
 	"os"
 	"os/exec"
@@ -391,8 +392,8 @@ func TestSearchPaths(t *testing.T) {
 
 // openPRWithSkill sets up a thread with changes to open a pull request for, with the PR text written by
 // a skill that runs command, and opens it as a click does: with a deadline far shorter than the skill
-// takes. It returns what gh pr create was given, the core and the thread.
-func openPRWithSkill(t *testing.T, command string) (string, *Core, ThreadView) {
+// takes. set changes Settings first. It returns what gh pr create was given, the core and the thread.
+func openPRWithSkill(t *testing.T, command string, set func(*Settings)) (string, *Core, ThreadView) {
 	t.Helper()
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("no sh")
@@ -402,7 +403,12 @@ func openPRWithSkill(t *testing.T, command string) (string, *Core, ThreadView) {
 	writeFile(t, filepath.Join(dir, "skills", "slow", "SKILL.md"), "---\nname: slow\n---\nRun `"+command+"`\n")
 	e := newEnv(t)
 	withOrigin(t, e)
-	e.c.UpdateSettings(func(s *Settings) { s.PRSkills = []string{"slow"} })
+	e.c.UpdateSettings(func(s *Settings) {
+		s.PRSkills = []string{"slow"}
+		if set != nil {
+			set(s)
+		}
+	})
 	v, err := e.c.CreateWorker(context.Background(), WorkerSpec{Repo: "proj", Title: "Add hello", Prompt: "write hello.txt hi"})
 	if err != nil {
 		t.Fatal(err)
@@ -424,25 +430,33 @@ func openPRWithSkill(t *testing.T, command string) (string, *Core, ThreadView) {
 	return string(create), e.c, v
 }
 
+// shortMinutes makes a minute of Settings.PRSkillMinutes 100ms for the test.
+func shortMinutes(t *testing.T) {
+	old := prMinute
+	prMinute = 100 * time.Millisecond
+	t.Cleanup(func() { prMinute = old })
+}
+
 // A skill that takes longer than the click's deadline still gets its full time, and the pull request
 // opens with its text.
 func TestPRSkillOutlivesClickDeadline(t *testing.T) {
-	create, c, v := openPRWithSkill(t, "sleep 1 && echo SLOW-TEXT-1")
+	create, c, v := openPRWithSkill(t, "sleep 1 && echo SLOW-TEXT-1", nil)
 	if want := "--title Add hello --body SLOW-TEXT-1"; !strings.Contains(create, want) {
 		t.Errorf("gh pr create %q, want %q", create, want)
 	}
 	if hasNotice(t, c, v.ID, "Couldn't") {
 		t.Error("the PR text fell back, or the pull request didn't open")
 	}
+	if !hasNotice(t, c, v.ID, "Writing the PR text with the skill /slow. This can take up to 5 minutes.") {
+		t.Error("no notice of the time the text may take")
+	}
 }
 
 // A skill that takes longer than the PR text's limit costs its text, not the pull request: it opens
 // with the thread's summary, and the warning says what happened in plain words.
 func TestPRSkillTimeoutStillOpensPR(t *testing.T) {
-	old := prAgentTimeout
-	prAgentTimeout = 500 * time.Millisecond
-	t.Cleanup(func() { prAgentTimeout = old })
-	create, c, v := openPRWithSkill(t, "sleep 2 && echo TOO-LATE")
+	shortMinutes(t) // the default 5 minutes are 500ms
+	create, c, v := openPRWithSkill(t, "sleep 2 && echo TOO-LATE", nil)
 	if !strings.Contains(create, "--title Add hello --body") || strings.Contains(create, "TOO-LATE") {
 		t.Errorf("gh pr create %q, want the thread's title and summary", create)
 	}
@@ -451,6 +465,39 @@ func TestPRSkillTimeoutStillOpensPR(t *testing.T) {
 	}
 	if hasNotice(t, c, v.ID, "deadline") || hasNotice(t, c, v.ID, "Couldn't open") {
 		t.Error("a notice says deadline, or the pull request didn't open")
+	}
+}
+
+// The time the PR text may take is Settings' PRSkillMinutes: the skill that runs out the default 5
+// gets its text in with 20, and runs out 2 sooner.
+func TestPRSkillTimeoutSetting(t *testing.T) {
+	shortMinutes(t)
+	create, c, v := openPRWithSkill(t, "sleep 1 && echo IN-TIME", func(s *Settings) { s.PRSkillMinutes = 20 })
+	if want := "--title Add hello --body IN-TIME"; !strings.Contains(create, want) {
+		t.Errorf("with 20 minutes, gh pr create %q, want %q", create, want)
+	}
+	if !hasNotice(t, c, v.ID, "This can take up to 2 seconds.") || hasNotice(t, c, v.ID, "Couldn't") {
+		t.Error("with 20 minutes, the text didn't get its time")
+	}
+	create, c, v = openPRWithSkill(t, "sleep 1 && echo TOO-LATE", func(s *Settings) { s.PRSkillMinutes = 2 })
+	if strings.Contains(create, "TOO-LATE") || !hasNotice(t, c, v.ID, "(the skill /slow took longer than 200ms)") {
+		t.Errorf("with 2 minutes, gh pr create %q and no warning of the limit", create)
+	}
+}
+
+func TestPRSkillMinutes(t *testing.T) {
+	for stored, want := range map[int]int{0: 0, 5: 0, 1: 1, 30: 30, 31: 0, -3: 0, 12: 12} {
+		s := Settings{PRSkillMinutes: stored}
+		s.normalize()
+		if s.PRSkillMinutes != want {
+			t.Errorf("stored %d normalizes to %d, want %d", stored, s.PRSkillMinutes, want)
+		}
+		if got, wantT := (Settings{PRSkillMinutes: stored}).PRSkillTimeout(), time.Duration(cmp.Or(want, 5))*time.Minute; got != wantT {
+			t.Errorf("stored %d: PRSkillTimeout %s, want %s", stored, got, wantT)
+		}
+	}
+	if got := (Settings{PRSkillMinutes: 30}).OpenPRTimeout(1); got != 36*time.Minute {
+		t.Errorf("OpenPRTimeout(1) at 30 minutes = %s", got)
 	}
 }
 

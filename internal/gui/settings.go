@@ -397,6 +397,7 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 		prDescRules := ui.Local(ctx, "pr-desc-rules", initial.PRDescriptionRules)
 		prDescribe := ui.Local(ctx, "pr-describe", !initial.SkipPRDescription)
 		prSkills := ui.Local(ctx, "pr-skills", slices.Clone(initial.PRSkills))
+		prSkillMinutes := ui.Local(ctx, "pr-skill-minutes", fmt.Sprint(initial.PRSkillMinutes))
 		editorCmd := ui.Local(ctx, "editor-cmd", initial.EditorCommand)
 		terminalCmd := ui.Local(ctx, "terminal-cmd", initial.TerminalCommand)
 		notifications := ui.Local(ctx, "notifications", !initial.NoNotifications)
@@ -425,6 +426,7 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 			if len(s.PRSkills) == 0 {
 				s.PRSkills = nil
 			}
+			s.PRSkillMinutes, _ = strconv.Atoi(prSkillMinutes.Get())
 		}
 		saver := ui.Local(ctx, "saver", &settingsSaver{last: initial}).Peek()
 		want := initial
@@ -464,7 +466,7 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 				s.AutoMerge, s.MergeMethod, s.OnChecksFail = snap.AutoMerge, snap.MergeMethod, snap.OnChecksFail
 				s.PRModel, s.PREffort, s.SkipPRDescription = snap.PRModel, snap.PREffort, snap.SkipPRDescription
 				s.PRTitleRules, s.PRDescriptionRules = snap.PRTitleRules, snap.PRDescriptionRules
-				s.PRSkills = snap.PRSkills
+				s.PRSkills, s.PRSkillMinutes = snap.PRSkills, snap.PRSkillMinutes
 			}
 			if saver.timer != nil {
 				saver.timer.Stop()
@@ -682,6 +684,13 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 					Label("Pull request description rules").MinRows(1).MaxHeight(ui.Px(140)).Width(ui.Full).Key("pr-desc-rules"))
 		}
 
+		// The time skills may take matters only with a skill chosen.
+		var prSkillTime ui.Element
+		if len(prSkills.Get()) > 0 {
+			prSkillTime = settingRow(ctx, "Time for skills", "Past it, the pull request opens with the thread's summary instead.",
+				ui.Select(prSkillMinutes, prSkillMinuteChoices(prSkillMinutes.Get())...).Width(ui.Px(modelPickW)).Label("Time for skills"))
+		}
+
 		prsTab := settingsPage(ctx, "Pull requests", "Solo pushes a thread's branch and opens a pull request (GitHub, with gh) or merge request (GitLab, with glab). Repositories without a remote merge locally.",
 			settingsSection(ctx, "Title and description", "", nil,
 				settingRow(ctx, "Write a description", "Off: pull requests get a title only.", ui.Switch("Write a description", prDescribe)),
@@ -691,6 +700,7 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 				prDescBlock,
 				settingBlock(ctx, "Skills to follow", "Claude Code skills that write the text, with any rules above. With a skill chosen, a Claude Code agent loads it in the branch's worktree and runs its scripts, which can take a few minutes; it doesn't change the worktree.",
 					ui.Component(func(ctx *ui.Context) ui.Element { return a.prSkillsPicker(ctx, prSkills) }).Key("pr-skills")),
+				prSkillTime,
 				settingRow(ctx, "Model", "Applies the rules to the thread's commits, changes and summary.", helperPickers("Pull request text", prModel, prEffort))),
 			settingsSection(ctx, "Merging", "", nil,
 				settingRow(ctx, "Auto-merge", "Merge once required checks and reviews pass, with the forge's auto-merge.", ui.Switch("Auto-merge", autoMerge)),
@@ -887,4 +897,34 @@ func (a *App) plainFolders(ctx *ui.Context, plain []string) ui.Element {
 		rows = append(rows, row.Child(ui.Div().Grow(1)).Child(btn))
 	}
 	return settingsSection(ctx, "Not in git", help, nil, rows...)
+}
+
+// prSkillMinuteChoices are the times the PR text skills may take, as Settings.PRSkillMinutes values ("0"
+// the default), with the one stored if it is another.
+func prSkillMinuteChoices(current string) []ui.Option[string] {
+	var out []ui.Option[string]
+	for _, m := range []int{2, core.PRSkillMinutesDefault, 10, 15, core.PRSkillMinutesMax} {
+		v := fmt.Sprint(m)
+		if m == core.PRSkillMinutesDefault {
+			v = "0"
+		}
+		out = append(out, ui.Option[string]{Value: v, Label: fmt.Sprintf("%d minutes", m)})
+	}
+	if !slices.ContainsFunc(out, func(o ui.Option[string]) bool { return o.Value == current }) {
+		if m, err := strconv.Atoi(current); err == nil && m >= core.PRSkillMinutesMin && m <= core.PRSkillMinutesMax {
+			label := fmt.Sprintf("%d minutes", m)
+			if m == 1 {
+				label = "1 minute"
+			}
+			out = append(out, ui.Option[string]{Value: current, Label: label})
+			slices.SortFunc(out, func(a, b ui.Option[string]) int { return minutesOf(a.Value) - minutesOf(b.Value) })
+		}
+	}
+	return out
+}
+
+// minutesOf is a prSkillMinuteChoices value in minutes.
+func minutesOf(v string) int {
+	m, _ := strconv.Atoi(v)
+	return cmp.Or(m, core.PRSkillMinutesDefault)
 }

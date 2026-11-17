@@ -55,8 +55,8 @@ func (c *Core) OpenPR(ctx context.Context, threadID string, draft bool) (forge.P
 // OpenPRFor is OpenPR for one of the worker's repositories (by path or folder name; "" for all).
 // Pull requests a thread opens in several repositories link to each other.
 //
-// Once started it runs to its end whatever ctx's deadline, each step with its own limit: the PR text
-// alone may take prAgentTimeout per repository, longer than a caller waits for a click, and a pull
+// Once started it runs to its end whatever ctx's deadline, each step with its own limit (see
+// Settings.OpenPRTimeout): the PR text alone may take Settings.PRSkillTimeout per repository, longer than a caller waits for a click, and a pull
 // request given up on after its text was written helps nobody.
 func (c *Core) OpenPRFor(ctx context.Context, threadID, repo string, draft bool) ([]forge.PR, error) {
 	release, err := c.land(threadID)
@@ -92,7 +92,7 @@ func (c *Core) OpenPRFor(ctx context.Context, threadID, repo string, draft bool)
 		bodies[pr.URL] = body
 	}
 	if v.MultiRepo() {
-		lctx, cancel := context.WithTimeout(ctx, prStepTimeout)
+		lctx, cancel := context.WithTimeout(ctx, PRStepTimeout)
 		c.linkPRs(lctx, threadID, bodies)
 		cancel()
 	}
@@ -100,16 +100,12 @@ func (c *Core) OpenPRFor(ctx context.Context, threadID, repo string, draft bool)
 	return opened, nil
 }
 
-// prStepTimeout is how long each step of opening a pull request may take besides its text (which has
-// its own limits): committing and pushing, and the forge's calls that open it.
-const prStepTimeout = 2 * time.Minute
-
 func (c *Core) openOne(ctx context.Context, v ThreadView, p PartView, draft bool) (forge.PR, string, error) {
 	client, err := forge.New(p.Forge)
 	if err != nil {
 		return forge.PR{}, "", err
 	}
-	pctx, cancel := context.WithTimeout(ctx, prStepTimeout)
+	pctx, cancel := context.WithTimeout(ctx, PRStepTimeout)
 	if _, err := git.CommitAll(pctx, p.Worktree, uncommittedPrefix+v.Title); err != nil {
 		cancel()
 		return forge.PR{}, "", fmt.Errorf("committing %s's changes: %w", p.Name, err)
@@ -122,7 +118,7 @@ func (c *Core) openOne(ctx context.Context, v ThreadView, p PartView, draft bool
 	title, body := c.prText(ctx, v, p)
 	// The forge gets its own time, however long the text took: a slow skill costs its text, not the
 	// pull request.
-	ctx, cancel = context.WithTimeout(ctx, prStepTimeout)
+	ctx, cancel = context.WithTimeout(ctx, PRStepTimeout)
 	defer cancel()
 	pr, err := client.Open(ctx, p.Worktree, p.BaseBranch, p.Branch, title, body, draft)
 	if err != nil {
@@ -275,11 +271,11 @@ const (
 // run its scripts. Claude Code runs Bash with a POSIX shell, Git Bash on Windows, never PowerShell.
 var prAgentTools = []string{"Skill", "Bash", "Read", "Glob", "Grep"}
 
-// prAgentTimeout is how long the PR text agent may take: skills can run scripts and read the change.
-// A variable for tests.
-var prAgentTimeout = 5 * time.Minute
+// prMinute is a minute of Settings.PRSkillMinutes: a variable, so that tests take milliseconds.
+var prMinute = time.Minute
 
-// prModelTimeout is how long the PR text model may take without skills.
+// prModelTimeout is how long the PR text model may take without skills: one answer, with no tools.
+// The agent with skills takes Settings.PRSkillTimeout.
 const prModelTimeout = 75 * time.Second
 
 // prText writes a pull request's title and description following Settings' rules and skills; without
@@ -343,7 +339,8 @@ func (c *Core) prAgentText(ctx context.Context, v ThreadView, p PartView, s Sett
 	for i, sk := range pp.skills {
 		names[i] = sk.name
 	}
-	c.addNotice(v.ID, "info", fmt.Sprintf("Writing the PR text%s with %s. This can take a few minutes.", inRepo(v, p), skillList(names)))
+	timeout := s.PRSkillTimeout() / time.Minute * prMinute
+	c.addNotice(v.ID, "info", fmt.Sprintf("Writing the PR text%s with %s. This can take up to %s.", inRepo(v, p), skillList(names), inWords(timeout)))
 	before := readTree(ctx, p.Worktree)
 	text, err := c.runJob(ctx, agent.OpenParams{
 		Cwd:            p.Worktree,
@@ -356,10 +353,10 @@ func (c *Core) prAgentText(ctx context.Context, v ThreadView, p PartView, s Sett
 		ToolPolicy:     agent.ToolPolicyAllow,
 		ClaudePath:     agent.FindClaude(s.ClaudePath).Path,
 		Ephemeral:      true,
-	}, pp.prompt, prAgentTimeout)
+	}, pp.prompt, timeout)
 	c.keepTree(v, p, before)
 	if errors.Is(err, context.DeadlineExceeded) {
-		err = fmt.Errorf("%s took longer than %s", skillList(names), inWords(prAgentTimeout))
+		err = fmt.Errorf("%s took longer than %s", skillList(names), inWords(timeout))
 	}
 	return text, err
 }
