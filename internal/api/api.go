@@ -96,3 +96,16 @@ type Watcher interface {
 type Clock interface {
 	Now() time.Time
 }
+
+// Setup is a backend on the machine that runs Solo, which the first-run setup checks and sets up: the
+// folders that hold its projects and the tools that open pull requests. A backend that drives another
+// machine (a web page's) isn't one, so a page never shows the setup: that machine is set up at the
+// machine. Both calls can be slow (they read folders and run programs); call them off the UI thread.
+type Setup interface {
+	// SuggestFolders lists the folders where projects are commonly kept that hold repositories and
+	// aren't searched yet (see core.Core.SuggestFolders).
+	SuggestFolders(ctx context.Context) []core.FolderSuggestion
+	// CheckForges says, for each forge the repositories push to, whether its CLI is installed and
+	// signed in (see core.Core.CheckForges).
+	CheckForges(ctx context.Context) []core.ForgeStatus
+}
