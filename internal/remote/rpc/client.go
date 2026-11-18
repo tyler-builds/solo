@@ -99,6 +99,7 @@ type Client struct {
 	calls   map[string]chan Envelope
 	status  Status
 	watch   []string // the threads the UI named
+	open    string   // the thread the UI has open (Open)
 	touched map[string]time.Time
 	limit   int
 	lease   chan struct{} // wakes the session's lease keeper
@@ -167,6 +168,7 @@ func NewClient(opts ClientOptions) *Client {
 
 var _ api.Backend = (*Client)(nil)
 var _ api.Watcher = (*Client)(nil)
+var _ api.Opener = (*Client)(nil)
 var _ api.Clock = (*Client)(nil)
 
 // Status returns where the client stands with its machine.
@@ -318,7 +320,7 @@ func (c *Client) keepLease(s *session, stop chan struct{}) {
 	defer t.Stop()
 	for {
 		c.mu.Lock()
-		w := Watch{Limit: c.limit}
+		w := Watch{Limit: c.limit, Open: c.open}
 		for _, id := range c.watchedLocked() {
 			wt := WatchThread{ID: id}
 			if tr := c.items[id]; tr != nil {
@@ -380,6 +382,18 @@ func (c *Client) Watch(threadIDs []string) {
 	c.mu.Lock()
 	same := slices.Equal(c.watch, threadIDs)
 	c.watch = slices.Clone(threadIDs)
+	c.mu.Unlock()
+	if !same {
+		c.pokeLease()
+	}
+}
+
+// Open names the thread the UI has open (api.Opener). The machine hears it with the watch, and forgets
+// it when the session ends or the watch lapses.
+func (c *Client) Open(threadID string) {
+	c.mu.Lock()
+	same := c.open == threadID
+	c.open = threadID
 	c.mu.Unlock()
 	if !same {
 		c.pokeLease()

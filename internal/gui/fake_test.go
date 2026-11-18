@@ -50,9 +50,16 @@ type fakeBackend struct {
 	paths       []core.PathHit // a thread's files, for "@"; fakePaths when nil
 	pathQueries []string       // the queries SearchPaths was asked, in order
 	imageReads  []string       // the images ReadImage was asked for, in order
+	views       []string       // the threads Open was told of, in order (api.Opener)
 	// machineNow is the time on the machine, for a backend on another one (api.Clock); nil for this
 	// process's clock.
 	machineNow func() time.Time
+}
+
+func (f *fakeBackend) Open(threadID string) {
+	f.mu.Lock()
+	f.views = append(f.views, threadID)
+	f.mu.Unlock()
 }
 
 func (f *fakeBackend) Now() time.Time {

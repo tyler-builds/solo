@@ -402,6 +402,9 @@ func (o *Orchestrator) onChange(ch core.Change) {
 		}
 		return
 	}
+	if o.c.Viewing(v.ID) && o.onOpen(v, ch.Status) {
+		return
+	}
 	switch ch.Status {
 	case core.StatusIdle:
 		line = fmt.Sprintf("%s finished its turn. Summary: %s", label(v), o.clipImages(oneLine(v.Summary), 600))
@@ -433,6 +436,79 @@ func (o *Orchestrator) onChange(ch core.Change) {
 		return
 	}
 	o.queue(line)
+}
+
+// onOpen handles a turn of a thread the user has open ending (status: what it ended on), reporting
+// whether it did. The user read the reply there themselves, so Solo is spared its recap: a note for its
+// next message says what happened, and starts no turn. Only finished work that still needs a merge card
+// gets a turn, a quiet one (finishedOpen). The rest (the merge after conflicts are resolved, pull
+// requests, merges, discards) goes to Solo as for any thread.
+func (o *Orchestrator) onOpen(v core.ThreadView, status string) bool {
+	switch status {
+	case core.StatusIdle:
+		if v.Resolving {
+			return false
+		}
+		go o.finishedOpen(v) // it reads the branch: not in a Subscribe callback
+	case core.StatusBackground:
+		o.noteOpen(v, fmt.Sprintf("it ended its turn but isn't finished: it waits on work it runs in the background (%s), and carries on by itself when that ends. "+
+			"Nothing is owed yet; you hear when its next turn finishes.]", core.DescribeBackground(v.Background)))
+	case core.StatusFailed:
+		o.noteOpen(v, fmt.Sprintf("it failed: %s. They saw it there; nothing is owed unless they ask.]", clip(oneLine(v.Error), 400)))
+	case core.StatusWaiting:
+		// The thread's panel shows the question, and the user answers it there (or above your composer,
+		// where it moves once they close the thread): relaying it would only repeat it.
+		o.noteOpen(v, "it asked a question, which they can answer there. Don't relay it; you hear when they answer.]")
+	case core.StatusInterrupted:
+		o.noteOpen(v, "it was interrupted. Nothing is owed unless they ask.]")
+	default:
+		return false
+	}
+	return true
+}
+
+// finishedOpen handles a finished turn of a thread the user has open. Work that needs a merge card (it
+// changed files, is in git, isn't scratch, and has no card or open pull request yet) gets a quiet turn:
+// Solo reviews it and proposes the merge, without recapping it. Anything else is a note: there is
+// nothing to land, or the card it has is kept current by the app (repostCards).
+func (o *Orchestrator) finishedOpen(v core.ThreadView) {
+	summary := o.clipImages(oneLine(v.Summary), 600)
+	var why string
+	switch {
+	case v.InPlace:
+		why = "It works in a folder that isn't in git: nothing to land."
+	case v.Scratch:
+		why = "It's a scratch thread: nothing to land."
+	case slices.ContainsFunc(v.Parts, func(p core.PartView) bool { return p.PR != nil && p.PR.State == forge.StateOpen }):
+		why = "Its pull request is open and takes its new commits; its merge card, if it has one, stays."
+	case o.c.HasProposal(v.ID):
+		why = "Its merge card is up: call propose_merge again only if its summary no longer describes the change."
+	default:
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		files, err := o.c.Changes(ctx, v.ID)
+		cancel()
+		if err != nil || len(files) > 0 {
+			o.queue(fmt.Sprintf("%s finished its turn. Summary: %s%s", label(v), summary, openLine))
+			return
+		}
+		why = "It changed no files: nothing to land."
+	}
+	o.noteOpen(v, fmt.Sprintf("it finished its turn, and read its reply there. %s No review or recap is owed unless they ask. Summary: %s]", why, summary))
+}
+
+// openLine ends the update of a finished turn the user read in the thread itself.
+const openLine = " [The user had this thread open and read its reply there: review it as usual and propose_merge if it's right, but don't recap it.]"
+
+// noteOpen keeps a note, for Solo's next message, of what a thread the user has open did: what follows
+// "the user had <thread> open when ". It replaces the thread's earlier such note, so a long exchange in
+// the thread leaves one note, of where it stands.
+func (o *Orchestrator) noteOpen(v core.ThreadView, what string) {
+	prefix := fmt.Sprintf("[Solo: the user had %s open when ", label(v))
+	o.mu.Lock()
+	o.notes = slices.DeleteFunc(o.notes, func(n string) bool { return strings.HasPrefix(n, prefix) })
+	o.notes = append(o.notes, prefix+what)
+	o.saveNotesLocked()
+	o.mu.Unlock()
 }
 
 // scratchNote ends a thread update about a scratch thread (store.Thread.Scratch).
@@ -543,6 +619,9 @@ func (o *Orchestrator) deliver() {
 		b.WriteString("- " + l + "\n")
 	}
 	b.WriteString("Tell the user what matters in a sentence or two, and act if your instructions call for it (review finished work, relay or answer questions). If nothing needs saying, reply with just \"(noted)\".")
+	if slices.ContainsFunc(lines, func(l string) bool { return strings.HasSuffix(l, openLine) }) {
+		b.WriteString(" A thread the user had open needs no recap: once its card is up, reply \"(noted)\" unless your review found a problem.")
+	}
 	if todos := o.openTodos(); todos != "" {
 		b.WriteString("\n\nThe user's open todos, to tick off with update_todo any this update finishes (ones with threads tick off when those threads' work lands):\n" + todos)
 	}

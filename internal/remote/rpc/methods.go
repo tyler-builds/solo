@@ -176,6 +176,11 @@ func init() {
 					return nil, nil, "", err
 				}
 			}
+			if w.Open != "" {
+				if err := checkID("thread", w.Open); err != nil {
+					return nil, nil, "", err
+				}
+			}
 			limit := min(max(w.Limit, 1), maxItems)
 			c.mu.Lock()
 			// A device that now wants more of each transcript is sent the windows again: what it
@@ -196,7 +201,9 @@ func init() {
 			c.watch = next
 			c.limit = limit
 			c.lease = time.Now().Add(c.h.opts.Lease)
+			lease := c.lease
 			c.mu.Unlock()
+			c.view(w.Open, lease)
 			c.poke()
 			return nil, nil, "", nil
 		}},
