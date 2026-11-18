@@ -198,6 +198,16 @@ func TestShots(t *testing.T) {
 			f.add(o, core.ItemAssistant, core.TextData{Text: "The repo is already on `main`, so I started **Install Solo from main** to rebuild the AppImage and install it."})
 			a.items = map[string]*ui.Signal[[]core.Item]{}
 		}},
+		// Solo's reply, then a turn that work it ran in the background started, with a line of its own:
+		// both show. With "(noted)", the wake adds no message.
+		{"solo-wake", func(a *App, f *fakeBackend) {
+			soloWoken(f, "", "That was the old background task, nothing else.")
+			a.items = map[string]*ui.Signal[[]core.Item]{}
+		}},
+		{"solo-wake-noted", func(a *App, f *fakeBackend) {
+			soloWoken(f, "", core.Noted)
+			a.items = map[string]*ui.Signal[[]core.Item]{}
+		}},
 		{"thinking", func(a *App, f *fakeBackend) {
 			// Solo mid-turn: its working line shows the first line of its newest thought's last paragraph.
 			for i := range f.threads {
@@ -226,6 +236,16 @@ func TestShots(t *testing.T) {
 			a.setThreads(f.Threads())
 		}},
 		{"worker-steer", func(a *App, f *fakeBackend) { a.openThread("a1f3c9d2-oauth", "conversation") }},
+		// Solo's turn ended while a script it started runs on in the background: its chat says it waits on it.
+		{"solo-background", func(a *App, f *fakeBackend) {
+			soloOnBackground(f)
+			a.setThreads(f.Threads())
+		}},
+		{"solo-background-many", func(a *App, f *fakeBackend) {
+			soloOnBackground(f, core.BackgroundTask{ID: "a1", Type: "local_agent", Description: "Find large folders", Started: time.Now().Add(-time.Minute)},
+				core.BackgroundTask{ID: "a2", Type: "local_bash", Description: "Watch free space", Started: time.Now().Add(-30 * time.Second)})
+			a.setThreads(f.Threads())
+		}},
 		{"land-cards", func(a *App, f *fakeBackend) {
 			// Merge cards in each checks state, a local merge, and one whose Merge is under way.
 			o := core.OrchestratorID
@@ -343,6 +363,14 @@ func TestShots(t *testing.T) {
 		{"phone-settings-branches", func(a *App, f *fakeBackend) { a.settingsTab = "branches"; a.settings.Set(true) }},
 		{"phone-palette", func(a *App, f *fakeBackend) { a.palette.Set(true) }},
 		{"phone-empty", nil},
+		{"phone-solo-background", func(a *App, f *fakeBackend) {
+			soloOnBackground(f)
+			a.setThreads(f.Threads())
+		}},
+		{"phone-thinking", func(a *App, f *fakeBackend) {
+			soloWorking(f, nil)
+			a.setThreads(f.Threads())
+		}},
 	}
 	for _, theme := range []struct {
 		name string

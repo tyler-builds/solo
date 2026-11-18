@@ -65,26 +65,73 @@ func (a *App) orchestratorView(ctx *ui.Context) ui.Element {
 		Background(t.Background)
 }
 
-// orchState says what Solo is doing, beside its name in a compact window's bar: waiting for an answer,
-// working, or waiting on background work. It is empty when Solo is idle.
+// orchState says what Solo is doing: waiting for an answer, working, or waiting on background work it
+// started, for how long. It is empty when Solo is idle. A compact window's bar shows it beside Solo's
+// name (orchBarState), and the foot of Solo's conversation in any window (soloStateLine).
 func (a *App) orchState(ctx *ui.Context, v core.ThreadView) *ui.DivElement {
 	t := ctx.Theme()
-	state := ui.Div().Row().Align(ui.Center).Gap(6).Shrink(1).MinWidth(ui.Px(0))
-	if v.Status == core.StatusWaiting {
+	state := ui.Div().Row().Align(ui.Center).Gap(space2).Shrink(1).MinWidth(ui.Px(0))
+	switch {
+	case v.Status == core.StatusWaiting:
 		state = state.Child(statusMark(ctx, core.StatusWaiting)).
 			Child(ui.Text("Waiting for your answer").FontSize(12).TextColor(t.Warning).Truncate().MinWidth(ui.Px(0)))
-	} else if v.InTurn {
-		label := "Thinking…"
-		if v.Step != nil {
-			label = a.stepLabel(*v.Step) + "…"
-		}
+	case v.InTurn:
 		state = state.Child(ui.ProgressRing().Size(ui.RingSmall).Label("Working")).
-			Child(ui.Text(label).FontSize(12).TextColor(t.TextMuted).Truncate().MinWidth(ui.Px(0)))
-	} else if len(v.Background) > 0 {
-		state = state.Child(statusMark(ctx, core.StatusBackground)).
+			Child(ui.Text(a.workingLabel(v)).FontSize(12).TextColor(t.TextMuted).Truncate().MinWidth(ui.Px(0)))
+	case len(v.Background) > 0:
+		now := a.now()
+		tip := "Solo's turn ended, but work it started in the background still runs. It carries on when that finishes."
+		for _, b := range v.Background {
+			tip += "\n• " + b.Description + " (" + b.Kind() + ", " + elapsed(b.Started, now) + ")"
+		}
+		what := ui.Div().Row().Align(ui.Center).Gap(space1).Shrink(1).MinWidth(ui.Px(0)).
 			Child(ui.Text("Waiting on " + bgLine(v)).FontSize(12).TextColor(t.TextMuted).Truncate().MinWidth(ui.Px(0)))
+		if s := bgSince(v); !s.IsZero() {
+			// Its own text, so a long name shortens before the time does.
+			what = what.Child(ui.Text("· " + elapsed(s, now)).FontSize(12).TextColor(t.TextMuted).NoWrap().Shrink(0))
+		}
+		state = state.Tooltip(tip).Child(statusMark(ctx, core.StatusBackground)).Child(what)
 	}
 	return state
+}
+
+// orchBarState is orchState in a compact window's bar: a component of its own, which reads Solo's view
+// and counts its background work's time without rendering the bar again.
+func (a *App) orchBarState(ctx *ui.Context) ui.Element {
+	v, _ := a.thread(core.OrchestratorID)
+	ticking(ctx, len(v.Background) > 0)
+	return a.orchState(ctx, v).Key("solo-bar-state")
+}
+
+// soloStateLine ends Solo's conversation while Solo isn't idle and the conversation doesn't show it
+// already (streaming text, a question card): what orchState says, where the user looks to see whether
+// Solo is still at work. While it waits on background work, Stop ends that work.
+func (a *App) soloStateLine(ctx *ui.Context, v core.ThreadView) ui.Element {
+	ticking(ctx, len(v.Background) > 0)
+	line := lineRow().Align(ui.Center).Gap(space2).MinWidth(ui.Px(0)).Key("solo-state").
+		Child(a.orchState(ctx, v).Grow(1))
+	if !v.InTurn && len(v.Background) > 0 && v.CanInterrupt {
+		id := v.ID
+		line = line.Child(ui.Button("Stop").Icon(icons.Square).Ghost().Small().Key("solo-state-stop").
+			Tooltip("Stop the work Solo runs in the background").
+			OnClick(func() {
+				a.run("Stopping", func(ctx context.Context) error { return a.b.Interrupt(ctx, id) })
+			}))
+	}
+	return line
+}
+
+// soloBusy reports whether Solo's conversation ends with its state line (soloStateLine): in a turn, unless
+// it streams text or asks a question, which say so themselves; or after its turn, while work it started
+// in the background runs.
+func soloBusy(v core.ThreadView) bool {
+	if v.IsWorker || v.Status == core.StatusWaiting {
+		return false
+	}
+	if v.InTurn {
+		return len(v.Live) == 0 || v.Live[len(v.Live)-1].Thinking
+	}
+	return len(v.Background) > 0
 }
 
 // welcome is Solo's empty chat: what to do, and a few tasks to start with, written about the user's
@@ -118,7 +165,7 @@ type row struct {
 	steps  []*core.Item // a run of tool calls and thoughts, shown folded
 	thread string       // the thread the folded steps act on, if they all act on one
 	live   *core.LiveBlock
-	busy   bool // the "working" line at the end of a running turn
+	busy   bool // Solo's state line at the end of its chat, while it works or waits on background work
 	// queued is a message to Solo waiting for its turn to end, shown after everything else.
 	queued *core.QueuedMessage
 	// In Solo's chat (see summary.go): topic marks the first row of an exchange, which a rule sets apart
@@ -145,7 +192,7 @@ func (a *App) transcript(ctx *ui.Context, v core.ThreadView, items []core.Item, 
 		rows = append(rows, row{key: fmt.Sprintf("live%d", i), live: &v.Live[i]})
 	}
 	// A thread's panel pins its working line above the composer; only Solo's transcript says it in line.
-	if v.InTurn && !v.IsWorker && v.Status != core.StatusWaiting && (len(v.Live) == 0 || v.Live[len(v.Live)-1].Thinking) {
+	if soloBusy(v) {
 		rows = append(rows, row{key: "busy", busy: true})
 	}
 	// Messages the user sent Solo while it worked come last, each as the exchange it will start.
@@ -329,28 +376,26 @@ func (a *App) transcriptRows(scope string, items []core.Item) []row {
 	return rows[:len(rows):len(rows)]
 }
 
-// orchRows lays out Solo's chat one exchange at a time: each message to Solo, a row of everything Solo
-// did while it worked, then its cards and its reply. Only Solo's last message of a turn shows in full;
-// what it said between steps goes with them. The steps and the thread updates are then said in a
-// sentence (see summarized).
+// orchRows lays out Solo's chat one exchange at a time: each message to Solo, then for each of Solo's
+// turns it led to, a row of everything Solo did while it worked, then its cards and its reply. An
+// exchange can have several turns: work Solo ran in the background wakes it with no message. Solo's
+// last message of each turn shows in full, a later turn's never hiding an earlier one's; what it said
+// between steps goes with them, and a turn that ends in "(noted)" says nothing. The steps and the
+// thread updates are then said in a sentence (see summarized).
 func (a *App) orchRows(items []core.Item) []row {
 	rows := make([]row, 0, len(items)/2+4)
-	var seg []*core.Item
+	var seg []*core.Item // the turn's visible items
+	var said *core.Item  // the turn's last message so far, "(noted)" too
 	flush := func() {
+		defer func() { seg, said = nil, nil }()
 		if len(seg) == 0 {
 			return
-		}
-		last := -1
-		for i, it := range seg {
-			if it.Kind == core.ItemAssistant {
-				last = i
-			}
 		}
 		var fold []*core.Item
 		var rest []row
 		thread, mixed, worked := "", false, false
-		for i, it := range seg {
-			if !isStep(it) && (it.Kind != core.ItemAssistant || i == last) {
+		for _, it := range seg {
+			if !isStep(it) && (it.Kind != core.ItemAssistant || it == said) {
 				rest = append(rest, row{key: fmt.Sprintf("i%d", it.ID), item: it})
 				continue
 			}
@@ -364,16 +409,26 @@ func (a *App) orchRows(items []core.Item) []row {
 		if mixed {
 			thread = ""
 		}
-		// Thoughts alone aren't worth a line. The key is the exchange's first item, so the line keeps
-		// its open state as steps arrive.
+		// Thoughts alone aren't worth a line. The key is the turn's first item, so the line keeps its
+		// open state as steps arrive.
 		if worked {
 			rows = append(rows, row{key: fmt.Sprintf("g%d", seg[0].ID), steps: fold, thread: thread})
 		}
 		rows = append(rows, rest...)
-		seg = nil
 	}
 	for i := range items {
 		it := &items[i]
+		switch it.Kind {
+		case core.ItemAssistant:
+			said = it
+		case core.ItemTurn:
+			// A turn's end (a steer's pause has none). One that went wrong shows, as the turn's last row.
+			if visible(it) {
+				seg = append(seg, it)
+			}
+			flush()
+			continue
+		}
 		if !visible(it) {
 			continue
 		}
@@ -479,7 +534,7 @@ func visible(it *core.Item) bool {
 	case core.ItemAssistant:
 		var d core.TextData
 		it.Decode(&d)
-		return strings.TrimSpace(d.Text) != "(noted)"
+		return !core.IsNoted(d.Text)
 	case core.ItemTask:
 		// A task started by a tool call in the foreground is that call; its row says it all. Only a task
 		// that runs on in the background after its call returned gets a row of its own.
@@ -509,9 +564,7 @@ func (a *App) rowView(ctx *ui.Context, v core.ThreadView, r row) ui.Element {
 	t := ctx.Theme()
 	switch {
 	case r.busy:
-		return lineRow().Align(ui.Center).Gap(space2).MinWidth(ui.Px(0)).
-			Child(ui.ProgressRing().Size(ui.RingSmall).Label("Working")).
-			Child(caption(ctx, a.workingLabel(v)).Truncate().Grow(1).MinWidth(ui.Px(0)))
+		return a.soloStateLine(ctx, v)
 	case r.live != nil:
 		if r.live.Thinking {
 			return thinkingView(ctx, r.live.Text, true)

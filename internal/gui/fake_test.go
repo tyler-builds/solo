@@ -44,6 +44,7 @@ type fakeBackend struct {
 	merged      []string
 	mergedRepos []string // "id repo" for each MergeRepo, repo "" for all
 	opened      []string
+	interrupted []string // the threads Interrupt was asked to stop, in order
 	nextID      int64
 	todos       []core.Todo
 	skills      []core.Skill   // for "/" and Settings; fakeSkills when nil
@@ -190,7 +191,12 @@ func (f *fakeBackend) Send(_ context.Context, _, text string, images ...string) 
 	f.mu.Unlock()
 	return nil
 }
-func (f *fakeBackend) Interrupt(context.Context, string) error        { return nil }
+func (f *fakeBackend) Interrupt(_ context.Context, id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.interrupted = append(f.interrupted, id)
+	return nil
+}
 func (f *fakeBackend) Answer(string, string, map[string]string) error { return nil }
 func (f *fakeBackend) Dismiss(string, string) error                   { return nil }
 func (f *fakeBackend) Changes(_ context.Context, id string) ([]git.FileChange, error) {
