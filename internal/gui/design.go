@@ -143,8 +143,9 @@ func Themes() (light, dark *ui.Theme) {
 	light, dark = buildTheme(ui.LightTheme(), lightPalette), buildTheme(ui.DarkTheme(), darkPalette)
 	for _, t := range []*ui.Theme{light, dark} {
 		// Inline code is colored, without a box: a box per word reads as a row of chips.
-		// Teal, so code never reads as an error or as a link.
-		ui.SetThemeStyle(t, markdown.Style{InlineCode: ui.Style{TextColor: codeColor(t), Background: t.Background}})
+		// Teal, so code never reads as an error or as a link. No background at all, rather than the
+		// page's color, so it has no box in a user's bubble either, and a selection shows over it.
+		ui.SetThemeStyle(t, markdown.Style{InlineCode: ui.Style{Clear: ui.ClearBackground, TextColor: codeColor(t)}})
 	}
 	return light, dark
 }
