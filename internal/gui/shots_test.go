@@ -50,6 +50,20 @@ func TestShots(t *testing.T) {
 		"composer-at-narrow":   {"draft-a1f3c9d2-oauth-area", "Also check @tok"},
 		"worker-steer":         {"draft-a1f3c9d2-oauth-area", "Use the v2 token endpoint instead"},
 	}
+	// Elements clicked, by key, once the window is up.
+	clicking := map[string][]string{"merge-pill-menu": {"merge-pill-more-" + longReposID}}
+	// pill puts the merge pill's cards in the chat (mergePillBackend), the conversation moved past them,
+	// with its list open or not.
+	pill := func(cards []string, open bool) func(a *App, f *fakeBackend) {
+		return func(a *App, f *fakeBackend) {
+			g := mergePillBackend(cards, true)
+			f.threads, f.items, f.pending = g.threads, g.items, g.pending
+			a.setThreads(f.Threads())
+			a.pending.Set(map[string][]core.PendingQuestion{})
+			a.items = map[string]*ui.Signal[[]core.Item]{}
+			a.pillOpen.Set(open)
+		}
+	}
 	shots := []struct {
 		name  string
 		setup func(a *App, f *fakeBackend)
@@ -236,6 +250,19 @@ func TestShots(t *testing.T) {
 			a.setThreads(f.Threads())
 		}},
 		{"worker-steer", func(a *App, f *fakeBackend) { a.openThread("a1f3c9d2-oauth", "conversation") }},
+		// The merge pill: closed and open, with one card, three in mixed states and one in every state; a
+		// row's menu; beside an open thread; in a narrow and a compact window; on a phone.
+		{"merge-pill-one", pill([]string{formsID}, false)},
+		{"merge-pill-one-open", pill([]string{formsID}, true)},
+		{"merge-pill-three", pill(pillThree, false)},
+		{"merge-pill-three-open", pill(pillThree, true)},
+		{"merge-pill-many", pill(pillMany, false)},
+		{"merge-pill-many-open", pill(pillMany, true)},
+		{"merge-pill-menu", pill(pillThree, true)},
+		{"merge-pill-thread", func(a *App, f *fakeBackend) { pill(pillThree, true)(a, f); a.openThread(formsID, "conversation") }},
+		{"merge-pill-narrow", pill(pillThree, true)},
+		{"merge-pill-compact", pill(pillThree, true)},
+		{"merge-pill-none", pill(nil, false)},
 		// Solo's turn ended while a script it started runs on in the background: its chat says it waits on it.
 		{"solo-background", func(a *App, f *fakeBackend) {
 			soloOnBackground(f)
@@ -362,6 +389,8 @@ func TestShots(t *testing.T) {
 		{"phone-settings", func(a *App, f *fakeBackend) { a.settings.Set(true) }},
 		{"phone-settings-branches", func(a *App, f *fakeBackend) { a.settingsTab = "branches"; a.settings.Set(true) }},
 		{"phone-palette", func(a *App, f *fakeBackend) { a.palette.Set(true) }},
+		{"phone-merge-pill", pill(pillThree, false)},
+		{"phone-merge-pill-open", pill(pillMany, true)},
 		{"phone-empty", nil},
 		{"phone-solo-background", func(a *App, f *fakeBackend) {
 			soloOnBackground(f)
@@ -383,7 +412,8 @@ func TestShots(t *testing.T) {
 				continue
 			}
 			if theme.name == "light" && sh.name != "main" && sh.name != "changes" && sh.name != "land-cards" &&
-				sh.name != "scrolled-up" && sh.name != "usage" && sh.name != "phone-main" && !busy {
+				sh.name != "scrolled-up" && sh.name != "usage" && sh.name != "phone-main" && !busy &&
+				sh.name != "merge-pill-three" && sh.name != "merge-pill-three-open" {
 				continue
 			}
 			f := demoBackend()
@@ -402,6 +432,9 @@ func TestShots(t *testing.T) {
 			if strings.HasSuffix(sh.name, "-narrow") || sh.name == "narrow-thread" {
 				w = 1000
 			}
+			if strings.HasSuffix(sh.name, "-compact") {
+				w = 680
+			}
 			h := float32(900)
 			if strings.HasPrefix(sh.name, "tall-") {
 				h = 1400
@@ -419,6 +452,12 @@ func TestShots(t *testing.T) {
 			for i := 0; i < 10; i++ {
 				u.Advance(100 * time.Millisecond)
 				time.Sleep(20 * time.Millisecond)
+			}
+			for _, key := range clicking[sh.name] {
+				u.Click(key)
+				for i := 0; i < 4; i++ {
+					u.Advance(100 * time.Millisecond)
+				}
 			}
 			if key := scrollUp[sh.name]; key != "" {
 				u.Get(key).Scroll(0, -3000)

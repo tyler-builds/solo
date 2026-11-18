@@ -44,6 +44,9 @@ type fakeBackend struct {
 	merged      []string
 	mergedRepos []string // "id repo" for each MergeRepo, repo "" for all
 	opened      []string
+	drafts      []string // "id repo" for each pull request opened as a draft, repo "" for all
+	openedFor   []string // "id repo" for each OpenPRFor, repo "" for all
+	readied     []string // MarkReady
 	interrupted []string // the threads Interrupt was asked to stop, in order
 	nextID      int64
 	todos       []core.Todo
@@ -212,7 +215,12 @@ func (f *fakeBackend) Merge(_ context.Context, id string) (string, error) {
 func (f *fakeBackend) MergeLocal(ctx context.Context, id string) (string, error) {
 	return f.Merge(ctx, id)
 }
-func (f *fakeBackend) MarkReady(context.Context, string) error { return nil }
+func (f *fakeBackend) MarkReady(_ context.Context, id string) error {
+	f.mu.Lock()
+	f.readied = append(f.readied, id)
+	f.mu.Unlock()
+	return nil
+}
 func (f *fakeBackend) SearchMessages(_ context.Context, query string, limit int) ([]core.SearchHit, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -249,7 +257,13 @@ func (f *fakeBackend) SetScratch(_ context.Context, id string, on bool) error {
 	return nil
 }
 func (f *fakeBackend) OpenPRFor(ctx context.Context, id, repo string, draft bool) ([]forge.PR, error) {
-	pr, err := f.OpenPR(ctx, id, draft)
+	f.mu.Lock()
+	f.openedFor = append(f.openedFor, id+" "+repo)
+	if draft {
+		f.drafts = append(f.drafts, id+" "+repo)
+	}
+	f.mu.Unlock()
+	pr, err := f.openPR(id)
 	return []forge.PR{pr}, err
 }
 func (f *fakeBackend) MergeRepo(ctx context.Context, id, repo string) (string, error) {
@@ -259,6 +273,15 @@ func (f *fakeBackend) MergeRepo(ctx context.Context, id, repo string) (string, e
 	return f.Merge(ctx, id)
 }
 func (f *fakeBackend) OpenPR(_ context.Context, id string, draft bool) (forge.PR, error) {
+	if draft {
+		f.mu.Lock()
+		f.drafts = append(f.drafts, id+" ")
+		f.mu.Unlock()
+	}
+	return f.openPR(id)
+}
+
+func (f *fakeBackend) openPR(id string) (forge.PR, error) {
 	f.mu.Lock()
 	f.opened = append(f.opened, id)
 	f.mu.Unlock()

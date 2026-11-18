@@ -60,69 +60,6 @@ func (a *App) mergeLocal(id string) {
 	})
 }
 
-// landControl is a thread's main landing action: Open PR, Merge (its pull request, or locally without
-// a forge), or a note that auto-merge will do it. While the action runs, the button shows it is busy.
-// nil when there is nothing to land. short is mergeControlMulti's.
-func (a *App) landControl(ctx *ui.Context, th core.ThreadView, short bool) ui.Element {
-	if th.Resolving {
-		return ui.Button("Merge").Icon(icons.GitMerge).Primary().Small().Loading(true).Key("land-" + th.ID).
-			Tooltip("Resolving conflicts: newer work landed in " + th.BaseBranch + " since this started. " +
-				"The thread is merging it in, then Solo merges.")
-	}
-	e := a.landButton(ctx, th, short)
-	if th.Scratch {
-		// The user doesn't mean to land a scratch thread, but may change their mind: the button stays,
-		// without the emphasis that asks for it.
-		switch b := e.(type) {
-		case *ui.ButtonElement:
-			e = b.Secondary()
-		case *ui.SplitButtonElement:
-			e = b.Secondary()
-		}
-	}
-	if a.busy.Get()[th.ID] {
-		switch b := e.(type) {
-		case *ui.ButtonElement:
-			return b.Loading(true)
-		case *ui.SplitButtonElement:
-			return b.Loading(true)
-		}
-	}
-	return e
-}
-
-// landAction is what a thread's header and its merge card offer to land it: landControl when it can
-// land, or while it is busy with changes to land (working, or waiting on background work) the
-// disabled button of landBlocked. nil with nothing to land. short is mergeControlMulti's: the header
-// asks for it, the card doesn't.
-func (a *App) landAction(ctx *ui.Context, th core.ThreadView, short bool) ui.Element {
-	if th.Resolving {
-		return a.landControl(ctx, th, short) // it merges by itself once the conflicts are resolved
-	}
-	busy := core.Active(th.Status) || th.Status == core.StatusQueued
-	if busy && th.Scratch {
-		return nil // nothing it is meant to land, so nothing to wait for
-	}
-	if busy && th.IsWorker && !th.InPlace && (th.Changed > 0 || len(openPRs(th)) > 0) {
-		return a.landBlocked(th)
-	}
-	if !th.CanOpenPR && !th.CanMerge && !th.CanMarkReady && len(openPRs(th)) == 0 {
-		return nil
-	}
-	return a.landControl(ctx, th, short)
-}
-
-// landBlocked is the landing button of a thread that can't land now, disabled, its tooltip saying why:
-// Open PR, or Merge, as it will be once it can.
-func (a *App) landBlocked(th core.ThreadView) ui.Element {
-	label, icon := "Merge", icons.GitMerge
-	if th.Forge != forge.None && len(openPRs(th)) == 0 {
-		label, icon = "Open "+th.Forge.Noun(), icons.GitPullRequestArrow
-	}
-	return ui.Button(label).Icon(icon).Secondary().Small().Disabled(true).Tooltip(landBlockedReason(th, a.now())).
-		Key("land-blocked-" + th.ID)
-}
-
 // landBlockedReason says why a thread can't land now (App.now).
 func landBlockedReason(th core.ThreadView, now time.Time) string {
 	switch {
@@ -147,51 +84,6 @@ func landBlockedReason(th core.ThreadView, now time.Time) string {
 		return "Counting its changes…"
 	}
 	return "Nothing to land right now."
-}
-
-// landButton is landControl's button, without the busy state.
-func (a *App) landButton(ctx *ui.Context, th core.ThreadView, short bool) ui.Element {
-	t := ctx.Theme()
-	id := th.ID
-	if th.MultiRepo() {
-		return a.landControlMulti(ctx, th, short)
-	}
-	switch {
-	case th.CanOpenPR:
-		noun := th.Forge.Noun()
-		return ui.SplitButton("Open "+noun, func() { a.openPR(id, false) }, func() []ui.MenuItem {
-			return []ui.MenuItem{{Label: "Open as draft", Icon: icons.GitPullRequestDraft, OnClick: func() { a.openPR(id, true) }}}
-		}).Icon(icons.GitPullRequestArrow).Primary().Small().Key("open-pr-" + id)
-	case th.CanMarkReady:
-		return ui.Button("Ready for review").Icon(icons.GitPullRequest).Primary().Small().
-			Tooltip(fmt.Sprintf("Mark %s #%d ready for review", th.PR.Kind.Noun(), th.PR.Number)).
-			OnClick(func() {
-				a.runBusy(id, "Marking it ready", func(ctx context.Context) error { return a.b.MarkReady(ctx, id) })
-			})
-	case th.PR != nil && th.PR.State == forge.StateOpen:
-		if th.CanMerge {
-			return ui.Button("Merge").Icon(icons.GitMerge).Primary().Small().
-				Tooltip(fmt.Sprintf("Merge %s #%d into %s", th.PR.Kind.Noun(), th.PR.Number, th.BaseBranch)).OnClick(func() { a.merge(id) })
-		}
-		if th.PR.AutoMerge {
-			return ui.Div().Row().Align(ui.Center).Gap(6).PaddingX(space2).Height(ui.Px(28)).Shrink(0).
-				Tooltip("It merges once its required checks pass").
-				Child(ui.Icon(icons.Timer).Size(13).Color(t.TextMuted)).
-				Child(ui.Text("Auto-merge on").FontSize(12).Medium().TextColor(t.TextMuted).NoWrap())
-		}
-		return ui.Button("Merge").Icon(icons.GitMerge).Secondary().Small().Disabled(true).
-			Tooltip("Can't merge yet: " + th.PR.Blocked)
-	case th.CanMerge:
-		if th.Forge == forge.None {
-			// No remote to open a pull request on: it merges straight into the local branch.
-			return ui.Button("Merge locally").Icon(icons.GitMerge).Primary().Small().
-				Tooltip("No remote, so no pull request: merges " + branchLabel(th) + " into your local " + th.BaseBranch).
-				OnClick(func() { a.merge(id) })
-		}
-		return ui.Button("Merge").Icon(icons.GitMerge).Primary().Small().
-			Tooltip("Merge " + th.Branch + " into " + th.BaseBranch).OnClick(func() { a.merge(id) })
-	}
-	return nil
 }
 
 // openPRFor opens pull requests for one of a thread's repositories ("" for all).
@@ -220,43 +112,6 @@ func (a *App) mergeRepo(id, repo string) {
 		_, err := a.b.MergeRepo(ctx, id, repo)
 		return err
 	})
-}
-
-// landControlMulti is landControl for a thread in several repositories: a split button that acts on
-// all of them, with each repository on its own in its menu. Repositories with nothing to land don't
-// count: with one pull request (or one branch to merge locally), its button names that one.
-func (a *App) landControlMulti(ctx *ui.Context, th core.ThreadView, short bool) ui.Element {
-	id := th.ID
-	var canOpen, drafts []core.PartView
-	for _, p := range th.Parts {
-		if p.CanOpenPR {
-			canOpen = append(canOpen, p)
-		}
-		if p.PR != nil && p.PR.State == forge.StateOpen && p.PR.Draft {
-			drafts = append(drafts, p)
-		}
-	}
-	switch {
-	case len(canOpen) > 0:
-		noun := canOpen[0].Forge.Noun()
-		return ui.SplitButton("Open "+plural(len(canOpen), noun), func() { a.openPRFor(id, "", false) }, func() []ui.MenuItem {
-			items := []ui.MenuItem{{Label: "Open " + plural(len(canOpen), noun) + " as drafts", Icon: icons.GitPullRequestDraft,
-				OnClick: func() { a.openPRFor(id, "", true) }}, ui.MenuSeparator()}
-			for _, p := range canOpen {
-				repo := p.Repo
-				items = append(items, ui.MenuItem{Label: noun + " for " + p.Name + " only", Icon: icons.GitPullRequestArrow,
-					OnClick: func() { a.openPRFor(id, repo, false) }})
-			}
-			return items
-		}).Icon(icons.GitPullRequestArrow).Primary().Small().Key("open-pr-" + id)
-	case len(drafts) > 0:
-		return ui.Button("Ready for review").Icon(icons.GitPullRequest).Primary().Small().
-			Tooltip("Mark " + plural(len(drafts), "draft") + " ready for review").
-			OnClick(func() {
-				a.runBusy(id, "Marking them ready", func(ctx context.Context) error { return a.b.MarkReady(ctx, id) })
-			})
-	}
-	return a.mergeControlMulti(ctx, th, short)
 }
 
 // mergeTargets are what a multi-repository thread has to merge: each open pull request, and each
@@ -297,77 +152,6 @@ func partMergeTip(p core.PartView) string {
 		return fmt.Sprintf("Merge %s's %s #%d into %s", p.Name, p.PR.Kind.Noun(), p.PR.Number, p.BaseBranch)
 	}
 	return "No remote, so no pull request: merges " + p.Branch + " into your local " + p.BaseBranch
-}
-
-// mergeControlMulti is the merge button of a thread in several repositories: named for the one
-// repository it merges, or "Merge all" when two or more have something to merge. nil with nothing.
-// short names that one repository by its pull request's number alone (partMergeShort); the menu always
-// names it in full.
-func (a *App) mergeControlMulti(ctx *ui.Context, th core.ThreadView, short bool) ui.Element {
-	t := ctx.Theme()
-	id := th.ID
-	name := partMergeLabel
-	if short {
-		name = partMergeShort
-	}
-	targets, ready := mergeTargets(th)
-	autoAll := len(targets) > 0
-	for _, p := range targets {
-		autoAll = autoAll && p.PR != nil && p.PR.AutoMerge && !p.CanMerge
-	}
-	autoMerge := func(tip string) ui.Element {
-		return ui.Div().Row().Align(ui.Center).Gap(6).PaddingX(space2).Height(ui.Px(28)).Shrink(0).Tooltip(tip).
-			Child(ui.Icon(icons.Timer).Size(13).Color(t.TextMuted)).
-			Child(ui.Text("Auto-merge on").FontSize(12).Medium().TextColor(t.TextMuted).NoWrap())
-	}
-	switch len(targets) {
-	case 0:
-		return nil
-	case 1:
-		p := targets[0]
-		repo := p.Repo
-		switch {
-		case p.CanMerge:
-			return ui.Button(name(p)).Icon(icons.GitMerge).Primary().Small().Tooltip(partMergeTip(p)).
-				OnClick(func() { a.mergeRepo(id, repo) }).Key("merge-" + id)
-		case autoAll:
-			return autoMerge("It merges once its required checks pass")
-		}
-		tip := "Can't merge yet"
-		if p.PR.Blocked != "" {
-			tip += ": " + p.PR.Blocked
-		}
-		return ui.Button(name(p)).Icon(icons.GitMerge).Secondary().Small().Disabled(true).Tooltip(tip).
-			Key("merge-" + id)
-	}
-	menu := func() []ui.MenuItem {
-		items := []ui.MenuItem{{Label: "Merge all", Icon: icons.GitMerge, Disabled: len(ready) < len(targets),
-			OnClick: func() { a.mergeRepo(id, "") }}, ui.MenuSeparator()}
-		for _, p := range targets {
-			repo, label := p.Repo, partMergeLabel(p)
-			if !p.CanMerge && p.PR.Blocked != "" {
-				label += " · " + p.PR.Blocked
-			}
-			items = append(items, ui.MenuItem{Label: label, Icon: icons.GitMerge,
-				Disabled: !p.CanMerge, OnClick: func() { a.mergeRepo(id, repo) }})
-		}
-		return items
-	}
-	switch {
-	case len(ready) == len(targets):
-		return ui.SplitButton("Merge all", func() { a.mergeRepo(id, "") }, menu).Icon(icons.GitMerge).Primary().Small().
-			Tooltip("Merge each repository into its base branch").Key("merge-" + id)
-	case len(ready) == 1:
-		repo := ready[0].Repo
-		return ui.SplitButton(name(ready[0]), func() { a.mergeRepo(id, repo) }, menu).
-			Icon(icons.GitMerge).Primary().Small().Tooltip(partMergeTip(ready[0])).Key("merge-" + id)
-	case len(ready) > 1:
-		return ui.SplitButton(fmt.Sprintf("Merge %d ready", len(ready)), func() { a.mergeRepo(id, "") }, menu).
-			Icon(icons.GitMerge).Primary().Small().Key("merge-" + id)
-	case autoAll:
-		return autoMerge("Each merges once its required checks pass")
-	}
-	return ui.SplitButton("Merge", func() {}, menu).Icon(icons.GitMerge).Secondary().Small().Key("merge-" + id)
 }
 
 // plural is n of a noun: "1 draft", "3 drafts".
@@ -474,7 +258,7 @@ func (a *App) prLink(ctx *ui.Context, th core.ThreadView) ui.Element {
 	}
 	url := th.PR.URL
 	return ui.Button(fmt.Sprintf("#%d", th.PR.Number)).Icon(icons.ExternalLink).Ghost().Small().
-		Tooltip("Open the " + th.PR.Kind.Noun() + " in your browser").OnClick(func() { _ = ctx.OpenURL(url) })
+		Tooltip("Open the " + th.PR.Kind.Noun() + " in your browser").OnClick(func() { _ = openURL(ctx, url) })
 }
 
 // changeData is a worker's changed files and diff.

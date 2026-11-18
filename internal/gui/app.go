@@ -78,6 +78,9 @@ type App struct {
 	orchFocus   *ui.FocusHandle
 	foldedAsks  *ui.Signal[map[string]bool] // pinned questions the user folded, by tool-use ID
 	askOpen     *ui.Signal[string]          // the pinned question the user last opened, by tool-use ID
+	// The merge pill's list of open merge cards is open (mergepill.go); pillFocus is the pill's focus.
+	pillOpen    *ui.Signal[bool]
+	pillFocus   *ui.FocusHandle
 	lightbox    *ui.Signal[string]          // the image shown full size, or ""
 	settingsTab string                      // the tab Settings opens on
 	orchImages  *ui.Signal[[]string]        // images attached to the message being written to Solo
@@ -199,6 +202,8 @@ func New(b Backend) *App {
 		orchFocus:   ui.NewFocusHandle(),
 		foldedAsks:  ui.NewSignal(map[string]bool{}),
 		askOpen:     ui.NewSignal(""),
+		pillOpen:    ui.NewSignal(false),
+		pillFocus:   ui.NewFocusHandle(),
 		lightbox:    ui.NewSignal(""),
 		orchImages:  ui.NewSignal([]string(nil)),
 		busy:        ui.NewSignal(map[string]bool{}),
