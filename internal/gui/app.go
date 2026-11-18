@@ -768,11 +768,10 @@ func (a *App) compactBar(ctx *ui.Context) ui.Element {
 		trailing = append(trailing, ui.IconButton(icons.X).Ghost().Label("Close thread").Key("thread-close").
 			OnClick(a.closeThread))
 	} else {
-		v, _ := a.thread(core.OrchestratorID)
 		title = title.
 			Child(brandMark(20)).
 			Child(ui.Text("Solo").FontSize(14).Semibold().NoWrap()).
-			Child(a.orchState(ctx, v))
+			Child(ui.Component(a.orchBarState))
 	}
 	return ui.TitleBar().Height(ui.Px(48)).
 		Child(ui.Div().Row().Align(ui.Center).Gap(space2).PaddingLeft(space1).Shrink(1).MinWidth(ui.Px(0)).

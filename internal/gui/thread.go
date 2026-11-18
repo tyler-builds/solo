@@ -515,11 +515,7 @@ func (a *App) threadPanel(ctx *ui.Context) ui.Element {
 		added += f.Added
 		removed += f.Removed
 	}
-	if th.InTurn || len(th.Background) > 0 {
-		tick := ui.Local(ctx, "tick", 0)
-		tick.Get()
-		ctx.After(time.Second, func() { tick.Update(func(n int) int { return n + 1 }) })
-	}
+	ticking(ctx, th.InTurn || len(th.Background) > 0)
 
 	// The change size sits at the end of the tab row, beside Changes.
 	stat := ui.Div().Row().Gap(6).Shrink(0).

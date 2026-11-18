@@ -226,6 +226,16 @@ func TestShots(t *testing.T) {
 			a.setThreads(f.Threads())
 		}},
 		{"worker-steer", func(a *App, f *fakeBackend) { a.openThread("a1f3c9d2-oauth", "conversation") }},
+		// Solo's turn ended while a script it started runs on in the background: its chat says it waits on it.
+		{"solo-background", func(a *App, f *fakeBackend) {
+			soloOnBackground(f)
+			a.setThreads(f.Threads())
+		}},
+		{"solo-background-many", func(a *App, f *fakeBackend) {
+			soloOnBackground(f, core.BackgroundTask{ID: "a1", Type: "local_agent", Description: "Find large folders", Started: time.Now().Add(-time.Minute)},
+				core.BackgroundTask{ID: "a2", Type: "local_bash", Description: "Watch free space", Started: time.Now().Add(-30 * time.Second)})
+			a.setThreads(f.Threads())
+		}},
 		{"land-cards", func(a *App, f *fakeBackend) {
 			// Merge cards in each checks state, a local merge, and one whose Merge is under way.
 			o := core.OrchestratorID
@@ -336,6 +346,14 @@ func TestShots(t *testing.T) {
 		{"phone-settings-branches", func(a *App, f *fakeBackend) { a.settingsTab = "branches"; a.settings.Set(true) }},
 		{"phone-palette", func(a *App, f *fakeBackend) { a.palette.Set(true) }},
 		{"phone-empty", nil},
+		{"phone-solo-background", func(a *App, f *fakeBackend) {
+			soloOnBackground(f)
+			a.setThreads(f.Threads())
+		}},
+		{"phone-thinking", func(a *App, f *fakeBackend) {
+			soloWorking(f, nil)
+			a.setThreads(f.Threads())
+		}},
 	}
 	for _, theme := range []struct {
 		name string
