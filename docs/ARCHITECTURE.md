@@ -469,8 +469,12 @@ docs/
 2. **Core:** store, repo index, worktrees, ThreadManager.
 3. **Orchestrator:** session, MCP tools, proactive updates.
 4. **UI:** jamb views.
-5. **Packaging:** `scripts/appimage.sh` (Linux). The compiled sidecar ships beside the app; Claude
-   Code is the user's own.
+5. **Packaging:** `scripts/appimage.sh` (Linux) and `scripts/windows.sh` (Windows, built from Linux in
+   CI). The compiled sidecar ships beside the app; Claude Code is the user's own. On Windows the
+   sidecar, `solo-agent.exe`, carries Solo's icon and the version info "Solo Agent" (product Solo):
+   Bun's `--windows-*` options work only when compiling on Windows, so the script stamps Bun's Windows
+   runtime with go-winres first and then compiles the sidecar into it with `--compile-executable-path`,
+   which leaves the appended code untouched.
 
 ## Open defaults (change if you disagree)
 
