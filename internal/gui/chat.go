@@ -52,6 +52,7 @@ func (a *App) orchestratorView(ctx *ui.Context) ui.Element {
 	} else {
 		body = a.transcript(ctx, v, items, "orch")
 	}
+	body = a.landPanelFor(ctx, body) // prototype: the open merge cards, kept in view (landpanel.go)
 	return ui.Div().Column().Grow(1).MinHeight(ui.Px(0)).
 		Child(body).
 		Child(ui.Div().Column().Align(ui.Center).PaddingX(gutter(ctx)).PaddingBottom(gutter(ctx) - space2).Shrink(0).
@@ -1926,6 +1927,9 @@ func (a *App) isAction(r row) bool {
 	}
 	switch r.item.Kind {
 	case core.ItemProposal:
+		if landPanelKind != "" {
+			return false // prototype: the panel of open merge cards keeps them in view (landpanel.go)
+		}
 		th, ok := a.thread(r.item.Ref)
 		return ok && th.CanMerge && !th.Scratch
 	case core.ItemQuestion:
@@ -1981,5 +1985,6 @@ func (a *App) chatWidth(ctx *ui.Context) float32 {
 	if a.openID.Get() != "" {
 		chat -= a.panelWidth(ctx) + space2
 	}
+	chat -= a.landShelfW // the prototype shelf docked beside it (landpanel.go)
 	return min(chat, chatMaxWidth+2*space6)
 }
