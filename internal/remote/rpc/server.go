@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"hash/fnv"
 	"log/slog"
 	"slices"
@@ -269,11 +270,20 @@ func (h *Host) Serve(link Link, dev Device) error {
 	}()
 	err := c.s.run(c.handle)
 	cancel()
+	c.view("", time.Time{})
 	h.mu.Lock()
 	delete(h.conns, c)
 	h.mu.Unlock()
 	wg.Wait()
 	return err
+}
+
+// view tells the backend, when it keeps them (api.Viewers), which thread the device has open, until its
+// watch lapses.
+func (c *conn) view(threadID string, until time.Time) {
+	if v, ok := c.h.b.(api.Viewers); ok {
+		v.SetViewing(fmt.Sprintf("device %s %p", c.dev.ID, c), threadID, until)
+	}
 }
 
 // bye tells the device why the session ends, then ends it.

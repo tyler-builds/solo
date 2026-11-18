@@ -89,6 +89,20 @@ type Watcher interface {
 	Watch(threadIDs []string)
 }
 
+// Opener is a backend that wants to know which thread the UI has open beside Solo's conversation, ""
+// for none: what the user reads there first-hand, Solo needn't recap (see Viewers). The UI calls Open
+// when that changes; it must not block.
+type Opener interface {
+	Open(threadID string)
+}
+
+// Viewers is an engine shared by several UIs (the desktop window, paired devices) that keeps which
+// thread each has open (core.Core.SetViewing). A host serving devices tells it each device's, with the
+// time it lapses unless the device renews it.
+type Viewers interface {
+	SetViewing(viewer, threadID string, until time.Time)
+}
+
 // Clock is a backend on another machine, whose clock may differ from this one's. The engine's times
 // (when a turn or background work began, when a thread changed) are the machine's, so the UI measures
 // them against Now, the machine's time, rather than its own clock. Now is called on the UI thread and

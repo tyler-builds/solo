@@ -251,3 +251,52 @@ func TestMirrorOfTheRealEngine(t *testing.T) {
 		t.Errorf("status changes:\n on the machine %v\n on the device  %v", onMachine, onDevice)
 	}
 }
+
+// The thread a device has open reaches the engine with its watch (api.Viewers), and is forgotten when
+// the device closes it, when its watch lapses unrenewed, and when its session ends.
+func TestDeviceOpenThreadReachesTheEngine(t *testing.T) {
+	exe, vars := agenttest.Command()
+	c, err := core.New(core.Config{DataDir: t.TempDir(), Agent: agent.Command{Path: exe, Env: vars},
+		Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	wait := func(what string, ok func() bool) {
+		t.Helper()
+		deadline := time.Now().Add(10 * time.Second)
+		for !ok() {
+			if time.Now().After(deadline) {
+				t.Fatalf("timed out waiting for %s", what)
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+	serve := func(lease time.Duration) (*Client, func()) {
+		h := NewHost(engine{c}, Options{FlushEvery: 10 * time.Millisecond, Lease: lease})
+		client := NewClient(ClientOptions{Random: rand.Reader})
+		device, machine := secureLinks(t)
+		go h.Serve(machine, Device{ID: "d1", Name: "phone"})
+		go client.Run(device)
+		wait("the first sync", func() bool { return client.Status().Synced })
+		return client, func() { device.Close(); h.Close() }
+	}
+	const id = "0123abcd-thread"
+
+	client, end := serve(time.Hour)
+	client.Open(id)
+	wait("the engine to see it open", func() bool { return c.Viewing(id) })
+	client.Open("")
+	wait("the engine to see it closed", func() bool { return !c.Viewing(id) })
+	client.Open(id)
+	wait("open again", func() bool { return c.Viewing(id) })
+	end()
+	wait("the session's end to close it", func() bool { return !c.Viewing(id) })
+
+	// A device that stops renewing its watch (a hidden page) no longer counts once it lapses.
+	client, end = serve(200 * time.Millisecond)
+	defer end()
+	client.Open(id)
+	wait("open", func() bool { return c.Viewing(id) })
+	wait("the lease to lapse", func() bool { return !c.Viewing(id) })
+}

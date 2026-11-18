@@ -74,6 +74,11 @@ type Core struct {
 	// resume are the threads that were working when Solo last closed, for ResumeInterrupted.
 	resume []resumeInfo
 	todos  []Todo // the user's to-do list, oldest first (todos.go)
+
+	// views is the thread each UI has open, by UI (viewing.go). It has its own lock: it is read from
+	// Subscribe callbacks.
+	viewMu sync.Mutex
+	views  map[string]viewing
 }
 
 // resumeInfo is a thread that was working when Solo closed, and how far it had got.

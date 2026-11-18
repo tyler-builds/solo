@@ -102,6 +102,24 @@ func TestCardOpensThreadAndOpenPRButton(t *testing.T) {
 	t.Fatal("no pull request was opened")
 }
 
+// The backend hears which thread is open (api.Opener), so Solo can leave what the user reads there to
+// them.
+func TestOpenThreadIsToldToTheBackend(t *testing.T) {
+	f := demoBackend()
+	a, u := newUI(t, f)
+	u.Click("card-c3d4e5f6-forms")
+	u.WaitFor("the thread to open", func() bool { u.Frame(); return a.panelAnim.Peek() == 1 })
+	u.Frame()
+	u.ByRole(access.RoleButton, "Close thread").Click()
+	u.WaitFor("the thread to close", func() bool { u.Frame(); return a.openID.Peek() == "" })
+	u.Frame()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !slices.Equal(f.views, []string{"c3d4e5f6-forms", ""}) {
+		t.Fatalf("told %q", f.views)
+	}
+}
+
 func TestQuestionOptionAnswers(t *testing.T) {
 	f := demoBackend()
 	_, u := newUI(t, f)

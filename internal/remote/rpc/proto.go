@@ -179,6 +179,9 @@ type ItemsUpdate struct {
 type Watch struct {
 	Threads []WatchThread `json:"threads"`
 	Limit   int           `json:"limit"` // how many of each transcript's newest items it wants
+	// Open is the thread the device has open beside Solo's conversation, "" for none: the user reads
+	// it there, so Solo needn't recap its turns (api.Viewers). It lapses with the watch.
+	Open string `json:"open,omitempty"`
 }
 
 // WatchThread is a thread to watch and the revision of its transcript the device holds, 0 for none.
