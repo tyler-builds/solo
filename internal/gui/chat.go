@@ -50,7 +50,7 @@ func (a *App) orchestratorView(ctx *ui.Context) ui.Element {
 	if len(items) == 0 && !v.InTurn {
 		body = a.welcome(ctx)
 	} else {
-		body = a.transcript(ctx, v, items, "orch")
+		body = a.transcript(v, items, "orch")
 	}
 	return ui.Div().Column().Grow(1).MinHeight(ui.Px(0)).
 		Child(body).
@@ -182,7 +182,17 @@ func isStep(it *core.Item) bool {
 }
 
 // transcript renders a thread's items, its streaming text, and a working indicator, newest at the bottom.
-func (a *App) transcript(ctx *ui.Context, v core.ThreadView, items []core.Item, scope string) ui.Element {
+//
+// It is a component of its own, keyed by the conversation, so that what it keeps (whether it has opened
+// on the latest message, whether it is at the end, the selected text) lives as long as its list does.
+// Kept by the thread panel, which shows one thread after another without going away, a thread opened
+// again would find it had already opened, and its new list would start at the top.
+func (a *App) transcript(v core.ThreadView, items []core.Item, scope string) ui.Element {
+	return ui.Component(func(ctx *ui.Context) ui.Element { return a.transcriptView(ctx, v, items, scope) }).
+		Key(scope + "-view")
+}
+
+func (a *App) transcriptView(ctx *ui.Context, v core.ThreadView, items []core.Item, scope string) ui.Element {
 	rows := a.transcriptRows(scope, items)
 	for i := range v.Live {
 		// Solo's chat says it is thinking in its working line, not in a block of thoughts.
