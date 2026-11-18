@@ -40,7 +40,10 @@ git's description of the commit, such as `0.6.0-3-gcb015ff` for three commits af
 (`scripts/version.sh`). The web client shows its own and the machine's.
 
 Both need Go and Bun; the AppImage also needs `mksquashfs`, and the Windows installer NSIS
-(`makensis`; without it only the zip is built). The app needs
+(`makensis`; without it only the zip is built). The Windows build also fetches Bun's Windows runtime
+from npm and gives it Solo's icon and version info (with go-winres) before compiling the sidecar into
+it, since Bun can set those only when compiling on Windows: Task Manager names the sidecar "Solo
+Agent", not "Bun". The app needs
 only Claude Code installed and signed in: the sidecar is a compiled binary with Bun inside, and Solo
 finds `claude` on PATH or where its installer puts it (Settings shows what it found and takes a path
 to use instead).
