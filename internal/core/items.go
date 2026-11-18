@@ -2,6 +2,7 @@ package core
 
 import (
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/tyler-builds/solo/internal/agent"
@@ -51,6 +52,14 @@ const (
 	FromOrchestrator = "orchestrator"
 	FromSolo         = "solo"
 )
+
+// Noted is an agent's whole reply when its turn has nothing to tell: Solo's to a thread update that
+// needs no word, or an agent's when work it ran in the background ends and adds nothing new. The app
+// shows no message for it, and a thread's summary stays what its last turn with news said.
+const Noted = "(noted)"
+
+// IsNoted reports whether an agent's message is Noted.
+func IsNoted(text string) bool { return strings.TrimSpace(text) == Noted }
 
 type TextData struct {
 	Text string `json:"text"`

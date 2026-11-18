@@ -299,11 +299,7 @@ func (a *App) threadPanel(ctx *ui.Context) ui.Element {
 		added += f.Added
 		removed += f.Removed
 	}
-	if th.InTurn || len(th.Background) > 0 {
-		tick := ui.Local(ctx, "tick", 0)
-		tick.Get()
-		ctx.After(time.Second, func() { tick.Update(func(n int) int { return n + 1 }) })
-	}
+	ticking(ctx, th.InTurn || len(th.Background) > 0)
 
 	// The change size sits at the end of the tab row, beside Changes.
 	stat := ui.Div().Row().Gap(6).Shrink(0).
@@ -452,7 +448,7 @@ func (a *App) threadPanel(ctx *ui.Context) ui.Element {
 	} else {
 		items := a.itemsOf(id).Get()
 		content = ui.Div().Column().Grow(1).MinHeight(ui.Px(0)).
-			Child(a.transcript(ctx, th, items, "thread-"+id)).
+			Child(a.transcript(th, items, "thread-"+id)).
 			Child(ui.Div().Column().Gap(space2).PaddingX(space4).PaddingBottom(space4).Shrink(0).
 				Child(a.workingLine(ctx, th)).
 				Child(a.composerFor(ctx, th)))

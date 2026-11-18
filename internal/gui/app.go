@@ -95,9 +95,10 @@ type App struct {
 	items map[string]*ui.Signal[[]core.Item] // UI thread only
 	// views holds a signal for each thread that something has asked for by ID (see thread), and rows
 	// the rows last laid out for each transcript (see transcriptRows). UI thread only.
-	views map[string]*ui.Signal[core.ThreadView]
-	rows  map[string]*rowCache
-	shown []string // the conversations last named to an api.Watcher (see watchShown)
+	views  map[string]*ui.Signal[core.ThreadView]
+	rows   map[string]*rowCache
+	shown  []string // the conversations last named to an api.Watcher (see watchShown)
+	opened string   // the thread last named to an api.Opener (see watchShown)
 	// remoteState is Remote's state, and remoteTick counts the seconds a pairing code has been shown.
 	remoteState   *ui.Signal[api.RemoteState]
 	remoteTick    *ui.Signal[int]
@@ -626,15 +627,21 @@ func (a *App) now() time.Time {
 }
 
 // watchShown tells a backend that fetches transcripts (api.Watcher) which conversations are on screen:
-// Solo's, and the open thread's. Call in a render.
+// Solo's, and the open thread's; and one that follows the open thread (api.Opener) which that is. Call
+// in a render.
 func (a *App) watchShown() {
+	open := a.openID.Get()
+	if o, ok := a.b.(api.Opener); ok && open != a.opened {
+		a.opened = open
+		o.Open(open)
+	}
 	w, ok := a.b.(api.Watcher)
 	if !ok {
 		return
 	}
 	ids := []string{core.OrchestratorID}
-	if id := a.openID.Get(); id != "" {
-		ids = append(ids, id)
+	if open != "" {
+		ids = append(ids, open)
 	}
 	if !slices.Equal(ids, a.shown) {
 		a.shown = ids
@@ -773,11 +780,10 @@ func (a *App) compactBar(ctx *ui.Context) ui.Element {
 		trailing = append(trailing, ui.IconButton(icons.X).Ghost().Label("Close thread").Key("thread-close").
 			OnClick(a.closeThread))
 	} else {
-		v, _ := a.thread(core.OrchestratorID)
 		title = title.
 			Child(brandMark(20)).
 			Child(ui.Text("Solo").FontSize(14).Semibold().NoWrap()).
-			Child(a.orchState(ctx, v))
+			Child(ui.Component(a.orchBarState))
 	}
 	return ui.TitleBar().Height(ui.Px(48)).
 		Child(ui.Div().Row().Align(ui.Center).Gap(space2).PaddingLeft(space1).Shrink(1).MinWidth(ui.Px(0)).

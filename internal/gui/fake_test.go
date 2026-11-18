@@ -47,15 +47,23 @@ type fakeBackend struct {
 	drafts      []string // "id repo" for each pull request opened as a draft, repo "" for all
 	openedFor   []string // "id repo" for each OpenPRFor, repo "" for all
 	readied     []string // MarkReady
+	interrupted []string // the threads Interrupt was asked to stop, in order
 	nextID      int64
 	todos       []core.Todo
 	skills      []core.Skill   // for "/" and Settings; fakeSkills when nil
 	paths       []core.PathHit // a thread's files, for "@"; fakePaths when nil
 	pathQueries []string       // the queries SearchPaths was asked, in order
 	imageReads  []string       // the images ReadImage was asked for, in order
+	views       []string       // the threads Open was told of, in order (api.Opener)
 	// machineNow is the time on the machine, for a backend on another one (api.Clock); nil for this
 	// process's clock.
 	machineNow func() time.Time
+}
+
+func (f *fakeBackend) Open(threadID string) {
+	f.mu.Lock()
+	f.views = append(f.views, threadID)
+	f.mu.Unlock()
 }
 
 func (f *fakeBackend) Now() time.Time {
@@ -186,7 +194,12 @@ func (f *fakeBackend) Send(_ context.Context, _, text string, images ...string) 
 	f.mu.Unlock()
 	return nil
 }
-func (f *fakeBackend) Interrupt(context.Context, string) error        { return nil }
+func (f *fakeBackend) Interrupt(_ context.Context, id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.interrupted = append(f.interrupted, id)
+	return nil
+}
 func (f *fakeBackend) Answer(string, string, map[string]string) error { return nil }
 func (f *fakeBackend) Dismiss(string, string) error                   { return nil }
 func (f *fakeBackend) Changes(_ context.Context, id string) ([]git.FileChange, error) {

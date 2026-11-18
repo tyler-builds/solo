@@ -108,6 +108,38 @@ func TestBackgroundWorkThenWake(t *testing.T) {
 	log.waitFor(t, "idle>running running>background background>running running>idle")
 }
 
+// A wake-up turn that has nothing new to say ("(noted)") leaves the thread's summary as the turn before
+// it wrote it, rather than replacing what Solo, the rail and the merge card show with a throwaway line.
+// One with news replaces it, as TestBackgroundWorkThenWake shows.
+func TestQuietWakeKeepsSummary(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	v := readyWorker(t, e)
+	if err := e.c.Send(ctx, v.ID, "bg 100 quiet Run benchmarks"); err != nil {
+		t.Fatal(err)
+	}
+	waitStatus(t, e.c, v.ID, StatusBackground)
+	v = waitLanding(t, e.c, v.ID)
+	if v.Summary != "started quiet Run benchmarks" || len(v.Background) != 0 {
+		t.Fatalf("after a quiet wake: summary %q, background %+v", v.Summary, v.Background)
+	}
+	items, _ := e.c.Items(ctx, v.ID, 0)
+	turns, noted := 0, false
+	for _, it := range items {
+		switch it.Kind {
+		case ItemTurn:
+			turns++
+		case ItemAssistant:
+			var d TextData
+			it.Decode(&d)
+			noted = noted || IsNoted(d.Text)
+		}
+	}
+	if !noted || turns < 3 {
+		t.Fatalf("want the wake's turn and its (noted) in the transcript; %d turns, noted %v", turns, noted)
+	}
+}
+
 // A command Claude stops itself ends inside its turn: the turn ends ready, and no turn follows.
 func TestBackgroundWorkKilledByAgent(t *testing.T) {
 	e := newEnv(t)

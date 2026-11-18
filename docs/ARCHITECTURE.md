@@ -143,6 +143,14 @@ Raw `SDKMessage`s are also appended to a per-session JSONL file for debugging an
   did ("A and B have questions. Solo messaged C."), with the word for what happened in its status's
   color and each thread's name a link to it, and a rule sets the exchanges apart (`gui/summary.go`).
   The sentences are built from fixed wording, not by a model.
+- **The open thread:** each UI tells core which thread it has open beside Solo's chat
+  (`api.Opener`; `core.SetViewing`): the desktop window whether or not it is in front, a paired
+  device with its watch, until the watch lapses or the session ends. A turn that ends in an open thread
+  (finished, waiting on background work, failed, asking, interrupted) starts no Solo turn, since the
+  user read it there: it becomes a note for Solo's next message, one per thread. The exception is
+  finished work that still needs a merge card (files changed, in git, not scratch, no card or open PR
+  yet): Solo gets the update, marked as read by the user, and proposes the merge without recapping it.
+  Pull request events, merges, discards and the merge after conflicts are resolved go to Solo as usual.
 - **Queued messages:** the user's message to Solo while it works (a turn running, or a message just sent
   whose turn hasn't started) doesn't steer. `core.send` keeps it on the thread (`thread.queue`, shown as
   `ThreadView.Queued`, saved under the `state.queue.orchestrator` setting) instead of sending it, and so

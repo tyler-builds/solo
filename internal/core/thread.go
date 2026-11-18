@@ -494,6 +494,7 @@ files at once, with no branch or copy to review first, and other threads may wor
   Don't run git init; the user decides whether this folder goes in git.
 - End with a short summary of what you changed (each file) and anything left undone, for the user and
   Solo.
+` + quietWakeRule + `
 ` + screenshotRules(true) + `
 ` + ChartRules + `
 - If you need a decision only the user can make, ask with AskUserQuestion.`
@@ -531,10 +532,18 @@ repository's or your own defaults:
 - When you are done, commit your changes on this branch ` + commit + `. Don't push,
   merge, rebase onto other branches, or switch branches; the user reviews and merges your branch.
 - End with a short summary of what you changed and anything left undone, for the user and Solo.
+` + quietWakeRule + `
 ` + screenshotRules(false) + `
 ` + ChartRules + `
 - If you need a decision only the user can make, ask with AskUserQuestion.` + rules
 }
+
+// quietWakeRule tells a thread how to end a turn that work it ran in the background started, when that
+// work brings nothing new: with Noted, which keeps its summary (see the turn_end event).
+const quietWakeRule = `- When work you ran in the background ends, a turn starts for you to read it. If it brings nothing
+  that your last summary doesn't already say, reply with just "` + Noted + `": that summary stays what
+  Solo and the user see. If it brings anything new (results you were waiting for, a failure), end with
+  a summary as usual, complete on its own.`
 
 // ChartRules tell an agent (a thread, or Solo) when and how to show data as a chart: a chart block,
 // which the app draws where it stands (see chartspec).

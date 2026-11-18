@@ -212,6 +212,16 @@ func TestShots(t *testing.T) {
 			f.add(o, core.ItemAssistant, core.TextData{Text: "The repo is already on `main`, so I started **Install Solo from main** to rebuild the AppImage and install it."})
 			a.items = map[string]*ui.Signal[[]core.Item]{}
 		}},
+		// Solo's reply, then a turn that work it ran in the background started, with a line of its own:
+		// both show. With "(noted)", the wake adds no message.
+		{"solo-wake", func(a *App, f *fakeBackend) {
+			soloWoken(f, "", "That was the old background task, nothing else.")
+			a.items = map[string]*ui.Signal[[]core.Item]{}
+		}},
+		{"solo-wake-noted", func(a *App, f *fakeBackend) {
+			soloWoken(f, "", core.Noted)
+			a.items = map[string]*ui.Signal[[]core.Item]{}
+		}},
 		{"thinking", func(a *App, f *fakeBackend) {
 			// Solo mid-turn: its working line shows the first line of its newest thought's last paragraph.
 			for i := range f.threads {
@@ -253,6 +263,16 @@ func TestShots(t *testing.T) {
 		{"merge-pill-narrow", pill(pillThree, true)},
 		{"merge-pill-compact", pill(pillThree, true)},
 		{"merge-pill-none", pill(nil, false)},
+		// Solo's turn ended while a script it started runs on in the background: its chat says it waits on it.
+		{"solo-background", func(a *App, f *fakeBackend) {
+			soloOnBackground(f)
+			a.setThreads(f.Threads())
+		}},
+		{"solo-background-many", func(a *App, f *fakeBackend) {
+			soloOnBackground(f, core.BackgroundTask{ID: "a1", Type: "local_agent", Description: "Find large folders", Started: time.Now().Add(-time.Minute)},
+				core.BackgroundTask{ID: "a2", Type: "local_bash", Description: "Watch free space", Started: time.Now().Add(-30 * time.Second)})
+			a.setThreads(f.Threads())
+		}},
 		{"land-cards", func(a *App, f *fakeBackend) {
 			// Merge cards in each checks state, a local merge, and one whose Merge is under way.
 			o := core.OrchestratorID
@@ -273,6 +293,13 @@ func TestShots(t *testing.T) {
 			}
 			a.setThreads(f.Threads())
 			a.items = map[string]*ui.Signal[[]core.Item]{}
+		}},
+		// The thread the user has open finished work to land: Solo reviewed it and proposed the merge
+		// without recapping what the user had just read there, so the card stands alone.
+		{"open-thread-card", func(a *App, f *fakeBackend) {
+			openThreadCard(f, false)
+			a.items = map[string]*ui.Signal[[]core.Item]{}
+			a.openThread("c3d4e5f6-forms", "conversation")
 		}},
 		// Scrolled up from the latest message: the round button above the composer goes back down.
 		{"scrolled-up", func(a *App, f *fakeBackend) { longChat(f); a.items = map[string]*ui.Signal[[]core.Item]{} }},
@@ -365,6 +392,14 @@ func TestShots(t *testing.T) {
 		{"phone-merge-pill", pill(pillThree, false)},
 		{"phone-merge-pill-open", pill(pillMany, true)},
 		{"phone-empty", nil},
+		{"phone-solo-background", func(a *App, f *fakeBackend) {
+			soloOnBackground(f)
+			a.setThreads(f.Threads())
+		}},
+		{"phone-thinking", func(a *App, f *fakeBackend) {
+			soloWorking(f, nil)
+			a.setThreads(f.Threads())
+		}},
 	}
 	for _, theme := range []struct {
 		name string
@@ -458,6 +493,32 @@ func TestShots(t *testing.T) {
 			u.Close()
 		}
 	}
+}
+
+// openThreadCard ends Solo's conversation with its answer to the settings thread finishing while the
+// user had it open: the update, Solo's review and its merge card, then "(noted)", or with recap, the
+// summary Solo wrote before it knew the user had read the thread.
+func openThreadCard(f *fakeBackend, recap bool) {
+	o := core.OrchestratorID
+	f.items[o] = nil
+	f.add(o, core.ItemUser, core.UserData{Text: "Finish moving the settings page to the new form components."})
+	f.add(o, core.ItemTool, tool("s1", "mcp__solo__spawn_thread", map[string]any{"repo": "web", "title": "Move settings page to new form components"}, "Started thread c3d4e5f6"))
+	f.add(o, core.ItemAssistant, core.TextData{Text: "Started **Move settings page to new form components** in web."})
+	line := "- Thread c3d4e5f6 \"Move settings page to new form components\" (web) finished its turn. Summary: Moved the settings page to the new Form components; 214 tests pass."
+	if !recap {
+		line += " [The user had this thread open and read its reply there: review it as usual and propose_merge if it's right, but don't recap it.]"
+	}
+	f.add(o, core.ItemUser, core.UserData{Synthetic: true, Text: "[thread update from Solo, not from the user]\n" + line})
+	f.add(o, core.ItemTool, tool("s2", "mcp__solo__get_thread", map[string]any{"id": "c3d4e5f6"}, "Status: idle"))
+	f.add(o, core.ItemTool, tool("s3", "mcp__solo__get_diff", map[string]any{"id": "c3d4e5f6"}, "diff --git …"))
+	f.add(o, core.ItemTool, tool("s4", "mcp__solo__propose_merge", map[string]any{"id": "c3d4e5f6"}, "Proposed."))
+	f.add(o, core.ItemProposal, core.ProposalData{ThreadID: "c3d4e5f6-forms", Title: "Move settings page to new form components",
+		Summary: "Replaces the settings page's fields with the new Form components and deletes LegacyField. The diff is contained to settings and the web tests pass."})
+	reply := "(noted)"
+	if recap {
+		reply = "The settings page now uses the new Form components: the thread added a `Toggle` to match `Checkbox`, moved the profile and notifications sections over, and deleted `LegacyField` once nothing used it. All 214 web tests pass, and the diff stays inside `src/settings` and `src/components/form`.\n\nIt looks right, so it's ready to merge."
+	}
+	f.add(o, core.ItemAssistant, core.TextData{Text: reply})
 }
 
 // soloWorking puts Solo mid-turn, starting a thread for the user's request, with queued messages waiting.
