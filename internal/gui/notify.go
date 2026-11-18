@@ -34,7 +34,7 @@ func (a *App) notifyChange(ch core.Change) {
 	switch {
 	case !v.IsWorker:
 		if ch.PrevStatus == core.StatusRunning && ch.Status == core.StatusIdle {
-			if body := a.lastReply(); body != "" && body != "(noted)" { // not its nod to a thread update
+			if body := a.lastReply(); body != "" && !core.IsNoted(body) { // not its nod to a thread update
 				n = &Notification{Title: "Solo replied.", Body: body, Thread: ""}
 			}
 		}

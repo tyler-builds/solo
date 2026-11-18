@@ -376,28 +376,26 @@ func (a *App) transcriptRows(scope string, items []core.Item) []row {
 	return rows[:len(rows):len(rows)]
 }
 
-// orchRows lays out Solo's chat one exchange at a time: each message to Solo, a row of everything Solo
-// did while it worked, then its cards and its reply. Only Solo's last message of a turn shows in full;
-// what it said between steps goes with them. The steps and the thread updates are then said in a
-// sentence (see summarized).
+// orchRows lays out Solo's chat one exchange at a time: each message to Solo, then for each of Solo's
+// turns it led to, a row of everything Solo did while it worked, then its cards and its reply. An
+// exchange can have several turns: work Solo ran in the background wakes it with no message. Solo's
+// last message of each turn shows in full, a later turn's never hiding an earlier one's; what it said
+// between steps goes with them, and a turn that ends in "(noted)" says nothing. The steps and the
+// thread updates are then said in a sentence (see summarized).
 func (a *App) orchRows(items []core.Item) []row {
 	rows := make([]row, 0, len(items)/2+4)
-	var seg []*core.Item
+	var seg []*core.Item // the turn's visible items
+	var said *core.Item  // the turn's last message so far, "(noted)" too
 	flush := func() {
+		defer func() { seg, said = nil, nil }()
 		if len(seg) == 0 {
 			return
-		}
-		last := -1
-		for i, it := range seg {
-			if it.Kind == core.ItemAssistant {
-				last = i
-			}
 		}
 		var fold []*core.Item
 		var rest []row
 		thread, mixed, worked := "", false, false
-		for i, it := range seg {
-			if !isStep(it) && (it.Kind != core.ItemAssistant || i == last) {
+		for _, it := range seg {
+			if !isStep(it) && (it.Kind != core.ItemAssistant || it == said) {
 				rest = append(rest, row{key: fmt.Sprintf("i%d", it.ID), item: it})
 				continue
 			}
@@ -411,16 +409,26 @@ func (a *App) orchRows(items []core.Item) []row {
 		if mixed {
 			thread = ""
 		}
-		// Thoughts alone aren't worth a line. The key is the exchange's first item, so the line keeps
-		// its open state as steps arrive.
+		// Thoughts alone aren't worth a line. The key is the turn's first item, so the line keeps its
+		// open state as steps arrive.
 		if worked {
 			rows = append(rows, row{key: fmt.Sprintf("g%d", seg[0].ID), steps: fold, thread: thread})
 		}
 		rows = append(rows, rest...)
-		seg = nil
 	}
 	for i := range items {
 		it := &items[i]
+		switch it.Kind {
+		case core.ItemAssistant:
+			said = it
+		case core.ItemTurn:
+			// A turn's end (a steer's pause has none). One that went wrong shows, as the turn's last row.
+			if visible(it) {
+				seg = append(seg, it)
+			}
+			flush()
+			continue
+		}
 		if !visible(it) {
 			continue
 		}
@@ -526,7 +534,7 @@ func visible(it *core.Item) bool {
 	case core.ItemAssistant:
 		var d core.TextData
 		it.Decode(&d)
-		return strings.TrimSpace(d.Text) != "(noted)"
+		return !core.IsNoted(d.Text)
 	case core.ItemTask:
 		// A task started by a tool call in the foreground is that call; its row says it all. Only a task
 		// that runs on in the background after its call returned gets a row of its own.
