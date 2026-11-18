@@ -664,7 +664,7 @@ func (a *App) threadPanel(ctx *ui.Context) ui.Element {
 	} else {
 		items := a.itemsOf(id).Get()
 		content = ui.Div().Column().Grow(1).MinHeight(ui.Px(0)).
-			Child(a.transcript(ctx, th, items, "thread-"+id)).
+			Child(a.transcript(th, items, "thread-"+id)).
 			Child(ui.Div().Column().Gap(space2).PaddingX(space4).PaddingBottom(space4).Shrink(0).
 				Child(a.workingLine(ctx, th)).
 				Child(a.composerFor(ctx, th)))
