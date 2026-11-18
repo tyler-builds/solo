@@ -142,6 +142,7 @@ type App struct {
 	setupFocus  *ui.FocusHandle
 	setupAdding *ui.Signal[[]string] // folders picked whose search hasn't finished
 	setupSave   setupSaver
+	folderSaved chan struct{}                   // closed when the last change to the folders is saved (UI thread only)
 	pickFolder  func(done func(paths []string)) // replaces the system's folder picker, in tests
 	focusGained *ui.Signal[int]                 // counts the times the window came to the front
 	hints       hintState

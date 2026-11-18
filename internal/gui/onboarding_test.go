@@ -313,7 +313,12 @@ func TestSetupRepos(t *testing.T) {
 	// The picker: a folder outside git.
 	a.pickFolder = func(done func([]string)) { done([]string{homeDir("notes")}) }
 	u.Click("repos-choose")
-	u.WaitFor("the picked folder", func() bool { return u.Has("folder-~/notes") })
+	if !u.Has("folder-~/notes") {
+		t.Error("the picked folder isn't shown while it is searched")
+	}
+	u.WaitFor("the picked folder to be saved and searched", func() bool {
+		return slices.Contains(f.Settings().Folders, "~/notes") && len(a.setupAdding.Peek()) == 0
+	})
 	u.WaitForQueries()
 	mustShow(t, u, "Not in git. Threads work in it directly.")
 
@@ -339,6 +344,50 @@ func TestSetupRepos(t *testing.T) {
 	a.openSettings("repos")
 	u.Frame()
 	mustShow(t, u, "~/code", "~/notes", "FOUND 6 REPOSITORIES")
+}
+
+// Folders added one right after another, before the first is saved, are all saved, in the order they
+// were added, and each shows what was found in it. The backend here saves as one on another machine
+// does: the change is made to the settings read before the save, and sent whole a moment later, so two
+// saves at once would each lose the other's folder.
+func TestSetupReposAddedTogether(t *testing.T) {
+	f := &remoteSaves{setupFake: newSetupFake().projects()}
+	f.settings.Setup = "repos"
+	a, u := newSetupUI(t, f, 1440)
+	a.pickFolder = func(done func([]string)) { done([]string{homeDir("notes")}) }
+	u.Click("suggest-add-~/code")
+	u.Click("repos-choose")
+	u.Get("repos-path").Focus()
+	u.Type("~/empty")
+	u.Press("enter")
+	u.Click("suggest-add-~/src")
+	if !u.Has("folder-~/code") || !u.Has("folder-~/notes") || !u.Has("folder-~/empty") || !u.Has("folder-~/src") {
+		t.Error("a folder added isn't shown while it is searched")
+	}
+	u.WaitFor("the folders to be saved and searched", func() bool { return len(a.setupAdding.Peek()) == 0 })
+	u.WaitForQueries()
+	if got, want := f.Settings().Folders, []string{"~/code", "~/notes", "~/empty", "~/src"}; !slices.Equal(got, want) {
+		t.Errorf("folders %v, want %v", got, want)
+	}
+	if n := f.most.Load(); n != 1 {
+		t.Errorf("%d saves at once", n)
+	}
+	mustShow(t, u, "6 repositories · 1 folder not in git", "Not in git. Threads work in it directly.",
+		"Nothing found here", "2 repositories")
+
+	// A folder removed while another is added: both changes are kept.
+	u.Get("folder-~/code").ByName("Remove ~/code").Click()
+	u.Get("repos-path").Focus()
+	u.Type("~/work")
+	u.Press("enter")
+	u.WaitFor("the folders to be saved and searched", func() bool { return len(a.setupAdding.Peek()) == 0 })
+	u.WaitForQueries()
+	if got, want := f.Settings().Folders, []string{"~/notes", "~/empty", "~/src", "~/work"}; !slices.Equal(got, want) {
+		t.Errorf("folders %v, want %v", got, want)
+	}
+	if n := f.most.Load(); n != 1 {
+		t.Errorf("%d saves at once", n)
+	}
 }
 
 // With no folders and nothing found to suggest, the step says where to add them later.

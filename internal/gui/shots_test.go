@@ -104,8 +104,18 @@ func TestShots(t *testing.T) {
 		{"usage", func(a *App, f *fakeBackend) { f.rate = demoLimits(); a.rate.Set(f.rate) }},
 		{"usage-narrow", func(a *App, f *fakeBackend) { f.rate = demoLimits(); a.rate.Set(f.rate) }},
 		// Many threads at work: the pinned Working group caps its height and scrolls within itself.
-		{"working-many", func(a *App, f *fakeBackend) { manyWorking(f); a.setThreads(f.Threads()); f.rate = demoLimits(); a.rate.Set(f.rate) }},
-		{"working-many-narrow", func(a *App, f *fakeBackend) { manyWorking(f); a.setThreads(f.Threads()); f.rate = demoLimits(); a.rate.Set(f.rate) }},
+		{"working-many", func(a *App, f *fakeBackend) {
+			manyWorking(f)
+			a.setThreads(f.Threads())
+			f.rate = demoLimits()
+			a.rate.Set(f.rate)
+		}},
+		{"working-many-narrow", func(a *App, f *fakeBackend) {
+			manyWorking(f)
+			a.setThreads(f.Threads())
+			f.rate = demoLimits()
+			a.rate.Set(f.rate)
+		}},
 		{"usage-notice", func(a *App, f *fakeBackend) {
 			f.rate = []agent.Event{{Kind: agent.EventRateLimit, RateLimitType: "five_hour", Status: "rejected",
 				ResetsAt: float64(time.Now().Add(time.Hour).Unix())}}

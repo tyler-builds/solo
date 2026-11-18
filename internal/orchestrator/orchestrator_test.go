@@ -800,7 +800,7 @@ func TestRecentClosed(t *testing.T) {
 		closed = append(closed, v)
 	}
 	old := core.ThreadView{}
-	old.ID, old.Status, old.UpdatedAt = "old", core.StatusMerged, now.AddDate(0, 0, -(closedDays + 1)) // merged, never marked done
+	old.ID, old.Status, old.UpdatedAt = "old", core.StatusMerged, now.AddDate(0, 0, -(closedDays+1)) // merged, never marked done
 	closed = append(closed, old)
 	slices.Reverse(closed) // the order they come in doesn't matter
 

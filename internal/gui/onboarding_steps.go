@@ -180,11 +180,12 @@ func inFolder(paths []string, folder string) []string {
 }
 
 // addFolders adds folders to the ones searched, as Settings › Repositories does, and shows what the
-// search finds as soon as it is done.
+// search finds as soon as it is done. UI thread only.
 func (a *App) addFolders(paths []string) {
 	var add []string
 	for _, p := range paths {
-		if p = tildePath(strings.TrimSpace(p)); p != "" && !slices.Contains(a.cfg.Peek().Folders, p) {
+		if p = tildePath(strings.TrimSpace(p)); p != "" && !slices.Contains(a.cfg.Peek().Folders, p) &&
+			!slices.Contains(a.setupAdding.Peek(), p) && !slices.Contains(add, p) {
 			add = append(add, p)
 		}
 	}
@@ -192,27 +193,42 @@ func (a *App) addFolders(paths []string) {
 		return
 	}
 	a.setupAdding.Set(append(slices.Clone(a.setupAdding.Peek()), add...))
-	a.run("Adding the folder", func(context.Context) error {
-		err := a.b.UpdateSettings(func(s *core.Settings) {
-			for _, p := range add {
-				s.Folders = withFolder(s.Folders, p)
-			}
-		})
-		a.onUI(func() {
-			a.setupAdding.Set(slices.DeleteFunc(slices.Clone(a.setupAdding.Peek()), func(p string) bool { return slices.Contains(add, p) }))
-			a.syncFolders()
-		})
-		return err
+	a.changeFolders("Adding the folder", func(s *core.Settings) {
+		for _, p := range add {
+			s.Folders = withFolder(s.Folders, p)
+		}
+	}, func() {
+		a.setupAdding.Set(slices.DeleteFunc(slices.Clone(a.setupAdding.Peek()), func(p string) bool { return slices.Contains(add, p) }))
 	})
 }
 
-// removeFolder stops searching a folder.
+// removeFolder stops searching a folder. UI thread only.
 func (a *App) removeFolder(folder string) {
-	a.run("Removing the folder", func(context.Context) error {
-		err := a.b.UpdateSettings(func(s *core.Settings) {
-			s.Folders = slices.DeleteFunc(slices.Clone(s.Folders), func(f string) bool { return f == folder })
+	a.changeFolders("Removing the folder", func(s *core.Settings) {
+		s.Folders = slices.DeleteFunc(slices.Clone(s.Folders), func(f string) bool { return f == folder })
+	}, nil)
+}
+
+// changeFolders saves a change to the folders searched off the UI thread, once the changes made before
+// it are saved, then shows what the search found (after done, on the UI thread). Two folders added in
+// quick succession are then saved in the order they were added, and neither is lost: a backend on
+// another machine sends the whole list of folders, read before the save, so two saves at once would
+// each send a list without the other's folder. UI thread only.
+func (a *App) changeFolders(what string, change func(*core.Settings), done func()) {
+	prev, saved := a.folderSaved, make(chan struct{})
+	a.folderSaved = saved
+	a.run(what, func(context.Context) error {
+		defer close(saved)
+		if prev != nil {
+			<-prev
+		}
+		err := a.b.UpdateSettings(change)
+		a.onUI(func() {
+			if done != nil {
+				done()
+			}
+			a.syncFolders()
 		})
-		a.onUI(a.syncFolders)
 		return err
 	})
 }
