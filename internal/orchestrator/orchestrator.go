@@ -617,7 +617,7 @@ func (o *Orchestrator) recap(v core.ThreadView) string {
 			}
 		case core.ItemAssistant:
 			var d core.TextData
-			if it.Decode(&d) == nil && strings.TrimSpace(d.Text) != "(noted)" {
+			if it.Decode(&d) == nil && !core.IsNoted(d.Text) {
 				line = "You: " + clip(oneLine(d.Text), 400)
 			}
 		}

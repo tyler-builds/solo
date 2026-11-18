@@ -23,6 +23,8 @@
 //	bg <ms> <description...>   starts a background command and completes; after ms the command
 //	                           finishes and, as Claude does, a turn of its own ("wake") reads it.
 //	                           session.stopTask stops it first, with no turn after.
+//	                           A description that starts with "quiet" wakes to a turn with nothing
+//	                           new to say: its result is "(noted)".
 //	kill                       stops every background command inside the turn, as Claude's TaskStop
 //	slowclose <ms>             completes; closing the session later takes ms (and holds up every other
 //	                           request meanwhile, as one busy sidecar would)
@@ -445,6 +447,11 @@ func turn(s *fakeSession, sid, uuid, text string, event func(string, map[string]
 			result = skillTurn(s, sid, uuid, text, event)
 		} else {
 			result = fmt.Sprintf("echo: %s resume=%v", text, s.resumed)
+		}
+	case "wake":
+		result = fmt.Sprintf("echo: %s resume=%v", text, s.resumed)
+		if strings.HasPrefix(rest, "quiet") {
+			result = "(noted)"
 		}
 	case "fail":
 		status, errText = "failed", "scripted failure"

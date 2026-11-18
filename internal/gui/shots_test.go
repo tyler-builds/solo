@@ -198,6 +198,16 @@ func TestShots(t *testing.T) {
 			f.add(o, core.ItemAssistant, core.TextData{Text: "The repo is already on `main`, so I started **Install Solo from main** to rebuild the AppImage and install it."})
 			a.items = map[string]*ui.Signal[[]core.Item]{}
 		}},
+		// Solo's reply, then a turn that work it ran in the background started, with a line of its own:
+		// both show. With "(noted)", the wake adds no message.
+		{"solo-wake", func(a *App, f *fakeBackend) {
+			soloWoken(f, "", "That was the old background task, nothing else.")
+			a.items = map[string]*ui.Signal[[]core.Item]{}
+		}},
+		{"solo-wake-noted", func(a *App, f *fakeBackend) {
+			soloWoken(f, "", core.Noted)
+			a.items = map[string]*ui.Signal[[]core.Item]{}
+		}},
 		{"thinking", func(a *App, f *fakeBackend) {
 			// Solo mid-turn: its working line shows the first line of its newest thought's last paragraph.
 			for i := range f.threads {

@@ -263,7 +263,9 @@ func (c *Core) onEvent(e agent.Event) {
 		if e.ContextTokens > 0 {
 			t.row.ContextTokens = e.ContextTokens
 		}
-		if e.Status == agent.TurnCompleted && e.Result != "" {
+		// A turn that says it has nothing new (Noted: say, background work it waited on ended as
+		// expected) leaves the summary its last turn with news wrote.
+		if e.Status == agent.TurnCompleted && e.Result != "" && !IsNoted(e.Result) {
 			t.row.Summary = e.Result
 		}
 		itemsChanged, streamChanged = true, true
