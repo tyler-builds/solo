@@ -52,9 +52,9 @@ func (a *App) orchestratorView(ctx *ui.Context) ui.Element {
 	} else {
 		body = a.transcript(ctx, v, items, "orch")
 	}
-	body = a.landPanelFor(ctx, body) // prototype: the open merge cards, kept in view (landpanel.go)
 	return ui.Div().Column().Grow(1).MinHeight(ui.Px(0)).
-		Child(body).
+		// The merge cards still waiting, kept in view at the top right whatever the scroll (mergepill.go).
+		Child(ui.Div().Column().Grow(1).MinHeight(ui.Px(0)).Child(body).Child(ui.Component(a.mergePill))).
 		Child(ui.Div().Column().Align(ui.Center).PaddingX(gutter(ctx)).PaddingBottom(gutter(ctx) - space2).Shrink(0).
 			Child(ui.Div().Column().Gap(space2).Width(ui.Full).MaxWidth(ui.Px(chatMaxWidth)).
 				// A component of its own: what it reads re-renders it, not the conversation.
@@ -1129,41 +1129,20 @@ func (a *App) proposalCard(ctx *ui.Context, d core.ProposalData) ui.Element {
 			actions = ui.Div().Row().Align(ui.Center).Child(statusPill(ctx, th))
 		default:
 			id, title := d.ThreadID, th.Title
-			requestChanges := func() {
-				a.orchDraft.Set("Changes for “" + title + "”: ")
-				a.orchFocus.Focus()
-			}
 			// A narrow chat column keeps Merge and Review changes on the row and moves the rest to "…".
 			narrow := a.chatWidth(ctx) < 640
 			// The same control as the thread's header, and when it can't land yet, the same disabled
 			// button saying why.
-			land := a.landAction(ctx, th, false)
-			if land == nil {
-				land = a.landBlocked(th)
-			}
 			actions = ui.Div().Row().Align(ui.Center).Gap(space2).
-				Child(land).
+				Child(a.landElement(ctx, a.cardLand(th), false)).
 				Child(a.prLink(ctx, th)).
 				Child(ui.Button("Review changes").Secondary().Small().OnClick(func() { a.openThread(id, "changes") }))
 			if !narrow {
 				actions = actions.Child(ui.Button("Request changes").Ghost().Small().
-					Tooltip("Tell Solo what to change; it passes it on to the thread").OnClick(requestChanges))
+					Tooltip("Tell Solo what to change; it passes it on to the thread").OnClick(func() { a.requestChanges(title) }))
 			}
 			actions = actions.Child(ui.DropdownMenu(ui.IconButton(icons.Ellipsis).Ghost().Small().Label("More").Tooltip("More"),
-				func() []ui.MenuItem {
-					var items []ui.MenuItem
-					if narrow {
-						items = append(items, ui.MenuItem{Label: "Request changes", Icon: icons.MessageSquare, OnClick: requestChanges})
-					}
-					if th.CanDone {
-						label := "Done"
-						if asksToLand(th) {
-							label = "Mark done…"
-						}
-						items = append(items, ui.MenuItem{Label: label, Icon: icons.Check, OnClick: func() { a.markDone(th) }})
-					}
-					return append(items, ui.MenuItem{Label: "Discard thread…", Icon: icons.Trash, OnClick: func() { a.confirmDiscard(th) }})
-				}))
+				func() []ui.MenuItem { return a.cardMenu(th, narrow) }))
 		}
 		if isCompact(ctx) {
 			actions.Wrap()
@@ -1175,6 +1154,33 @@ func (a *App) proposalCard(ctx *ui.Context, d core.ProposalData) ui.Element {
 			Child(actions)
 		return card
 	})
+}
+
+// cardMenu is a merge card's "…" menu: Request changes when the card has no room for its button (request),
+// then extra, then Done (Mark done… when it would leave work unlanded) and Discard thread…. The merge
+// pill's rows have the same menu.
+func (a *App) cardMenu(th core.ThreadView, request bool, extra ...ui.MenuItem) []ui.MenuItem {
+	var items []ui.MenuItem
+	if request {
+		title := th.Title
+		items = append(items, ui.MenuItem{Label: "Request changes", Icon: icons.MessageSquare, OnClick: func() { a.requestChanges(title) }})
+	}
+	items = append(items, extra...)
+	if th.CanDone {
+		label := "Done"
+		if asksToLand(th) {
+			label = "Mark done…"
+		}
+		items = append(items, ui.MenuItem{Label: label, Icon: icons.Check, OnClick: func() { a.markDone(th) }})
+	}
+	return append(items, ui.MenuItem{Label: "Discard thread…", Icon: icons.Trash, OnClick: func() { a.confirmDiscard(th) }})
+}
+
+// requestChanges starts a message to Solo asking for changes to the thread: Solo passes them on.
+func (a *App) requestChanges(title string) {
+	a.pillOpen.Set(false)
+	a.orchDraft.Set("Changes for “" + title + "”: ")
+	a.orchFocus.Focus()
 }
 
 // questionCard is an AskUserQuestion in a transcript: open, or how it was answered.
@@ -1919,25 +1925,15 @@ func (a *App) markBuilt(ctx *ui.Context, scope, key string, on bool) {
 	ctx.Post(func() { a.builtVer.Update(func(n int) int { return n + 1 }) })
 }
 
-// isAction reports whether a transcript row waits on the user: a merge proposal not yet acted on, or
-// a question not yet answered.
+// isAction reports whether a transcript row waits on the user: a question not yet answered. Merge cards
+// wait on the user too, but the merge pill keeps them in view (mergepill.go).
 func (a *App) isAction(r row) bool {
-	if r.item == nil {
+	if r.item == nil || r.item.Kind != core.ItemQuestion {
 		return false
 	}
-	switch r.item.Kind {
-	case core.ItemProposal:
-		if landPanelKind != "" {
-			return false // prototype: the panel of open merge cards keeps them in view (landpanel.go)
-		}
-		th, ok := a.thread(r.item.Ref)
-		return ok && th.CanMerge && !th.Scratch
-	case core.ItemQuestion:
-		var d core.QuestionData
-		r.item.Decode(&d)
-		return !d.Cancelled && len(d.Answers) == 0
-	}
-	return false
+	var d core.QuestionData
+	r.item.Decode(&d)
+	return !d.Cancelled && len(d.Answers) == 0
 }
 
 // offscreenActions returns the rows of Solo's chat that wait on the user and have scrolled out of
@@ -1985,6 +1981,5 @@ func (a *App) chatWidth(ctx *ui.Context) float32 {
 	if a.openID.Get() != "" {
 		chat -= a.panelWidth(ctx) + space2
 	}
-	chat -= a.landShelfW // the prototype shelf docked beside it (landpanel.go)
 	return min(chat, chatMaxWidth+2*space6)
 }

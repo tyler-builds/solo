@@ -267,6 +267,17 @@ Raw `SDKMessage`s are also appended to a per-session JSONL file for debugging an
   update on its way, which puts it after Solo's answer to the turn that made the commits. The card is
   also posted anew when checks that failed pass again. Nothing is re-posted when nothing was pushed,
   the thread has no card, none of its PRs is still open, or it is a scratch thread.
+- **Merge pill** (`gui/mergepill.go`): a pill at the top right of Solo's chat (not a thread's) counts the
+  merge cards still waiting on the user ("3 to land") with a dot per card in its checks' color, so they
+  stay one glance away however far the chat has moved past them. A card waits while its thread hasn't
+  merged, been discarded or been marked done (`cardLive`), newest first; with none, there is no pill.
+  It covers nothing until clicked; then it lists the cards over the chat, a row each, with every action
+  the card has: the landing button (the header's and the card's, from one description, `gui/land.go`'s
+  `landSpec`, so it acts and shows busy the same way), the PR link(s) with their checks, Review changes,
+  and "…" for Request changes, Show card in chat (scrolls to the card and its summary), Done and Discard.
+  A narrow list gives each row's title a line of its own. Escape, a press outside and its close button
+  close it. Since the pill keeps merge cards in view, the chat's "needs you" jump control counts only
+  unanswered questions.
 - Multi-repository threads: one task across repositories (client, API, database) is one thread with
   a part per repository (`core.Part`: worktree, branch, base, PR; stored as JSON in `threads.parts`,
   the first mirrored into the single-repository columns). Every repository gets a worktree on the same
