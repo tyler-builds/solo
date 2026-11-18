@@ -87,11 +87,7 @@ func (a *App) rail(ctx *ui.Context) ui.Element {
 		running = running || th.InTurn || len(th.Background) > 0
 	}
 	// Elapsed times tick while anything works.
-	if running {
-		tick := ui.Local(ctx, "tick", 0)
-		tick.Get()
-		ctx.After(time.Second, func() { tick.Update(func(n int) int { return n + 1 }) })
-	}
+	ticking(ctx, running)
 
 	head := ui.Div().Row().Align(ui.Center).Gap(space2).PaddingX(space4).Height(ui.Px(38)).Shrink(0).
 		Child(ui.Text("Threads").FontSize(14).Semibold().NoWrap()).

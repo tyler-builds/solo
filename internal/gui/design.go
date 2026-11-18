@@ -559,6 +559,16 @@ func statusIcon(status string) *icons.Icon {
 	return icons.Circle
 }
 
+// ticking renders the component again in a second while on, so the times it shows keep counting.
+func ticking(ctx *ui.Context, on bool) {
+	if !on {
+		return
+	}
+	tick := ui.Local(ctx, "tick", 0)
+	tick.Get()
+	ctx.After(time.Second, func() { tick.Update(func(n int) int { return n + 1 }) })
+}
+
 // bgSince is when a thread's oldest background work started; zero without any.
 func bgSince(v core.ThreadView) time.Time {
 	var t time.Time
