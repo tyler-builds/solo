@@ -75,7 +75,7 @@ if command -v makensis >/dev/null; then
 else
 	echo "makensis not found: building the zip only (install NSIS for the installer)" >&2
 fi
-${JAMB:-go run github.com/tyler-builds/jamb/cmd/jamb@v0.4.3} package "${installer[@]}" "./$app"
+${JAMB:-go run github.com/tyler-builds/jamb/cmd/jamb@v0.4.4} package "${installer[@]}" "./$app"
 
 zip=$dist/Solo-$version-windows-amd64.zip
 cp "$app/dist/solo-$jv-windows-amd64.zip" "$zip"
