@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tyler-builds/jamb/access"
 	"github.com/tyler-builds/jamb/ui"
 	"github.com/tyler-builds/jamb/ui/uitest"
 
@@ -50,6 +51,9 @@ func TestShots(t *testing.T) {
 		"composer-at-narrow":   {"draft-a1f3c9d2-oauth-area", "Also check @tok"},
 		"worker-steer":         {"draft-a1f3c9d2-oauth-area", "Use the v2 token endpoint instead"},
 	}
+	// A code block's copy button (the index among the chat's), hovered or clicked once the window is up.
+	codeHover := map[string]int{"code-hover": 0}
+	codeCopy := map[string]int{"code-copied": 1}
 	// Elements clicked, by key, once the window is up.
 	clicking := map[string][]string{"merge-pill-menu": {"merge-pill-more-" + longReposID}}
 	// pill puts the merge pill's cards in the chat (mergePillBackend), the conversation moved past them,
@@ -160,6 +164,11 @@ func TestShots(t *testing.T) {
 				Images: []string{before, after}})
 			a.items = map[string]*ui.Signal[[]core.Item]{}
 		}},
+		// An agent's code blocks, each with its copy button: several lines, one line, one in a list and
+		// one too long for the chat. Inline code has none.
+		{"code", codeChat},
+		{"code-hover", codeChat},
+		{"code-copied", codeChat},
 		{"agent-images-thread", func(a *App, f *fakeBackend) {
 			before, after := formScreenshots(t.TempDir())
 			f.add("c3d4e5f6-forms", core.ItemAssistant, core.TextData{Text: "Moved the email field under its label below 720 px, so it no longer " +
@@ -396,6 +405,7 @@ func TestShots(t *testing.T) {
 			soloOnBackground(f)
 			a.setThreads(f.Threads())
 		}},
+		{"phone-code", codeChat},
 		{"phone-thinking", func(a *App, f *fakeBackend) {
 			soloWorking(f, nil)
 			a.setThreads(f.Threads())
@@ -413,7 +423,7 @@ func TestShots(t *testing.T) {
 			}
 			if theme.name == "light" && sh.name != "main" && sh.name != "changes" && sh.name != "land-cards" &&
 				sh.name != "scrolled-up" && sh.name != "usage" && sh.name != "phone-main" && !busy &&
-				sh.name != "merge-pill-three" && sh.name != "merge-pill-three-open" {
+				sh.name != "merge-pill-three" && sh.name != "merge-pill-three-open" && !strings.HasPrefix(sh.name, "code") {
 				continue
 			}
 			f := demoBackend()
@@ -459,6 +469,21 @@ func TestShots(t *testing.T) {
 					u.Advance(100 * time.Millisecond)
 				}
 			}
+			if i, ok := codeHover[sh.name]; ok {
+				if b := codeCopyButton(u, i); b != nil {
+					u.Runtime().PointerMove(b.Bounds.X+b.Bounds.W/2, b.Bounds.Y+b.Bounds.H/2, 0)
+					for i := 0; i < 10; i++ { // long enough for the tooltip
+						u.Advance(100 * time.Millisecond)
+					}
+				}
+			}
+			if i, ok := codeCopy[sh.name]; ok {
+				if b := codeCopyButton(u, i); b != nil {
+					u.ClickAt(b.Bounds.X+b.Bounds.W/2, b.Bounds.Y+b.Bounds.H/2)
+					u.Runtime().PointerMove(10, 10, 0) // the check, not the hover look
+					u.Advance(100 * time.Millisecond)
+				}
+			}
 			if key := scrollUp[sh.name]; key != "" {
 				u.Get(key).Scroll(0, -3000)
 				for i := 0; i < 10; i++ {
@@ -493,6 +518,50 @@ func TestShots(t *testing.T) {
 			u.Close()
 		}
 	}
+}
+
+// shotCode is an agent's reply with code blocks of each shape.
+const shotCode = "Run the GUI's screenshot test with `SOLO_SHOTS` set:\n\n" +
+	"```sh\nSOLO_SHOTS=/tmp/shots go test ./internal/gui -run TestShots\n```\n\n" +
+	"Messages go through one view, which colors code with the shared highlighter:\n\n" +
+	"```go\nfunc (a *App) md(ctx *ui.Context, text string) ui.Element {\n\treturn markdown.View(text).Code(code).CopyCode(true)\n}\n```\n\n" +
+	"1. Rebuild and install:\n\n   ```sh\n   go install ./cmd/solo\n   ```\n\n" +
+	"2. The log says where the shots went:\n\n" +
+	"```\nshots: wrote 64 files to /tmp/shots (dark-main.png, dark-thread.png, dark-changes.png, dark-split.png, light-main.png, light-changes.png and 58 more)\n```"
+
+// codeChat ends Solo's chat with a reply that has code blocks (shotCode).
+func codeChat(a *App, f *fakeBackend) {
+	f.add(core.OrchestratorID, core.ItemUser, core.UserData{Text: "How do I take the screenshots again?"})
+	f.add(core.OrchestratorID, core.ItemAssistant, core.TextData{Text: shotCode})
+	a.items = map[string]*ui.Signal[[]core.Item]{}
+}
+
+// codeCopyButton returns the copy button of the code block i of the window, or nil when code blocks
+// have none.
+func codeCopyButton(u *uitest.UI, i int) *access.Node {
+	var blocks, buttons []*access.Node
+	u.Tree().Walk(func(n *access.Node) bool {
+		switch {
+		case n.Role == access.RoleGroup && (n.Name == "Code" || strings.HasPrefix(n.Name, "Code, ")):
+			blocks = append(blocks, n)
+		case n.Role == access.RoleButton && n.Name == "Copy":
+			buttons = append(buttons, n)
+		}
+		return true
+	})
+	var inBlocks []*access.Node
+	for _, b := range buttons {
+		for _, bl := range blocks {
+			if r := bl.Bounds; b.Bounds.X >= r.X && b.Bounds.X+b.Bounds.W <= r.X+r.W && b.Bounds.Y >= r.Y && b.Bounds.Y+b.Bounds.H <= r.Y+r.H {
+				inBlocks = append(inBlocks, b)
+				break
+			}
+		}
+	}
+	if i >= len(inBlocks) {
+		return nil
+	}
+	return inBlocks[i]
 }
 
 // openThreadCard ends Solo's conversation with its answer to the settings thread finishing while the

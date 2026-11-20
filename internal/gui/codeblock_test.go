@@ -40,3 +40,40 @@ func TestLongCodeLineScrolls(t *testing.T) {
 		}
 	}
 }
+
+// Each code block in a message has a copy button, which copies the block's code alone: in Solo's
+// reply (several lines, one line, with a language, inside a list) and in the user's bubble. Inline code
+// has none.
+func TestCodeBlockCopyButton(t *testing.T) {
+	f := demoBackend()
+	f.add(core.OrchestratorID, core.ItemUser, core.UserData{Text: "Why does this fail?\n\n```\nmake: *** No rule to make target 'all'.\n```"})
+	f.add(core.OrchestratorID, core.ItemAssistant, core.TextData{Text: shotCode})
+	_, u := newUIWith(t, f, func(a *App) { a.items = map[string]*ui.Signal[[]core.Item]{} })
+	u.Settle()
+	want := []string{
+		"make: *** No rule to make target 'all'.",
+		"SOLO_SHOTS=/tmp/shots go test ./internal/gui -run TestShots",
+		"func (a *App) md(ctx *ui.Context, text string) ui.Element {\n\treturn markdown.View(text).Code(code).CopyCode(true)\n}",
+		"go install ./cmd/solo",
+		"shots: wrote 64 files to /tmp/shots (dark-main.png, dark-thread.png, dark-changes.png, dark-split.png, light-main.png, light-changes.png and 58 more)",
+	}
+	var got []string
+	for i := 0; ; i++ {
+		b := codeCopyButton(u, i)
+		if b == nil {
+			break
+		}
+		u.SetClipboard("")
+		u.ClickAt(b.Bounds.X+b.Bounds.W/2, b.Bounds.Y+b.Bounds.H/2)
+		got = append(got, u.Clipboard())
+	}
+	if len(got) < len(want) {
+		t.Fatalf("%d code blocks with a copy button; want at least %d", len(got), len(want))
+	}
+	got = got[len(got)-len(want):] // the demo's earlier messages may have code too
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("button %d copied %q; want %q", i, got[i], want[i])
+		}
+	}
+}
