@@ -580,7 +580,7 @@ func (a *App) rowView(ctx *ui.Context, v core.ThreadView, r row) ui.Element {
 		if r.live.Thinking {
 			return thinkingView(ctx, r.live.Text, true)
 		}
-		return a.agentText(ctx, r.live.Text, viewBases(v), nil)
+		return a.agentText(ctx, r.live.Text, viewBases(v), nil, nil)
 	case r.queued != nil:
 		tag := ui.Div().Row().Align(ui.Center).Gap(4).PaddingRight(2).
 			Tooltip("Solo reads this when it finishes what it's doing").
@@ -605,10 +605,10 @@ func (a *App) rowView(ctx *ui.Context, v core.ThreadView, r row) ui.Element {
 				Child(ui.Div().Row().Align(ui.Center).Gap(6).PaddingLeft(2).
 					Child(brandMark(14)).
 					Child(ui.Text("Solo").FontSize(12).Medium().TextColor(t.TextMuted))).
-				Child(a.messageImages(ctx, d.Images, ui.Start)).
+				Child(a.messageImages(ctx, d.Images, ui.Start, a.conversationGallery(v))).
 				Child(ui.Div().PaddingX(space3+2).PaddingY(space2+2).Radius(radiusL).MaxWidth(ui.Percent(92)).
 					Background(t.Surface).Border(1, t.Border).
-					Child(a.agentText(ctx, d.Text, viewBases(v), nil)))
+					Child(a.agentText(ctx, d.Text, viewBases(v), nil, nil)))
 		}
 		var tag ui.Element
 		if d.Steer {
@@ -621,7 +621,7 @@ func (a *App) rowView(ctx *ui.Context, v core.ThreadView, r row) ui.Element {
 	case core.ItemAssistant:
 		var d core.TextData
 		it.Decode(&d)
-		return a.agentText(ctx, d.Text, viewBases(v), d.Images)
+		return a.agentText(ctx, d.Text, viewBases(v), d.Images, a.conversationGallery(v))
 	default:
 		return a.stepView(ctx, it, v)
 	}
@@ -631,13 +631,13 @@ func (a *App) rowView(ctx *ui.Context, v core.ThreadView, r row) ui.Element {
 // if any ("Steered", "Queued").
 func (a *App) userMessage(ctx *ui.Context, v core.ThreadView, text string, images []string, tag ui.Element) ui.Element {
 	col := ui.Div().Column().Align(ui.End).Gap(space1 + 2).MaxWidth(ui.Percent(85)).
-		Child(a.messageImages(ctx, images, ui.End))
+		Child(a.messageImages(ctx, images, ui.End, a.conversationGallery(v)))
 	if strings.TrimSpace(text) != "" {
 		// The bubble is as wide as its text up to the column's width: a code block with a long line
 		// scrolls inside it rather than widening it past the column.
 		col = col.Child(ui.Div().PaddingX(space2 + 2).PaddingY(space1 + 2).Radius(radiusL).
 			MaxWidth(ui.Percent(100)).Background(ctx.Theme().SurfaceActive).
-			Child(a.md(ctx, hardBreaks(text), viewBases(v))))
+			Child(a.md(ctx, hardBreaks(text), viewBases(v), nil)))
 	}
 	if tag != nil {
 		col = col.Child(tag)
@@ -652,7 +652,7 @@ func (a *App) stepView(ctx *ui.Context, it *core.Item, v core.ThreadView) ui.Ele
 	case core.ItemAssistant:
 		var d core.TextData
 		it.Decode(&d)
-		return a.agentText(ctx, d.Text, viewBases(v), d.Images) // on the edge of the steps around it
+		return a.agentText(ctx, d.Text, viewBases(v), d.Images, a.conversationGallery(v)) // on the edge of the steps around it
 	case core.ItemThinking:
 		var d core.TextData
 		it.Decode(&d)
@@ -1229,7 +1229,7 @@ func (a *App) proposalCard(ctx *ui.Context, d core.ProposalData) ui.Element {
 		card := ui.Div().Column().Gap(space3).Padding(cardPad).Radius(radiusL).Background(t.Surface).Key("proposal-"+d.ThreadID).
 			Border(1, t.BorderStrong).
 			Child(a.proposalHeader(ctx, th)).
-			Child(a.agentText(ctx, d.Summary, a.threadBases(d.ThreadID), nil)).
+			Child(a.agentText(ctx, d.Summary, a.threadBases(d.ThreadID), nil, nil)).
 			Child(actions)
 		return card
 	})
@@ -1746,7 +1746,7 @@ func (a *App) composer(ctx *ui.Context, v core.ThreadView, key, scope, placehold
 			strip := ui.Div().Key(key + "-images").Row().Wrap().Gap(space2).PaddingTop(space1).PaddingBottom(space2)
 			for i, p := range imgs {
 				idx := i
-				strip = strip.Child(a.thumb(ctx, p, 56, func() {
+				strip = strip.Child(a.thumb(ctx, p, 56, func() []string { return images.Peek() }, func() {
 					images.Set(slices.Delete(slices.Clone(images.Peek()), idx, idx+1))
 					focus.Focus() // the remove button goes with the image
 				}))

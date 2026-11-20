@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/tyler-builds/solo/internal/launch"
+	"image"
 	"maps"
 	"reflect"
 	"slices"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/tyler-builds/jamb/access"
+	"github.com/tyler-builds/jamb/dialog"
 	"github.com/tyler-builds/jamb/icons"
 	"github.com/tyler-builds/jamb/input"
 	"github.com/tyler-builds/jamb/ui"
@@ -82,12 +84,13 @@ type App struct {
 	// The merge pill's list of open merge cards is open (mergepill.go); pillFocus is the pill's focus.
 	pillOpen    *ui.Signal[bool]
 	pillFocus   *ui.FocusHandle
-	lightbox    *ui.Signal[string]          // the image shown full size, or ""
+	lightbox    *ui.Signal[viewer]          // the image shown full size, if any (lightbox.go)
 	settingsTab string                      // the tab Settings opens on
 	orchImages  *ui.Signal[[]string]        // images attached to the message being written to Solo
 	busy        *ui.Signal[map[string]bool] // threads with a landing action under way (merge, open PR)
 	railQuery   *ui.Signal[string]          // the rail's filter
 	imgs        map[string]*ui.ImageSource  // decoded attachments, by path (UI thread only)
+	imgData     map[string][]byte           // attachments fetched at full size (RemoteImages), as stored (UI thread only)
 	imgLoading  map[string]bool             // attachments being fetched (RemoteImages; UI thread only)
 	chartSpecs  map[string]parsedChart      // chart blocks read, by body (see chartSpec; UI thread only)
 	imgVer      *ui.Signal[int]             // counts the attachments that have arrived
@@ -116,10 +119,12 @@ type App struct {
 	mu         sync.Mutex
 	post       func(func())
 	toast      func(variant ui.ToastVariant, title, msg string)
-	focused    func() bool       // whether Solo's window is in front (UI thread only)
-	wasFocused bool              // the window's focus at the last check (focusWatch)
-	raise      func()            // brings Solo's window to the front (UI thread only)
-	clipboard  func(text string) // copies text (UI thread only)
+	focused    func() bool                                       // whether Solo's window is in front (UI thread only)
+	wasFocused bool                                              // the window's focus at the last check (focusWatch)
+	raise      func()                                            // brings Solo's window to the front (UI thread only)
+	clipboard  func(text string)                                 // copies text (UI thread only)
+	clipImage  func(image.Image)                                 // copies an image, as pixels (UI thread only)
+	saveFile   func(dialog.FileOptions, func(dialog.FileResult)) // asks where to save a file (UI thread only)
 
 	// Touch says the UI is used with fingers, as on a phone: it is drawn larger (touchZoom), Enter in a
 	// message makes a new line rather than sending it, and the hints of keyboard shortcuts are left out.
@@ -207,11 +212,12 @@ func New(b Backend) *App {
 		askOpen:     ui.NewSignal(""),
 		pillOpen:    ui.NewSignal(false),
 		pillFocus:   ui.NewFocusHandle(),
-		lightbox:    ui.NewSignal(""),
+		lightbox:    ui.NewSignal(viewer{}),
 		orchImages:  ui.NewSignal([]string(nil)),
 		busy:        ui.NewSignal(map[string]bool{}),
 		railQuery:   ui.NewSignal(""),
 		imgs:        map[string]*ui.ImageSource{},
+		imgData:     map[string][]byte{},
 		imgLoading:  map[string]bool{},
 		chartSpecs:  map[string]parsedChart{},
 		imgVer:      ui.NewSignal(0),
@@ -671,6 +677,8 @@ func (a *App) Root(ctx *ui.Context) ui.Element {
 		a.focused = ctx.Window().Focused
 		a.raise = ctx.Window().Focus
 		a.clipboard = ctx.SetClipboard
+		a.clipImage = ctx.SetClipboardImage
+		a.saveFile = ctx.Window().SaveFile
 		if rm := a.Remote; rm != nil {
 			a.remoteState.Set(rm.State())
 			post := ctx.Post

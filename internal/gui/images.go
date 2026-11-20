@@ -51,11 +51,15 @@ func (a *App) image(path string, full bool) (src *ui.ImageSource, loading bool) 
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 			defer cancel()
 			var src *ui.ImageSource
-			if data, err := a.b.ReadImage(ctx, path, side); err == nil {
+			data, err := a.b.ReadImage(ctx, path, side)
+			if err == nil {
 				src, _ = ui.ImageFromBytes(data)
 			}
 			a.onUI(func() {
 				a.imgs[key] = src
+				if full && src != nil {
+					a.imgData[path] = data // for Copy image (see fullImage)
+				}
 				delete(a.imgLoading, key)
 				a.imgVer.Update(func(n int) int { return n + 1 })
 			})
@@ -70,9 +74,10 @@ func (a *App) image(path string, full bool) (src *ui.ImageSource, loading bool) 
 	return nil, true
 }
 
-// thumb is a square preview of an image; a click shows it full size. With remove, it has a button
-// that takes it out of the message being written.
-func (a *App) thumb(ctx *ui.Context, path string, size float32, remove func()) ui.Element {
+// thumb is a square preview of an image; a click shows it full size, among the images g lists, and a
+// right click offers to copy it. With remove, it has a button that takes it out of the message being
+// written.
+func (a *App) thumb(ctx *ui.Context, path string, size float32, g gallery, remove func()) ui.Element {
 	t := ctx.Theme()
 	box := ui.Div().Width(ui.Px(size)).Height(ui.Px(size)).Shrink(0).Radius(radiusM).
 		Border(1, t.Border).Background(t.Background).ClipContent()
@@ -85,7 +90,8 @@ func (a *App) thumb(ctx *ui.Context, path string, size float32, remove func()) u
 			Child(ui.Icon(icons.ImageOff).Size(16).Color(t.TextSubtle))
 	} else {
 		box = box.Cursor(ui.CursorPointer).Role(access.RoleButton).Label("View image").TabIndex(0).
-			OnClick(func() { a.lightbox.Set(path) }).
+			OnClick(func() { a.showImage(path, g) }).
+			ContextMenu(func() []ui.MenuItem { return a.imageMenu(path) }).
 			Child(ui.Image(src).Size(ui.Full, ui.Full).Fit(ui.FitCover).Alt("Attached image"))
 	}
 	if remove == nil {
@@ -101,8 +107,9 @@ func (a *App) thumb(ctx *ui.Context, path string, size float32, remove func()) u
 				Child(ui.Icon(icons.X).Size(11).Color(t.TextMuted))))
 }
 
-// messageImages shows a sent message's images, aligned to its side of the conversation.
-func (a *App) messageImages(ctx *ui.Context, paths []string, side ui.Alignment) ui.Element {
+// messageImages shows a sent message's images, aligned to its side of the conversation; a click opens
+// one among the images g lists.
+func (a *App) messageImages(ctx *ui.Context, paths []string, side ui.Alignment, g gallery) ui.Element {
 	if len(paths) == 0 {
 		return nil
 	}
@@ -115,31 +122,9 @@ func (a *App) messageImages(ctx *ui.Context, paths []string, side ui.Alignment) 
 		row = row.Justify(ui.End)
 	}
 	for _, p := range paths {
-		row = row.Child(a.thumb(ctx, p, size, nil))
+		row = row.Child(a.thumb(ctx, p, size, g, nil))
 	}
 	return row
-}
-
-// lightboxDialog shows one image as large as the window allows.
-func (a *App) lightboxDialog(ctx *ui.Context) ui.Element {
-	path := a.lightbox.Get()
-	if path == "" {
-		return nil
-	}
-	src, _ := a.image(path, true)
-	if src == nil {
-		return nil
-	}
-	ww, wh := ctx.WindowSize()
-	iw, ih := src.Size()
-	maxW, maxH := ww*0.8, wh*0.72
-	scale := min(1, maxW/float32(iw), maxH/float32(ih))
-	w, h := float32(iw)*scale, float32(ih)*scale
-	close := func() { a.lightbox.Set("") }
-	body := ui.Div().Row().Justify(ui.Center).Width(ui.Full).
-		Child(ui.Image(src).Size(ui.Px(w), ui.Px(h)).Fit(ui.FitContain).Radius(radiusM).Alt(filepath.Base(path)))
-	return ui.Modal("Image", body).Width(ui.Px(max(w+48, 320))).MaxWidth(ui.Px(ww * 0.9)).
-		CloseOnBackdrop().OnClose(close).Key("lightbox")
 }
 
 // imageLoader loads the images of a message in markdown (see md): those among images, its own
@@ -194,13 +179,13 @@ func inlineImages(md string, images []string) string {
 
 // agentText draws an agent's message, which may show images (core.TextData.Images) and charts. A line
 // that only shows its images is drawn as a row of previews where it stands, each scaled to fit with its
-// caption below; a click opens one full size. An image among other text is left to the markdown view
+// caption below; a click opens one full size, among the images g lists. An image among other text is left to the markdown view
 // (see md). A chart block (see chartspec) is drawn as a chart where it stands, unless it doesn't read as
 // one: then it shows as code.
-func (a *App) agentText(ctx *ui.Context, text string, bases []string, images []string) ui.Element {
+func (a *App) agentText(ctx *ui.Context, text string, bases []string, images []string, g gallery) ui.Element {
 	parts := a.chartParts(text, images)
 	if len(parts) == 0 || len(parts) == 1 && parts[0].shots == nil && parts[0].chart == nil {
-		return a.md(ctx, text, bases, images...)
+		return a.md(ctx, text, bases, g, images...)
 	}
 	col := ui.Div().Column().Gap(space3).MinWidth(ui.Px(0))
 	for i, p := range parts {
@@ -209,9 +194,9 @@ func (a *App) agentText(ctx *ui.Context, text string, bases []string, images []s
 		case p.chart != nil:
 			e = chartView(ctx, p.chart)
 		case p.shots != nil:
-			e = a.imageRow(ctx, p.shots)
+			e = a.imageRow(ctx, p.shots, g)
 		default:
-			e = a.md(ctx, p.text, bases, images...)
+			e = a.md(ctx, p.text, bases, g, images...)
 		}
 		col = col.Child(ui.Div().Column().Key(fmt.Sprintf("part%d", i)).Child(e))
 	}
@@ -294,7 +279,7 @@ func imageLines(md string, images []string) []messagePart {
 }
 
 // imageRow shows a message's images side by side, wrapping when the column is narrow.
-func (a *App) imageRow(ctx *ui.Context, shots []shot) ui.Element {
+func (a *App) imageRow(ctx *ui.Context, shots []shot, g gallery) ui.Element {
 	w := float32(440)
 	if len(shots) > 1 {
 		w = 236
@@ -304,14 +289,14 @@ func (a *App) imageRow(ctx *ui.Context, shots []shot) ui.Element {
 	}
 	row := ui.Div().Row().Wrap().Gap(space3).Align(ui.Start)
 	for _, s := range shots {
-		row = row.Child(a.shotView(ctx, s, w))
+		row = row.Child(a.shotView(ctx, s, w, g))
 	}
 	return row
 }
 
 // shotView is one image of a message: a preview at most maxW wide and as tall, which keeps the
-// image's shape, with its caption under it.
-func (a *App) shotView(ctx *ui.Context, s shot, maxW float32) ui.Element {
+// image's shape, with its caption under it. A click opens it among the images g lists.
+func (a *App) shotView(ctx *ui.Context, s shot, maxW float32, g gallery) ui.Element {
 	t := ctx.Theme()
 	name := s.alt
 	if name == "" {
@@ -337,7 +322,8 @@ func (a *App) shotView(ctx *ui.Context, s shot, maxW float32) ui.Element {
 	default:
 		path := s.path
 		box = box.Cursor(ui.CursorPointer).Role(access.RoleButton).Label("View " + name).TabIndex(0).
-			OnClick(func() { a.lightbox.Set(path) }).
+			OnClick(func() { a.showImage(path, g) }).
+			ContextMenu(func() []ui.MenuItem { return a.imageMenu(path) }).
 			Child(ui.Image(src).Size(ui.Full, ui.Full).Fit(ui.FitContain).Alt(name))
 	}
 	col := ui.Div().Column().Gap(space1).Width(ui.Px(w)).Child(box)

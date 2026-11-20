@@ -57,11 +57,11 @@ func TestAgentMessageShowsItsImages(t *testing.T) {
 		func() { u.ByRole(access.RoleLink, "icon").Click() },
 		func() { u.ByRole(access.RoleButton, "View After the fix").Click() },
 	} {
-		a.lightbox.Set("")
+		a.lightbox.Set(viewer{})
 		u.Settle()
 		open()
-		if a.lightbox.Get() != att {
-			t.Errorf("%d: lightbox shows %q", i, a.lightbox.Get())
+		if a.lightbox.Get().path() != att {
+			t.Errorf("%d: lightbox shows %q", i, a.lightbox.Get().path())
 		}
 	}
 }
