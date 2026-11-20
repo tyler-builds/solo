@@ -82,19 +82,19 @@ type App struct {
 	foldedAsks  *ui.Signal[map[string]bool] // pinned questions the user folded, by tool-use ID
 	askOpen     *ui.Signal[string]          // the pinned question the user last opened, by tool-use ID
 	// The merge pill's list of open merge cards is open (mergepill.go); pillFocus is the pill's focus.
-	pillOpen    *ui.Signal[bool]
-	pillFocus   *ui.FocusHandle
-	lightbox    *ui.Signal[viewer]          // the image shown full size, if any (lightbox.go)
-	settingsTab string                      // the tab Settings opens on
-	orchImages  *ui.Signal[[]string]        // images attached to the message being written to Solo
-	busy        *ui.Signal[map[string]bool] // threads with a landing action under way (merge, open PR)
-	railQuery   *ui.Signal[string]          // the rail's filter
-	imgs        map[string]*ui.ImageSource  // decoded attachments, by path (UI thread only)
-	imgData     map[string][]byte           // attachments fetched at full size (RemoteImages), as stored (UI thread only)
-	imgLoading  map[string]bool             // attachments being fetched (RemoteImages; UI thread only)
-	chartSpecs  map[string]parsedChart      // chart blocks read, by body (see chartSpec; UI thread only)
-	imgVer      *ui.Signal[int]             // counts the attachments that have arrived
-	lists       map[string]*ui.ListHandle   // transcript lists, by scope, so a send can scroll one (UI thread only)
+	pillOpen        *ui.Signal[bool]
+	pillFocus       *ui.FocusHandle
+	lightbox        *ui.Signal[viewer]          // the image shown full size, if any (lightbox.go)
+	settingsTab     string                      // the tab Settings opens on
+	orchAttachments *ui.Signal[[]attachment]    // files attached to the message being written to Solo
+	busy            *ui.Signal[map[string]bool] // threads with a landing action under way (merge, open PR)
+	railQuery       *ui.Signal[string]          // the rail's filter
+	imgs            map[string]*ui.ImageSource  // decoded attachments, by path (UI thread only)
+	imgData         map[string][]byte           // attachments fetched at full size (RemoteImages), as stored (UI thread only)
+	imgLoading      map[string]bool             // attachments being fetched (RemoteImages; UI thread only)
+	chartSpecs      map[string]parsedChart      // chart blocks read, by body (see chartSpec; UI thread only)
+	imgVer          *ui.Signal[int]             // counts the attachments that have arrived
+	lists           map[string]*ui.ListHandle   // transcript lists, by scope, so a send can scroll one (UI thread only)
 
 	items map[string]*ui.Signal[[]core.Item] // UI thread only
 	// views holds a signal for each thread that something has asked for by ID (see thread), and rows
@@ -185,51 +185,51 @@ type confirmation struct {
 // New creates the UI over a backend.
 func New(b Backend) *App {
 	a := &App{
-		b:           b,
-		threads:     ui.NewSignal(b.Threads()),
-		todos:       ui.NewSignal(b.Todos(false)),
-		todoFold:    ui.NewSignal[*bool](nil),
-		repos:       ui.NewSignal(b.RepoPaths()),
-		plain:       ui.NewSignal(b.PlainFolders()),
-		rate:        ui.NewSignal(b.RateLimits()),
-		pending:     ui.NewSignal(loadPending(b, b.Threads())),
-		secrets:     ui.NewSignal(loadSecrets(b)),
-		navSel:      ui.NewSignal("orchestrator"),
-		drawer:      ui.NewSignal(false),
-		openID:      ui.NewSignal(""),
-		openTab:     ui.NewSignal("conversation"),
-		cfg:         ui.NewSignal(b.Settings()),
-		panelSize:   ui.NewSignal(ui.Percent(50)),
-		panelAnim:   ui.NewSignal[float32](0),
-		panelGoal:   50,
-		settings:    ui.NewSignal(false),
-		confirm:     ui.NewSignal[*confirmation](nil),
-		palette:     ui.NewSignal(false),
-		builtVer:    ui.NewSignal(0),
-		orchDraft:   ui.NewSignal(""),
-		orchFocus:   ui.NewFocusHandle(),
-		foldedAsks:  ui.NewSignal(map[string]bool{}),
-		askOpen:     ui.NewSignal(""),
-		pillOpen:    ui.NewSignal(false),
-		pillFocus:   ui.NewFocusHandle(),
-		lightbox:    ui.NewSignal(viewer{}),
-		orchImages:  ui.NewSignal([]string(nil)),
-		busy:        ui.NewSignal(map[string]bool{}),
-		railQuery:   ui.NewSignal(""),
-		imgs:        map[string]*ui.ImageSource{},
-		imgData:     map[string][]byte{},
-		imgLoading:  map[string]bool{},
-		chartSpecs:  map[string]parsedChart{},
-		imgVer:      ui.NewSignal(0),
-		remoteState: ui.NewSignal(api.RemoteState{}),
-		remoteTick:  ui.NewSignal(0),
-		items:       map[string]*ui.Signal[[]core.Item]{},
-		views:       map[string]*ui.Signal[core.ThreadView]{},
-		rows:        map[string]*rowCache{},
-		dirty:       map[string]bool{},
-		watched:     map[string]bool{},
-		wake:        make(chan struct{}, 1),
-		quit:        make(chan struct{}),
+		b:               b,
+		threads:         ui.NewSignal(b.Threads()),
+		todos:           ui.NewSignal(b.Todos(false)),
+		todoFold:        ui.NewSignal[*bool](nil),
+		repos:           ui.NewSignal(b.RepoPaths()),
+		plain:           ui.NewSignal(b.PlainFolders()),
+		rate:            ui.NewSignal(b.RateLimits()),
+		pending:         ui.NewSignal(loadPending(b, b.Threads())),
+		secrets:         ui.NewSignal(loadSecrets(b)),
+		navSel:          ui.NewSignal("orchestrator"),
+		drawer:          ui.NewSignal(false),
+		openID:          ui.NewSignal(""),
+		openTab:         ui.NewSignal("conversation"),
+		cfg:             ui.NewSignal(b.Settings()),
+		panelSize:       ui.NewSignal(ui.Percent(50)),
+		panelAnim:       ui.NewSignal[float32](0),
+		panelGoal:       50,
+		settings:        ui.NewSignal(false),
+		confirm:         ui.NewSignal[*confirmation](nil),
+		palette:         ui.NewSignal(false),
+		builtVer:        ui.NewSignal(0),
+		orchDraft:       ui.NewSignal(""),
+		orchFocus:       ui.NewFocusHandle(),
+		foldedAsks:      ui.NewSignal(map[string]bool{}),
+		askOpen:         ui.NewSignal(""),
+		pillOpen:        ui.NewSignal(false),
+		pillFocus:       ui.NewFocusHandle(),
+		lightbox:        ui.NewSignal(viewer{}),
+		orchAttachments: ui.NewSignal([]attachment(nil)),
+		busy:            ui.NewSignal(map[string]bool{}),
+		railQuery:       ui.NewSignal(""),
+		imgs:            map[string]*ui.ImageSource{},
+		imgData:         map[string][]byte{},
+		imgLoading:      map[string]bool{},
+		chartSpecs:      map[string]parsedChart{},
+		imgVer:          ui.NewSignal(0),
+		remoteState:     ui.NewSignal(api.RemoteState{}),
+		remoteTick:      ui.NewSignal(0),
+		items:           map[string]*ui.Signal[[]core.Item]{},
+		views:           map[string]*ui.Signal[core.ThreadView]{},
+		rows:            map[string]*rowCache{},
+		dirty:           map[string]bool{},
+		watched:         map[string]bool{},
+		wake:            make(chan struct{}, 1),
+		quit:            make(chan struct{}),
 	}
 	a.needsUser = ui.NewComputed(func() int {
 		n := 0

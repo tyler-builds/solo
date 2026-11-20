@@ -3,9 +3,11 @@ package rpc
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"image"
 	"image/png"
 	"io"
@@ -847,6 +849,69 @@ func (c *Client) SaveImageData(ctx context.Context, data []byte) (string, error)
 
 func (c *Client) ImportImage(string) (string, error) {
 	return "", errors.New("A file on this device is attached by its contents.")
+}
+
+func (c *Client) ImportFile(string) (string, error) {
+	return "", errors.New("A file on this device is attached by its contents.")
+}
+
+// errUploadDropped is why an upload stopped when the connection to the machine was lost.
+var errUploadDropped = errors.New("The connection to the machine dropped, so the file didn't arrive. Attach it again.")
+
+// SaveFile sends a file to the machine in parts (see upload.go), with the SHA-256 of the whole, which
+// the machine checks. A cancelled ctx stops it and has the machine remove what arrived.
+func (c *Client) SaveFile(ctx context.Context, name string, data []byte, progress func(int64)) (string, error) {
+	if len(data) > api.MaxFileUpload {
+		return "", fmt.Errorf("%s is larger than %d MB.", name, api.MaxFileUpload>>20)
+	}
+	var begun uploadResult
+	if err := c.do(ctx, "uploadBegin", uploadBeginParams{Name: name, Size: int64(len(data))}, &begun); err != nil {
+		return "", uploadError(ctx, err)
+	}
+	id := begun.Upload
+	sum := sha256.New()
+	for off := 0; off < len(data); {
+		part := data[off:min(off+maxUploadPart, len(data))]
+		if _, err := c.call(ctx, "uploadPart", uploadParams{Upload: id, Offset: int64(off)}, part); err != nil {
+			c.cancelUpload(id)
+			return "", uploadError(ctx, err)
+		}
+		sum.Write(part) // a part at a time, between requests: a page's goroutines don't take turns otherwise
+		off += len(part)
+		if progress != nil {
+			progress(int64(off))
+		}
+	}
+	var out imageResult
+	if err := c.do(ctx, "uploadEnd", uploadParams{Upload: id, Sum: hex.EncodeToString(sum.Sum(nil))}, &out); err != nil {
+		c.cancelUpload(id)
+		return "", uploadError(ctx, err)
+	}
+	if out.Ref == "" {
+		return "", errors.New("The machine's answer couldn't be read.")
+	}
+	return out.Ref, nil
+}
+
+// cancelUpload asks the machine to remove what arrived of an upload, without waiting. A machine that
+// can't be reached removes it itself when no part comes (Options.UploadIdle).
+func (c *Client) cancelUpload(id string) {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		c.do(ctx, "uploadCancel", uploadParams{Upload: id}, nil)
+	}()
+}
+
+// uploadError says why an upload stopped.
+func uploadError(ctx context.Context, err error) error {
+	switch {
+	case ctx.Err() != nil:
+		return ctx.Err()
+	case errors.Is(err, ErrOffline):
+		return errUploadDropped
+	}
+	return err
 }
 
 func (c *Client) ReadImage(ctx context.Context, ref string, maxSide int) ([]byte, error) {

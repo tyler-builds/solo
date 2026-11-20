@@ -11,13 +11,15 @@
 // in, since only programs on this machine can reach it; it refuses to listen anywhere else.
 //
 // With -demo it also runs a machine of its own over sample data, prints a pairing link, and approves
-// the six digits typed into its terminal: the whole path, with no Claude and no desktop app.
+// the six digits typed into its terminal: the whole path, with no Claude and no desktop app. Files a
+// page attaches are stored as the real machine stores them, and each is printed as "UPLOADED <path>".
 package main
 
 import (
 	"bufio"
 	"flag"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -25,6 +27,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tyler-builds/solo/internal/api"
+	"github.com/tyler-builds/solo/internal/core"
 	"github.com/tyler-builds/solo/internal/remote/host"
 	"github.com/tyler-builds/solo/internal/remote/relaytest"
 	"github.com/tyler-builds/solo/internal/remote/webheaders"
@@ -85,7 +89,14 @@ func run(addr, web string, demo, stream bool) error {
 		return err
 	}
 	defer os.RemoveAll(dir)
-	remote, err := host.New(host.Config{Dir: dir, Backend: sample.New(sample.Options{Threads: 24, Items: 120, Stream: stream}),
+	// Files a page sends are stored by an engine of their own, which runs no agents.
+	engine, err := core.New(core.Config{DataDir: filepath.Join(dir, "engine"), Log: slog.New(slog.DiscardHandler)})
+	if err != nil {
+		return err
+	}
+	defer engine.Close()
+	machine := demoMachine{Backend: sample.New(sample.Options{Threads: 24, Items: 120, Stream: stream}), files: engine}
+	remote, err := host.New(host.Config{Dir: dir, Backend: machine,
 		Secrets: host.MemSecrets{}, Name: "demo machine"})
 	if err != nil {
 		return err
@@ -140,4 +151,30 @@ func run(addr, web string, demo, stream bool) error {
 		}
 	}
 	return nil
+}
+
+// demoMachine is the sample backend that also takes files from a page (api.Uploads), as the desktop
+// app's does.
+type demoMachine struct {
+	*sample.Backend
+	files *core.Core
+}
+
+func (d demoMachine) BeginFile(name string, size int64) (api.FileUpload, error) {
+	u, err := d.files.BeginFile(name, size)
+	if err != nil {
+		return nil, err
+	}
+	return printedUpload{u}, nil
+}
+
+// printedUpload says where each file that arrived is stored, for the end-to-end test.
+type printedUpload struct{ *core.FileUpload }
+
+func (u printedUpload) Finish(sum []byte) (string, error) {
+	p, err := u.FileUpload.Finish(sum)
+	if err == nil {
+		fmt.Println("UPLOADED", p)
+	}
+	return p, err
 }

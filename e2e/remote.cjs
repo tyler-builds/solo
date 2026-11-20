@@ -1,11 +1,13 @@
 "use strict";
 // End to end, in a real browser: a phone opens a pairing link served by the local relay, pairs with a
-// demo machine, uses it, loses and regains it, comes back after a reload, and is removed; then a second
+// demo machine, uses it, sends it a file of several megabytes, loses and regains it, comes back after a reload, and is removed; then a second
 // browser pairs from the bare address, with no code.
 //
 // scripts/e2e.sh runs it. The page is one canvas, so the test reads what is on screen from
 // soloHost.shown and taps by position: the positions are a 390 by 844 phone's, at the app's touch size.
 const { spawn } = require("child_process");
+const crypto = require("crypto");
+const fs = require("fs");
 const path = require("path");
 const { chromium } = require(process.env.PW || "playwright");
 const out = process.argv[2] || ".";
@@ -83,6 +85,32 @@ const fail = (msg) => { throw new Error(msg); };
     await tap(342, 804); // send
     await page.waitForTimeout(1200);
     await shot("5-sent");
+
+    // A file picked from the phone's files crosses to the machine in parts and arrives whole; the
+    // message that names it goes once it has. The paperclip is left of Send.
+    const file = crypto.randomBytes(6 * 1048576 + 12345);
+    let chooser = null;
+    for (const x of [305, 300, 310, 296]) {
+      const waiting = page.waitForEvent("filechooser", { timeout: 3000 }).catch(() => null);
+      await page.touchscreen.tap(x, 804);
+      if ((chooser = await waiting)) break;
+    }
+    if (!chooser) fail("the paperclip never opened the file picker");
+    const t2 = Date.now();
+    await chooser.setFiles({ name: "field-log.bin", mimeType: "application/octet-stream", buffer: file });
+    await page.waitForTimeout(1500);
+    await shot("5b-uploading");
+    const stored = (await line(/^UPLOADED /)).slice("UPLOADED ".length);
+    console.log("6 MB upload:", Date.now() - t2, "ms");
+    if (!fs.readFileSync(stored).equals(file)) fail("the file arrived changed: " + stored);
+    if (path.basename(stored).slice(37) !== "field-log.bin") fail("the file was stored as " + stored);
+    await page.waitForTimeout(800);
+    await shot("5c-attached");
+    await tap(150, 804);
+    await page.keyboard.type("the field log");
+    await tap(342, 804); // send
+    await page.waitForTimeout(1500);
+    await shot("5d-sent-file");
 
     // The drawer, and a thread.
     await tap(24, 29);

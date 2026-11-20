@@ -47,7 +47,10 @@ type Options struct {
 	Idle time.Duration
 	// HelloFor is how long a device has to say hello once its handshake is done (default 10 s).
 	HelloFor time.Duration
-	Log      *slog.Logger
+	// UploadIdle is how long a file a device is sending waits for its next part before what arrived
+	// is removed (default uploadIdle).
+	UploadIdle time.Duration
+	Log        *slog.Logger
 }
 
 // Host serves paired devices over a backend. One Host lasts for the machine's run: it numbers the
@@ -67,6 +70,7 @@ type Host struct {
 	order    []string           // the keys of answered, oldest first
 	kept     int                // the bytes of the answers kept
 	running  map[string]int     // requests under way, by device
+	uploads  map[string]*upload // files being sent, by device and upload ID (see upload.go)
 
 	// The last check of Claude Code, which every device shares: each check starts Claude.
 	claudeMu sync.Mutex
@@ -92,7 +96,7 @@ const (
 	// helloFor is how long a device has, once its handshake is done, to say hello. A connection that
 	// has not is not yet a session: it is not told of changes, and is not ended by Drop.
 	helloFor = 10 * time.Second
-	// maxPlain is the most a request other than an image upload may hold.
+	// maxPlain is the most a request's JSON may hold.
 	maxPlain = 1 << 20
 	// claudeFor is how long a check of Claude Code is good for.
 	claudeFor = 30 * time.Second
@@ -115,6 +119,9 @@ func NewHost(b api.Backend, opts Options) *Host {
 	if opts.HelloFor <= 0 {
 		opts.HelloFor = helloFor
 	}
+	if opts.UploadIdle <= 0 {
+		opts.UploadIdle = uploadIdle
+	}
 	if opts.Log == nil {
 		opts.Log = slog.New(slog.DiscardHandler)
 	}
@@ -124,14 +131,16 @@ func NewHost(b api.Backend, opts Options) *Host {
 	}
 	// Revisions start at 1: 0 is a device that holds nothing.
 	h := &Host{b: b, opts: opts, epoch: hex.EncodeToString(id[:]), rev: 1, threads: map[string]uint64{},
-		items: map[string]uint64{}, conns: map[*conn]struct{}{}, answered: map[string]*answer{}, running: map[string]int{}}
+		items: map[string]uint64{}, conns: map[*conn]struct{}{}, answered: map[string]*answer{}, running: map[string]int{},
+		uploads: map[string]*upload{}}
 	h.unsub = b.Subscribe(h.onChange)
 	return h
 }
 
-// Close stops listening to the backend and ends every session.
+// Close stops listening to the backend, ends every session, and removes the files half sent.
 func (h *Host) Close() {
 	h.unsub()
+	h.abortUploads("")
 	h.mu.Lock()
 	conns := make([]*conn, 0, len(h.conns))
 	for c := range h.conns {
@@ -348,8 +357,8 @@ func (c *conn) handle(e Envelope) error {
 	if !validID(e.ID) || len(e.M) > 64 {
 		return errProtocol
 	}
-	// Only an image upload is large; nothing else carries bytes after its JSON.
-	if e.M != "saveImage" && (len(e.Blob) > 0 || len(e.P) > maxPlain) {
+	// Only uploads carry bytes after their JSON, each as much as its method allows.
+	if len(e.Blob) > methods[e.M].blob || len(e.P) > maxPlain {
 		go c.s.send(Envelope{T: kindRes, ID: e.ID, E: invalid("the request is too large")})
 		return nil
 	}
@@ -840,7 +849,7 @@ func (c *conn) run(ctx context.Context, m method, e Envelope) (res Envelope) {
 			res = Envelope{T: kindRes, ID: e.ID, E: &Error{Code: CodeError, Message: "The request failed on the machine."}}
 			err = errors.New("panic")
 		}
-		if m.write && c.h.opts.Audit != nil {
+		if m.write && !m.quiet && c.h.opts.Audit != nil {
 			c.h.opts.Audit(c.dev, e.M, detail, err)
 		}
 	}()

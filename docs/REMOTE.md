@@ -10,7 +10,7 @@ a machine.
 
 ## What is and is not protected
 
-A relay that turns hostile, or anyone reading its traffic, cannot read messages, threads, diffs or images,
+A relay that turns hostile, or anyone reading its traffic, cannot read messages, threads, diffs, images or files,
 cannot forge or alter a request, cannot add a device, and cannot replay old traffic.
 
 Secrets an agent asks for (see ARCHITECTURE.md, Secrets) are typed only at the machine: a device shows
@@ -166,17 +166,33 @@ without waiting.
   and in a page it falls behind while the device sleeps: under TinyGo it is `Date.now()` at load plus
   `performance.now()`. Within a session the estimate only moves forward to a later reading; a new session
   starts it over.
+- **Files cross as many requests** (`upload.go`). A file a page attaches (any file, up to 64 MB) is
+  read whole by the page (jamb hands a picked file over as its bytes), then sent as `uploadBegin` (name
+  and size), an `uploadPart` for each MiB in order, at the offset of what has arrived, and `uploadEnd`
+  with the SHA-256 of the whole, which the page works out a part at a time between requests. Each part
+  crosses in parts as any large envelope does, paced as below: about 1.4 MB a second, so 64 MB is under
+  a minute. The machine writes the parts to `<data>/uploads`, outside the attachments, and only a file
+  whose size and checksum match becomes an attachment (`api.Uploads`, `core.FileUpload`); one that
+  doesn't is removed, and so is one that is longer than it said or whose parts come out of order. A
+  part retried on a new connection is answered once, as every request is, so a short drop doesn't stop
+  an upload; a file that waits 90 s for its next part is removed, and the page says the connection
+  dropped. Removing the chip cancels the request under way and sends `uploadCancel`. A device sends at
+  most four files at a time and may write only to its own. The audit log has each file's beginning and
+  end, not its parts. 64 MB is chosen for the page more than the relay: the page holds the file in
+  memory, which under TinyGo never shrinks, while the relay forwards a part as about eighteen frames of
+  60 KB, so 64 MB is about 1,100 frames from the device and 350 acknowledgements, under a hundred of
+  the free plan's 100,000 daily requests at Cloudflare's 20 WebSocket messages a request.
 - **Requests run once.** Each has a random ID. A device whose connection drops sends it again on the
   next, and the machine answers from what the first run returned. A request that changes something runs
   to its end even when the device goes.
 - **What a device may ask** is checked at the machine (`methods.go`): sizes and counts are bounded,
-  threads are named by ID, images by attachment, a folder put in git must be one the machine found, the
-  Claude checked is the machine's own, and the settings that name programs are refused
+  threads are named by ID, images and files by attachment, a folder put in git must be one the machine
+  found, the Claude checked is the machine's own, and the settings that name programs are refused
   (`api.SettingsPatch.CheckRemote`). A read-only device's changes are all refused. Every change is
   handed to the audit log with the device's name.
 - **What a device can cost** is bounded before it is read: nothing arrives in parts before hello or from
   a device that may only look, a message in parts must finish within two minutes, only an image upload
-  carries bytes, a device has sixteen requests under way at most over all its connections, the answers
+  (16 MB) and a file's part (1 MiB) carry bytes, a device has sixteen requests under way at most over all its connections, the answers
   kept for repeats are bounded in number and in bytes, images are decoded one at a time, and Claude is
   checked at most every thirty seconds however many devices ask.
 - **Liveness.** A device pings every 5 s; either end gives a session up after 15 s of silence.

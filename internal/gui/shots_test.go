@@ -167,8 +167,14 @@ func TestShots(t *testing.T) {
 			f.add(core.OrchestratorID, core.ItemUser, core.UserData{Text: "The email field overlaps the save button on narrow windows. Can a thread fix it?",
 				Images: []string{sampleScreenshot(dir, color.RGBA{47, 214, 193, 255}), sampleScreenshot(dir, color.RGBA{90, 120, 230, 255})}})
 			a.items = map[string]*ui.Signal[[]core.Item]{}
-			a.orchImages.Set([]string{sampleScreenshot(dir, color.RGBA{200, 140, 60, 255})})
+			a.orchAttachments.Set([]attachment{{id: 1, ref: sampleScreenshot(dir, color.RGBA{200, 140, 60, 255}), image: true}})
 		}},
+		// Files beside images: a sent message with a file, and the composer holding an image and a file.
+		{"attach-files", attachShot(t, false)},
+		// A file on its way from a page, part of it arrived, and Send waiting for it.
+		{"attach-uploading", attachShot(t, true)},
+		{"phone-attach-files", attachShot(t, false)},
+		{"phone-attach-uploading", attachShot(t, true)},
 		// An agent's message shows images inline: Solo shows a thread's before and after screenshots, and
 		// the thread's own summary has them.
 		{"agent-images", func(a *App, f *fakeBackend) {
@@ -726,4 +732,26 @@ func formScreenshots(dir string) (before, after string) {
 		return p
 	}
 	return shot("before.png", false), shot("after.png", true)
+}
+
+// attachShot is Solo's conversation with a message the user sent with a screenshot and two files, and
+// the composer holding an image and a file: stored, or with uploading, part of the way to the machine.
+func attachShot(t *testing.T, uploading bool) func(a *App, f *fakeBackend) {
+	return func(a *App, f *fakeBackend) {
+		dir := t.TempDir()
+		log, _ := fileAttachment("build-2026-11-19.log", make([]byte, 2_400_000))
+		csv, _ := fileAttachment("Q3 incident export.csv", make([]byte, 48_000))
+		f.add(core.OrchestratorID, core.ItemUser, core.UserData{Text: "The nightly build failed again. Here is its log and the export; can a thread find what broke?",
+			Images: []string{sampleScreenshot(dir, color.RGBA{47, 214, 193, 255})},
+			Files:  []core.FileRef{{Path: log, Name: "build-2026-11-19.log", Size: 2_400_000}, {Path: csv, Name: "Q3 incident export.csv", Size: 48_000}}})
+		f.add(core.OrchestratorID, core.ItemAssistant, core.TextData{Text: "I've started **Find the nightly build failure** with the log and the export. It will report back when it knows what broke."})
+		a.items = map[string]*ui.Signal[[]core.Item]{}
+		spec, _ := fileAttachment("Payment flow spec v3.pdf", make([]byte, 31_500_000))
+		pdf := attachment{id: 2, ref: spec, name: "Payment flow spec v3.pdf", size: 31_500_000}
+		if uploading {
+			pdf = attachment{id: 2, name: "Payment flow spec v3.pdf", size: 31_500_000, sent: 12_900_000}
+		}
+		a.orchDraft.Set("Also use the spec for the payment flow.")
+		a.orchAttachments.Set([]attachment{{id: 1, ref: sampleScreenshot(dir, color.RGBA{200, 140, 60, 255}), image: true}, pdf})
+	}
 }

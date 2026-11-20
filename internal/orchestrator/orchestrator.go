@@ -112,7 +112,7 @@ func New(c *core.Core, dataDir string, log *slog.Logger) (*Orchestrator, error) 
 // ID is the orchestrator thread's ID.
 func (o *Orchestrator) ID() string { return core.OrchestratorID }
 
-// Send sends the user's message, with any images (attachment paths), to the orchestrator.
+// Send sends the user's message, with any attachments (images' and files' paths), to the orchestrator.
 func (o *Orchestrator) Send(ctx context.Context, text string, images ...string) error {
 	o.rotateIfIdle(ctx)
 	// A recap waiting from a fresh session, and any notes, go before the message, out of the transcript

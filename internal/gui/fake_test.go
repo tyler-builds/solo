@@ -54,8 +54,14 @@ type fakeBackend struct {
 	paths       []core.PathHit // a thread's files, for "@"; fakePaths when nil
 	pathQueries []string       // the queries SearchPaths was asked, in order
 	imageReads  []string       // the images ReadImage was asked for, in order
-	views       []string       // the threads Open was told of, in order (api.Opener)
-	dismissed   []string       // the questions Dismiss was asked to drop, as "thread tool-use"
+	// upload, when set, holds each SaveFile halfway, as a page's upload over a slow link would be, until
+	// it is closed or the upload is stopped.
+	upload    chan struct{}
+	uploaded  []string // the names SaveFile stored, in order
+	cancelled []string // the names whose SaveFile was stopped
+	fileErr   error    // when set, what SaveFile fails with
+	views     []string // the threads Open was told of, in order (api.Opener)
+	dismissed []string // the questions Dismiss was asked to drop, as "thread tool-use"
 	// The secrets kept (api.Secrets, secrets_test.go): the list, why the keyring can't be used, and the
 	// calls that change them, in order.
 	secretList []core.SecretInfo
@@ -361,6 +367,46 @@ func (f *fakeBackend) SaveImage(img image.Image) (string, error) {
 }
 
 func (f *fakeBackend) ImportImage(path string) (string, error) { return path, nil }
+
+// fileAttachment writes data as the machine would a file attachment: named <uuid>-<name>.
+func fileAttachment(name string, data []byte) (string, error) {
+	n := time.Now().UnixNano()
+	p := filepath.Join(os.TempDir(), fmt.Sprintf("%08x-0000-4000-8000-%012x-%s", uint32(n), uint64(n)&0xffffffffffff, core.SafeFileName(name)))
+	return p, os.WriteFile(p, data, 0o600)
+}
+
+func (f *fakeBackend) ImportFile(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	return fileAttachment(filepath.Base(path), data)
+}
+
+func (f *fakeBackend) SaveFile(ctx context.Context, name string, data []byte, progress func(int64)) (string, error) {
+	f.mu.Lock()
+	gate, fail := f.upload, f.fileErr
+	f.mu.Unlock()
+	if fail != nil {
+		return "", fail
+	}
+	if gate != nil {
+		progress(int64(len(data) * 2 / 5))
+		select {
+		case <-gate:
+		case <-ctx.Done():
+			f.mu.Lock()
+			f.cancelled = append(f.cancelled, name)
+			f.mu.Unlock()
+			return "", ctx.Err()
+		}
+	}
+	progress(int64(len(data)))
+	f.mu.Lock()
+	f.uploaded = append(f.uploaded, name)
+	f.mu.Unlock()
+	return fileAttachment(name, data)
+}
 
 func (f *fakeBackend) SaveImageData(_ context.Context, data []byte) (string, error) {
 	p := filepath.Join(os.TempDir(), fmt.Sprintf("solo-file-%d.png", time.Now().UnixNano()))

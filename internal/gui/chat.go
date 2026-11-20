@@ -11,7 +11,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/tyler-builds/jamb/access"
 	"github.com/tyler-builds/jamb/icons"
@@ -21,7 +20,6 @@ import (
 	"github.com/tyler-builds/jamb/ui"
 
 	"github.com/tyler-builds/solo/internal/agent"
-	"github.com/tyler-builds/solo/internal/api"
 	"github.com/tyler-builds/solo/internal/core"
 	"github.com/tyler-builds/solo/internal/forge"
 )
@@ -586,7 +584,7 @@ func (a *App) rowView(ctx *ui.Context, v core.ThreadView, r row) ui.Element {
 			Tooltip("Solo reads this when it finishes what it's doing").
 			Child(ui.Icon(icons.Clock).Size(12).Color(t.TextSubtle)).
 			Child(ui.Text("Queued").FontSize(12).TextColor(t.TextSubtle))
-		return a.userMessage(ctx, v, r.queued.Text, r.queued.Images, tag)
+		return a.userMessage(ctx, v, r.queued.Text, r.queued.Images, r.queued.Files, tag)
 	case r.summary:
 		return a.summaryView(ctx, r)
 	case r.steps != nil:
@@ -606,6 +604,7 @@ func (a *App) rowView(ctx *ui.Context, v core.ThreadView, r row) ui.Element {
 					Child(brandMark(14)).
 					Child(ui.Text("Solo").FontSize(12).Medium().TextColor(t.TextMuted))).
 				Child(a.messageImages(ctx, d.Images, ui.Start, a.conversationGallery(v))).
+				Child(messageFiles(ctx, d.Files, ui.Start)).
 				Child(ui.Div().PaddingX(space3+2).PaddingY(space2+2).Radius(radiusL).MaxWidth(ui.Percent(92)).
 					Background(t.Surface).Border(1, t.Border).
 					Child(a.agentText(ctx, d.Text, viewBases(v), nil, nil)))
@@ -617,7 +616,7 @@ func (a *App) rowView(ctx *ui.Context, v core.ThreadView, r row) ui.Element {
 				Child(ui.Icon(icons.CornerUpRight).Size(12).Color(t.TextSubtle)).
 				Child(ui.Text("Steered").FontSize(12).TextColor(t.TextSubtle))
 		}
-		return a.userMessage(ctx, v, d.Text, d.Images, tag)
+		return a.userMessage(ctx, v, d.Text, d.Images, d.Files, tag)
 	case core.ItemAssistant:
 		var d core.TextData
 		it.Decode(&d)
@@ -627,11 +626,12 @@ func (a *App) rowView(ctx *ui.Context, v core.ThreadView, r row) ui.Element {
 	}
 }
 
-// userMessage renders a message the user sent: its images, its text in a bubble, and under them tag,
-// if any ("Steered", "Queued").
-func (a *App) userMessage(ctx *ui.Context, v core.ThreadView, text string, images []string, tag ui.Element) ui.Element {
+// userMessage renders a message the user sent: its images, its files, its text in a bubble, and under
+// them tag, if any ("Steered", "Queued").
+func (a *App) userMessage(ctx *ui.Context, v core.ThreadView, text string, images []string, files []core.FileRef, tag ui.Element) ui.Element {
 	col := ui.Div().Column().Align(ui.End).Gap(space1 + 2).MaxWidth(ui.Percent(85)).
-		Child(a.messageImages(ctx, images, ui.End, a.conversationGallery(v)))
+		Child(a.messageImages(ctx, images, ui.End, a.conversationGallery(v))).
+		Child(messageFiles(ctx, files, ui.End))
 	if strings.TrimSpace(text) != "" {
 		// The bubble is as wide as its text up to the column's width: a code block with a long line
 		// scrolls inside it rather than widening it past the column.
@@ -1530,8 +1530,9 @@ const (
 	composerMinH = 44
 )
 
-// composer is a message box: Enter sends, Shift+Enter starts a new line. Images come in by pasting,
-// dropping files on it, or the attach button, and show as thumbnails above the text.
+// composer is a message box: Enter sends, Shift+Enter starts a new line. Files come in with the attach
+// button (any file), and images by pasting or dropping them too; they show above the text, images as
+// thumbnails and other files as chips (see attach.go). Send waits for those still on their way.
 // composer is the box a message is written in. Sending scrolls the transcript of scope to its latest
 // message, even when the user had scrolled up: they are here now, and the list then follows their
 // message and the reply in.
@@ -1539,85 +1540,39 @@ func (a *App) composer(ctx *ui.Context, v core.ThreadView, key, scope, placehold
 	return ui.Component(func(ctx *ui.Context) ui.Element {
 		t := ctx.Theme()
 		draft := ui.Local(ctx, key, "")
-		images := ui.Local(ctx, key+"-images", []string(nil))
+		atts := ui.Local(ctx, key+"-attachments", []attachment(nil))
 		// The focus handle and quotes live on the App, so quoting from the transcript reaches them.
 		id := convID(key)
 		focus, quotes := a.composerFocus(id), a.quotesOf(id)
 		if key == "orch-draft" {
 			draft = a.orchDraft // the pinned question folds while the user writes to Solo
-			images = a.orchImages
+			atts = a.orchAttachments
 		}
+		attach := attacher{a: a, atts: atts, focus: func() { focus.Focus() }}
+		// Send waits for files on their way, or that failed.
+		waiting := attachmentsBusy(atts.Get())
 		var kit mentionKit // the "/" and "@" lists, made below
 		submit := func() {
-			text, imgs, qs := strings.TrimSpace(draft.Peek()), images.Peek(), quotes.Peek()
-			if text == "" && len(imgs) == 0 && len(qs) == 0 {
+			text, list, qs := strings.TrimSpace(draft.Peek()), atts.Peek(), quotes.Peek()
+			if text == "" && len(list) == 0 && len(qs) == 0 {
 				return
 			}
+			if attachmentsBusy(list) {
+				// A message never names a file half sent: it waits, with what the user wrote, until
+				// they have all arrived, or the user removes the ones that failed.
+				a.notify(ui.ToastInfo, "Files are still attaching", "Send once they have arrived, or remove the ones that didn't attach.")
+				return
+			}
+			imgs := attachmentRefs(list)
 			text = quoteMessage(qs, text)
 			draft.Set("")
 			kit.sent()
-			images.Set(nil)
+			atts.Set(nil)
 			quotes.Set(nil)
 			a.listHandle(scope).ScrollToEnd()
 			a.run("Sending", func(context.Context) error { return send(text, imgs) })
 		}
-		// attach adds images as they load; refocus puts the caret back in the text, for images that came
-		// from outside it (the file picker or a drop), so Enter sends them.
-		attach := func(refocus bool, load func() ([]string, error)) {
-			go func() {
-				paths, err := load()
-				if err != nil {
-					a.notify(ui.ToastError, "Couldn't attach the image", err.Error())
-				}
-				if len(paths) > 0 {
-					a.onUI(func() {
-						images.Set(append(slices.Clone(images.Peek()), paths...))
-						if refocus {
-							focus.Focus()
-						}
-					})
-				}
-			}()
-		}
-		importFiles := func(files []string) {
-			attach(true, func() ([]string, error) {
-				var out []string
-				for _, f := range files {
-					p, err := a.b.ImportImage(f)
-					if err != nil {
-						return out, err
-					}
-					out = append(out, p)
-				}
-				return out, nil
-			})
-		}
-		// pickedFiles attaches the files of an Open dialog: by path, or by contents in a web page, whose
-		// files have no paths.
-		pickedFiles := func(files []dialog.File) {
-			attach(true, func() ([]string, error) {
-				var out []string
-				for _, f := range files {
-					var p string
-					var err error
-					if f.Path != "" {
-						p, err = a.b.ImportImage(f.Path)
-					} else if len(f.Data) > api.MaxImageUpload {
-						err = fmt.Errorf("%s is larger than %d MB", f.Name, api.MaxImageUpload>>20)
-					} else {
-						c, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-						p, err = a.b.SaveImageData(c, f.Data)
-						cancel()
-					}
-					if err != nil {
-						return out, err
-					}
-					out = append(out, p)
-				}
-				return out, nil
-			})
-		}
-		empty := strings.TrimSpace(draft.Get()) == "" && len(images.Get()) == 0 && len(quotes.Get()) == 0
+		empty := strings.TrimSpace(draft.Get()) == "" && len(atts.Get()) == 0 && len(quotes.Get()) == 0
 		// As in t3code: while a thread works, the button stops it, or steers it once there's a message.
 		// Solo isn't steered: a message to it waits for its turn to end (core.ThreadView.Queued).
 		round := ui.Style{Radius: 999}
@@ -1638,6 +1593,9 @@ func (a *App) composer(ctx *ui.Context, v core.ThreadView, key, scope, placehold
 				Tooltip("Steer (Enter): it stops what it's doing and reads this now").OnClick(submit)
 		case empty:
 			sendBtn = ui.IconButton(icons.ArrowUp).Small().Style(round).Secondary().Disabled(true).Label("Send")
+		case waiting:
+			sendBtn = ui.IconButton(icons.ArrowUp).Small().Style(round).Secondary().Disabled(true).Label("Send").
+				Tooltip("Send once the files have arrived")
 		default:
 			sendBtn = ui.IconButton(icons.ArrowUp).Small().Style(round).Primary().Label("Send").
 				Tooltip("Send (Enter) · Shift+Enter for a new line").OnClick(submit)
@@ -1653,11 +1611,10 @@ func (a *App) composer(ctx *ui.Context, v core.ThreadView, key, scope, placehold
 			actions = actions.Child(a.modelPicker(ctx, v))
 		}
 		actions = actions.
-			Child(ui.IconButton(icons.ImagePlus).Ghost().Small().Label("Attach images").
-				Tooltip("Attach images · you can also paste or drop them").
+			Child(ui.IconButton(icons.Paperclip).Ghost().Small().Key(key + "-attach").Label("Attach files").
+				Tooltip("Attach files · you can also paste or drop images").
 				OnClick(func() {
-					ctx.Window().OpenFiles(dialog.FileOptions{Title: "Attach images", Multiple: true,
-						Filters: []dialog.Filter{{Name: "Images", Patterns: []string{"*.png", "*.jpg", "*.jpeg", "*.gif", "*.webp"}}}},
+					ctx.Window().OpenFiles(dialog.FileOptions{Title: "Attach files", Multiple: true},
 						func(r dialog.FileResult) {
 							if r.Err != nil {
 								a.notify(ui.ToastError, "Couldn't open the file picker", r.Err.Error())
@@ -1668,7 +1625,7 @@ func (a *App) composer(ctx *ui.Context, v core.ThreadView, key, scope, placehold
 										files = append(files, dialog.File{Name: filepath.Base(p), Path: p})
 									}
 								}
-								pickedFiles(files)
+								attach.picked(files)
 							}
 						})
 				}))
@@ -1698,12 +1655,9 @@ func (a *App) composer(ctx *ui.Context, v core.ThreadView, key, scope, placehold
 		area := ui.TextArea(draft).Placeholder(placeholder).Label(placeholder).MinRows(1).Borderless().
 			MaxHeight(ui.Px(220)).Width(ui.Full).Key(key + "-area").FocusHandle(focus).Marks(marks).
 			OnPasteImage(func(img image.Image) {
-				attach(false, func() ([]string, error) {
+				attach.add("Pasted image", -1, true, false, func(context.Context, func(int64)) (string, bool, error) {
 					p, err := a.b.SaveImage(img)
-					if err != nil {
-						return nil, err
-					}
-					return []string{p}, nil
+					return p, true, err
 				})
 			}).
 			OnChange(kit.onChange).
@@ -1722,7 +1676,8 @@ func (a *App) composer(ctx *ui.Context, v core.ThreadView, key, scope, placehold
 			MinHeight(ui.Px(composerMinH)).Radius(radiusXL).Border(1, t.BorderStrong).Background(t.Surface).
 			FocusWithin(ui.Style{BorderColor: t.TextSubtle}).
 			OnDrop(ui.Drop(func(f ui.Files, _ *ui.DropEvent) {
-				// Images are attached; other files and folders are mentioned, as "@path".
+				// Images are attached; other files and folders are mentioned, as "@path". (A page gets no
+				// drops: its files come through the attach button.)
 				var imgs, mentions []string
 				for _, p := range f {
 					if isImageFile(p) {
@@ -1731,8 +1686,8 @@ func (a *App) composer(ctx *ui.Context, v core.ThreadView, key, scope, placehold
 						mentions = append(mentions, dropMention(v, p))
 					}
 				}
-				if len(imgs) > 0 {
-					importFiles(imgs)
+				for i, p := range imgs {
+					attach.importPath(p, i == len(imgs)-1)
 				}
 				if len(mentions) > 0 {
 					kit.insert(strings.Join(mentions, " ") + " ")
@@ -1742,16 +1697,8 @@ func (a *App) composer(ctx *ui.Context, v core.ThreadView, key, scope, placehold
 			Child(a.quoteStrip(ctx, key, id, quotes.Get()))
 		// The quotes and thumbnails go above the text, so the rows are keyed: unkeyed, the text's row
 		// would take a new identity when they appear, and the text area would be rebuilt without focus.
-		if imgs := images.Get(); len(imgs) > 0 {
-			strip := ui.Div().Key(key + "-images").Row().Wrap().Gap(space2).PaddingTop(space1).PaddingBottom(space2)
-			for i, p := range imgs {
-				idx := i
-				strip = strip.Child(a.thumb(ctx, p, 56, func() []string { return images.Peek() }, func() {
-					images.Set(slices.Delete(slices.Clone(images.Peek()), idx, idx+1))
-					focus.Focus() // the remove button goes with the image
-				}))
-			}
-			box = box.Child(strip)
+		if list := atts.Get(); len(list) > 0 {
+			box = box.Child(a.attachmentStrip(ctx, key, attach, list))
 		}
 		// A press in the text moves its caret, which the lists then no longer know.
 		if under {

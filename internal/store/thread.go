@@ -25,7 +25,7 @@ type Thread struct {
 	Summary       string
 	Error         string
 	Prompt        string
-	PromptImages  []string  // image files sent with the prompt
+	PromptImages  []string  // attachments sent with the prompt: images, and files (core.IsFileAttachment)
 	DoneAt        time.Time // when the user marked it done (it leaves the rail for History); zero while open
 	PR            string    // its pull request, as JSON (see forge.PR); "" when none
 	Parts         string    // every repository it works in, as JSON (see core.Part); "" for old rows

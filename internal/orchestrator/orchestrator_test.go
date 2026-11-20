@@ -960,3 +960,45 @@ func TestThreadImagesReachSolo(t *testing.T) {
 		}
 	}
 }
+
+// Solo passes the user's files on to a thread with files: the thread is told each one's name and path,
+// on its prompt and on a message, and its transcript keeps them.
+func TestToolsPassFiles(t *testing.T) {
+	c, o := setup(t)
+	src := filepath.Join(t.TempDir(), "crash report.txt")
+	if err := os.WriteFile(src, []byte("panic: nil map"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	att, err := c.ImportFile(src) // as the user's attachment arrives
+	if err != nil {
+		t.Fatal(err)
+	}
+	call(t, o, "spawn_thread", map[string]any{"repo": "web", "title": "Crash", "prompt": "find the crash", "files": []string{att}})
+	eventually(t, "worker idle", func() bool { v := onlyWorker(c); return v.Status == core.StatusIdle && !v.InTurn })
+	w := onlyWorker(c)
+	if !strings.Contains(w.Summary, "- crash report.txt (14 B): "+att) {
+		t.Fatalf("the thread was told %q", w.Summary)
+	}
+	call(t, o, "message_thread", map[string]any{"id": w.ID, "text": "and this one", "files": []string{src}})
+	eventually(t, "worker idle again", func() bool {
+		v := onlyWorker(c)
+		return v.Status == core.StatusIdle && !v.InTurn && strings.Contains(v.Summary, "and this one")
+	})
+	items, _ := c.Items(context.Background(), w.ID, 0)
+	var files []core.FileRef
+	for _, it := range items {
+		if it.Kind == core.ItemUser {
+			var d core.UserData
+			it.Decode(&d)
+			files = append(files, d.Files...)
+		}
+	}
+	// The file from elsewhere on the machine was copied; the attachment was used as it is.
+	if len(files) != 2 || files[0].Path != att || files[1].Path == src || files[1].Name != "crash report.txt" {
+		t.Fatalf("the thread's messages have files %+v", files)
+	}
+	if out, isErr := o.handleTool(context.Background(), core.OrchestratorID, "message_thread",
+		[]byte(`{"id":"`+w.ID+`","text":"x","files":["/no/such/file.txt"]}`)); !isErr {
+		t.Fatalf("a missing file: %s", out)
+	}
+}
