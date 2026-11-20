@@ -372,6 +372,7 @@ func TestShotsSecrets(t *testing.T) {
 		setup func(f *fakeBackend) (Backend, func(a *App))
 	}{
 		{"secret-request", true, func(f *fakeBackend) (Backend, func(a *App)) { secretAsk(f); return f, nil }},
+		{"secret-request-short", true, func(f *fakeBackend) (Backend, func(a *App)) { secretAsk(f); return f, nil }},
 		{"secret-request-page", false, func(f *fakeBackend) (Backend, func(a *App)) { secretAsk(f); return pageBackend{f}, nil }},
 		{"secret-request-thread", false, func(f *fakeBackend) (Backend, func(a *App)) {
 			secretAsk(f)
@@ -409,6 +410,10 @@ func TestShotsSecrets(t *testing.T) {
 			f.secretList = demoSecrets()
 			return f, func(a *App) { a.settingsTab = "secrets"; a.settings.Set(true) }
 		}},
+		{"settings-secrets-short", false, func(f *fakeBackend) (Backend, func(a *App)) {
+			f.secretList = demoSecrets()
+			return f, func(a *App) { a.settingsTab = "secrets"; a.settings.Set(true) }
+		}},
 		{"settings-secrets-empty", false, func(f *fakeBackend) (Backend, func(a *App)) {
 			return f, func(a *App) { a.settingsTab = "secrets"; a.settings.Set(true) }
 		}},
@@ -420,7 +425,15 @@ func TestShotsSecrets(t *testing.T) {
 	}
 	// Typed or clicked once the window is up.
 	after := map[string]func(u *uitest.UI){
-		"secret-request": func(u *uitest.UI) { u.Get("secret-value").Type("cf-test-value") },
+		"secret-request":       func(u *uitest.UI) { u.Get("secret-value").Type("cf-test-value") },
+		"secret-request-short": func(u *uitest.UI) { u.Get("secret-value").Type("1234") },
+		"settings-secrets-short": func(u *uitest.UI) {
+			u.ByRole(access.RoleButton, "Replace NPM_TOKEN").Click()
+			u.Advance(100 * time.Millisecond)
+			u.Get("secret-new-value").Type("abc")
+			u.Get("secret-add-name").Type("SENTRY_DSN")
+			u.Get("secret-add-value").Type("12345")
+		},
 		"settings-secrets": func(u *uitest.UI) {
 			u.ByRole(access.RoleButton, "Replace NPM_TOKEN").Click()
 			u.Advance(100 * time.Millisecond)
