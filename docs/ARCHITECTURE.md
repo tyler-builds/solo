@@ -135,7 +135,8 @@ Raw `SDKMessage`s are also appended to a per-session JSONL file for debugging an
   can't merge yet, and the card's button says why), `answer_question(id, answer)`, `reopen_thread(id)` (Restore from History when
   the user asks: its kept branch, or a new one from the base branch's head when its work landed, it
   had none, or it was discarded), `set_scratch(id, on)` (turns a thread's scratch mode on or
-  off when the user asks; see Worker threads › Scratch threads).
+  off when the user asks; see Worker threads › Scratch threads). Solo also has the secret tools every
+  thread has (see Secrets).
 - **Proactive updates:** when a worker finishes, fails, or asks a question, Go queues a synthetic
   `[thread update]` message. Updates are batched while the orchestrator is busy and delivered when
   it's idle, so it reports without being asked. Solo's chat shows neither these nor Solo's steps as
@@ -302,6 +303,54 @@ Raw `SDKMessage`s are also appended to a per-session JSONL file for debugging an
   a thread such a task, shows them when it reports, and sends the thread back when they're missing
   without a reason. Both are told how to embed an image (below).
 
+## Secrets
+
+An agent can ask the user for a secret (an API key, token or password) and use it without seeing it
+(`internal/secrets`, `core/secrets.go`). The shape follows t3code's `request_secret` (a masked card in the
+conversation; the agent hears only saved or declined), but where t3code keeps the value in a 0600 file
+and hands the agent its path to `cat`, Solo keeps it in the OS keyring and puts it only in the
+environment of one command that Solo, not the agent, runs.
+
+- **Tools** (`core.SecretToolSpecs`, served by core for Solo and every thread, as `mcp__solo__<name>`):
+  `request_secret(name, reason, replace?)` asks the user and waits; it is pinned and answered like a
+  thread's question (a `QuestionData` whose question carries `agent.SecretRequest`), with a masked field,
+  Save securely and Decline. `list_secrets` lists names. `run_with_secrets(command, secrets[], cwd?,
+  timeout_seconds?)` runs the command with bash (Git Bash on Windows; else sh or cmd) and the named
+  secrets set as environment variables, and returns its exit code and output.
+- **Storage:** global, by name: one list for every repository, as Solo is, since a token such as
+  `CLOUDFLARE_API_TOKEN` or `NPM_TOKEN` is the user's across repositories and names are environment
+  variable names. Values are in the keyring under the service `solo-secrets` (go-keyring: the Secret
+  Service on Linux, Credential Manager on Windows, the Keychain on macOS) and never fall back to a file;
+  without a keyring, `request_secret` says so. The list (names, when saved and last used, by which
+  thread) is the `secrets.index` setting. Settings › Secrets adds, replaces and deletes them; no value is
+  ever shown, there or anywhere.
+- **Use:** Solo reads the values from the keyring and runs the command in a shell of its own, in the
+  thread's folder (a thread's `cwd` must be inside it), with a temporary folder of its own (removed
+  after), stdin closed, and the secrets in its environment and nowhere else. When it ends, its process
+  group is killed (POSIX), so nothing it left running keeps the values.
+- **Redaction** (`secrets.Redactor`): every kept value, not only the ones given, is replaced with
+  `[secret NAME]` in the output, as is its hex, base64 (both alphabets, padded, and at each alignment it
+  can have inside longer encoded text), URL, JSON and Go escaping, the value reversed, and any run of 8
+  or more of its characters (a prefix, a half). Files the command changed that hold a value (in its
+  folder and the thread's, the repository's git config, and common credential files in the home folder
+  such as `.npmrc` and `gh`'s `hosts.yml`) are rewritten with the placeholder, and the agent is told.
+  As a net under all that, every transcript item Solo stores, and every message to an agent (a secret
+  the user pastes anyway), has the values and their full encodings taken out.
+- **Guard:** commands that read a secret store or another process's environment (`secret-tool`, the
+  Secret Service over D-Bus, `security find-generic-password`, `cmdkey`, `/proc/*/environ`, …) are
+  refused, by `run_with_secrets` and, for agents' own Bash, PowerShell, Read, Grep and Glob calls, by a
+  PreToolUse hook in the sidecar (`sidecar/src/guard.ts`), which runs under `bypassPermissions` too.
+- **Remote:** a secret is typed only at the desktop. A paired device shows the request and can decline
+  it; `api.Secrets` is the desktop backend's alone, and `core.Answer` refuses a text answer to a request,
+  from a device or from Solo's `answer_question`. The relay never carries a value.
+- **Limits.** An agent runs as the user with a shell. Solo keeps the value out of every path it controls
+  (tool results, transcripts, the agents' environments and prompts, the relay, its database and logs)
+  and closes the obvious deliberate ways around that, but it can't stop an agent set on defeating it:
+  a command can transform the value beyond what redaction recognizes (split it into short pieces, add
+  to each character), send it over the network, or write it outside the folders scanned; a program the
+  agent writes can read the keyring, or the command's environment while it runs, without matching the
+  guard. Redaction is a safeguard for honest agents, not a sandbox.
+
 ## UI (jamb)
 
 - **Center:** orchestrator chat. Markdown via `jamb/markdown`; tool calls as collapsed chips;
@@ -454,6 +503,7 @@ cmd/solo-localrelay/ the relay and the web client on this machine, for developme
 relay/               the relay: a Cloudflare Worker and a Durable Object (TypeScript)
 e2e/                 remote access end to end in a real browser (scripts/e2e.sh)
 internal/core/       orchestrator, threads, notifications
+internal/secrets/    agents' secrets: the keyring, running a command with them, redaction
 internal/store/      SQLite schema + queries
 internal/git/        repo scan, worktrees, diff, merge
 internal/agent/      sidecar supervisor + JSON-RPC client + event types

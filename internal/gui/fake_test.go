@@ -55,6 +55,14 @@ type fakeBackend struct {
 	pathQueries []string       // the queries SearchPaths was asked, in order
 	imageReads  []string       // the images ReadImage was asked for, in order
 	views       []string       // the threads Open was told of, in order (api.Opener)
+	dismissed   []string       // the questions Dismiss was asked to drop, as "thread tool-use"
+	// The secrets kept (api.Secrets, secrets_test.go): the list, why the keyring can't be used, and the
+	// calls that change them, in order.
+	secretList []core.SecretInfo
+	secretErr  error
+	provided   []string // ProvideSecret, as "thread tool-use value"
+	setSecrets []string // SetSecret, as "name=value"
+	deleted    []string // DeleteSecret
 	// machineNow is the time on the machine, for a backend on another one (api.Clock); nil for this
 	// process's clock.
 	machineNow func() time.Time
@@ -201,7 +209,12 @@ func (f *fakeBackend) Interrupt(_ context.Context, id string) error {
 	return nil
 }
 func (f *fakeBackend) Answer(string, string, map[string]string) error { return nil }
-func (f *fakeBackend) Dismiss(string, string) error                   { return nil }
+func (f *fakeBackend) Dismiss(threadID, toolUseID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.dismissed = append(f.dismissed, threadID+" "+toolUseID)
+	return nil
+}
 func (f *fakeBackend) Changes(_ context.Context, id string) ([]git.FileChange, error) {
 	return f.changes[id], nil
 }

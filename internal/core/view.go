@@ -201,6 +201,23 @@ type PendingQuestion struct {
 	Questions []agent.Question
 }
 
+// Secret is the secret the question asks for (request_secret), or nil for an ordinary question.
+func (q PendingQuestion) Secret() *agent.SecretRequest { return SecretOf(q.Questions) }
+
+// SecretInfo describes a secret Solo keeps for its agents, without its value, which is in the OS
+// keyring only.
+type SecretInfo struct {
+	Name      string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+	// LastUsed is when a command last ran with it (run_with_secrets), and LastUsedBy the title of the
+	// thread that ran it ("Solo" for the orchestrator).
+	LastUsed   time.Time `json:",omitzero"`
+	LastUsedBy string    `json:",omitempty"`
+	// RequestedBy is the title of the thread that asked for it, when one did.
+	RequestedBy string `json:",omitempty"`
+}
+
 // ChangeKind says what changed.
 type ChangeKind int
 
@@ -212,6 +229,7 @@ const (
 	ChangeRepos                      // the repository list changed
 	ChangeTodos                      // the to-do list changed
 	ChangeAnswer                     // a thread's question was answered or skipped (Change.Answer)
+	ChangeSecrets                    // the secrets kept for agents changed (added, replaced, deleted, used)
 )
 
 // Change is one notification to subscribers.

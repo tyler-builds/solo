@@ -174,7 +174,7 @@ func (c *Core) settleItems(threadID string, keepQuestions bool) []string {
 			data = d
 		case ItemQuestion:
 			var d QuestionData
-			if keepQuestions || json.Unmarshal(it.Data, &d) != nil || d.Cancelled || len(d.Answers) > 0 {
+			if keepQuestions || json.Unmarshal(it.Data, &d) != nil || !d.Waiting() {
 				continue
 			}
 			d.Cancelled = true
@@ -224,7 +224,7 @@ func (c *Core) keepQuestion(t *thread) {
 			continue
 		}
 		var d QuestionData
-		if json.Unmarshal(it.Data, &d) != nil || d.Cancelled || len(d.Answers) > 0 {
+		if json.Unmarshal(it.Data, &d) != nil || !d.Waiting() {
 			return
 		}
 		t.askQs = map[string][]agent.Question{d.ToolUseID: d.Questions}
@@ -239,21 +239,33 @@ func (c *Core) answerStaleLocked(t *thread, toolUseID string, itemID int64, res 
 	qs := t.askQs[toolUseID]
 	delete(t.staleAsks, toolUseID)
 	delete(t.askQs, toolUseID)
+	secret := SecretOf(qs)
 	c.updateItemLocked(itemID, func(raw json.RawMessage) any {
 		var d QuestionData
 		_ = json.Unmarshal(raw, &d)
 		d.Answers, d.Cancelled = res.Answers, res.Cancelled
+		d.Provided = secret != nil && !res.Cancelled
 		return d
 	})
 	var b strings.Builder
-	b.WriteString("Before Solo restarted, you asked the user:")
+	switch {
+	case secret != nil && res.Cancelled:
+		fmt.Fprintf(&b, "Before Solo restarted, you asked the user for the secret %s (request_secret). They declined; don't ask for it in chat or any other way.", secret.Name)
+	case secret != nil:
+		fmt.Fprintf(&b, "Before Solo restarted, you asked the user for the secret %s (request_secret). They saved it. You can't read its value: run the commands that need it with run_with_secrets, where it is $%s.", secret.Name, secret.Name)
+	default:
+		b.WriteString("Before Solo restarted, you asked the user:")
+	}
 	for _, q := range qs {
+		if secret != nil {
+			break
+		}
 		b.WriteString("\n- " + q.Question)
 		if a, ok := res.Answers[q.Question]; ok && !res.Cancelled {
 			b.WriteString("\n  Their answer: " + a)
 		}
 	}
-	if res.Cancelled {
+	if res.Cancelled && secret == nil {
 		b.WriteString("\nThey skipped it; use your best judgment.")
 	}
 	b.WriteString("\n\nThe restart stopped anything you had running. Carry on with your task from where you left off; before you repeat a step that changes something, check whether it already took effect.")

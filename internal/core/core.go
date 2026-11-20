@@ -25,6 +25,7 @@ import (
 
 	"github.com/tyler-builds/solo/internal/agent"
 	"github.com/tyler-builds/solo/internal/git"
+	"github.com/tyler-builds/solo/internal/secrets"
 	"github.com/tyler-builds/solo/internal/store"
 )
 
@@ -35,6 +36,9 @@ type Config struct {
 	Log     *slog.Logger
 	// PRPoll is how often open pull requests are checked; 0 means every 30 seconds.
 	PRPoll time.Duration
+	// Secrets keeps the secrets agents ask the user for (secrets.go): the OS keyring in the app. Nil
+	// keeps none, and request_secret says so.
+	Secrets secrets.Store
 }
 
 // ToolHandler serves the app tools a session calls (the orchestrator's). It returns the text the model
@@ -79,6 +83,11 @@ type Core struct {
 	// Subscribe callbacks.
 	viewMu sync.Mutex
 	views  map[string]viewing
+
+	// secretStore holds the secrets' values; sec, under secretMu, their list (secrets.go).
+	secretStore secrets.Store
+	secretMu    sync.Mutex
+	sec         secretState
 }
 
 // resumeInfo is a thread that was working when Solo closed, and how far it had got.
@@ -138,6 +147,11 @@ func New(cfg Config) (*Core, error) {
 		pollNow:   make(chan struct{}, 1),
 		fetched:   map[string]time.Time{},
 	}
+	c.secretStore = cfg.Secrets
+	if c.secretStore == nil {
+		c.secretStore = secrets.Unavailable{}
+	}
+	c.loadSecretIndex()
 	if _, err := db.GetSetting("settings", &c.settings); err != nil {
 		cfg.Log.Warn("core: settings unreadable; using defaults", "err", err)
 	}

@@ -16,6 +16,7 @@ import (
 	"github.com/tyler-builds/solo/internal/gui"
 	"github.com/tyler-builds/solo/internal/orchestrator"
 	"github.com/tyler-builds/solo/internal/remote/host"
+	"github.com/tyler-builds/solo/internal/secrets"
 )
 
 func main() {
@@ -55,7 +56,8 @@ func run() error {
 	if os.Getenv("SOLO_DEBUG") != "" {
 		cmd.Env = append(cmd.Env, "SOLO_AGENT_LOG_DIR="+filepath.Join(dataDir, "logs"))
 	}
-	c, err := core.New(core.Config{DataDir: dataDir, Agent: cmd, Log: log})
+	// Agents' secrets go to the OS keyring only (internal/secrets).
+	c, err := core.New(core.Config{DataDir: dataDir, Agent: cmd, Log: log, Secrets: secrets.NewKeyring()})
 	if err != nil {
 		return err
 	}

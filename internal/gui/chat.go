@@ -1101,6 +1101,22 @@ func (a *App) describeTool(d core.ToolData) (*icons.Icon, string, string) {
 		return icons.MessageCircleQuestionMark, "Answered", threadName()
 	case "propose_merge":
 		return icons.GitMerge, "Proposed merge", threadName()
+	case "request_secret":
+		return icons.KeyRound, "Asked for a secret", str("name")
+	case "list_secrets":
+		return icons.KeyRound, "Listed secrets", ""
+	case "run_with_secrets":
+		var names []string
+		list, _ := in["secrets"].([]any)
+		for _, n := range list {
+			if s, ok := n.(string); ok {
+				names = append(names, s)
+			}
+		}
+		if len(names) == 0 {
+			return icons.KeyRound, "Ran with secrets", firstLine(str("command"))
+		}
+		return icons.KeyRound, "Ran with secrets", strings.Join(names, ", ") + " · " + firstLine(str("command"))
 	case "Read":
 		return icons.FileCode, "Read", filepath.Base(str("file_path"))
 	case "Edit", "MultiEdit":
@@ -1246,10 +1262,14 @@ func (a *App) requestChanges(title string) {
 	a.orchFocus.Focus()
 }
 
-// questionCard is an AskUserQuestion in a transcript: open, or how it was answered.
+// questionCard is an AskUserQuestion, or a request for a secret, in a transcript: open, or how it
+// was answered.
 func (a *App) questionCard(ctx *ui.Context, threadID string, d core.QuestionData) ui.Element {
 	t := ctx.Theme()
-	if d.Cancelled || len(d.Answers) > 0 || len(d.Questions) == 0 {
+	if s := d.Secret(); s != nil && !d.Waiting() {
+		return secretDone(ctx, *s, d)
+	}
+	if !d.Waiting() || len(d.Questions) == 0 {
 		var parts []string
 		for _, q := range d.Questions {
 			ans := d.Answers[q.Question]
@@ -1266,8 +1286,12 @@ func (a *App) questionCard(ctx *ui.Context, threadID string, d core.QuestionData
 }
 
 // askForm shows questions with their options; picking options answers, as do the number keys. title
-// names the asking thread when the form is shown outside it.
+// names the asking thread when the form is shown outside it. A request for a secret shows its own
+// form (secretForm).
 func (a *App) askForm(ctx *ui.Context, threadID, toolUseID string, qs []agent.Question, title string) ui.Element {
+	if s := core.SecretOf(qs); s != nil {
+		return a.secretForm(ctx, threadID, toolUseID, *s, title)
+	}
 	return ui.Component(func(ctx *ui.Context) ui.Element {
 		t := ctx.Theme()
 		bases := a.threadBases(threadID)
@@ -1417,8 +1441,12 @@ func (a *App) questionStrip(ctx *ui.Context) ui.Element {
 	var rest []ask
 	for _, k := range asks {
 		if key := k.pq.ToolUseID; key == open {
+			title := k.th.Title + " asks"
+			if k.pq.Secret() != nil {
+				title = k.th.Title + " asks for a secret"
+			}
 			col = col.Child(ui.Div().Key("ask-" + key).
-				Child(a.askForm(ctx, k.th.ID, key, k.pq.Questions, k.th.Title+" asks")))
+				Child(a.askForm(ctx, k.th.ID, key, k.pq.Questions, title)))
 		} else {
 			rest = append(rest, k)
 		}
@@ -1447,12 +1475,22 @@ func (a *App) questionStrip(ctx *ui.Context) ui.Element {
 // several, and shows the lead before the next question.
 func (a *App) foldedAsk(ctx *ui.Context, th core.ThreadView, pq core.PendingQuestion, lead string) *ui.DivElement {
 	t := ctx.Theme()
-	q := ""
+	q, tip := "", ""
 	if len(pq.Questions) > 0 {
 		q = pq.Questions[0].Question
+		tip = q
 	}
+	icon, verb := icons.MessageCircleQuestionMark, "Answer"
 	key := pq.ToolUseID
 	label := "Show the question from " + th.Title
+	if s := pq.Secret(); s != nil {
+		icon, q, label = icons.KeyRound, "Secret "+s.Name, "Show the request for a secret from "+th.Title
+		if a.secretsBackend() != nil {
+			verb = "Enter"
+		} else {
+			verb = "Show"
+		}
+	}
 	if lead != "" {
 		label = lead + ". Show the next, from " + th.Title
 	}
@@ -1474,13 +1512,13 @@ func (a *App) foldedAsk(ctx *ui.Context, th core.ThreadView, pq core.PendingQues
 			a.askOpen.Set(key)
 			a.orchDraft.Set(strings.TrimRight(a.orchDraft.Peek(), " "))
 		}).
-		Tooltip(q + "\n" + repoLabel(th) + " · " + th.Title).
-		Child(ui.Icon(icons.MessageCircleQuestionMark).Size(15).Color(t.Warning)).
+		Tooltip(tip + "\n" + repoLabel(th) + " · " + th.Title).
+		Child(ui.Icon(icon).Size(15).Color(t.Warning)).
 		Child(ui.If(lead != "", ui.Text(lead).FontSize(13).Semibold().NoWrap().Shrink(0))).
 		Child(qText).
 		Child(ui.If(a.chatWidth(ctx) >= 640, // narrow, the tooltip and a click name the thread
 			ui.Text(repoLabel(th)+" · "+th.Title).FontSize(12).TextColor(t.TextSubtle).NoWrap().Shrink(1).MaxWidth(ui.Px(220)).MinWidth(ui.Px(60)).Truncate())).
-		Child(ui.Text("Answer").FontSize(12).Medium().TextColor(t.TextMuted).NoWrap()).
+		Child(ui.Text(verb).FontSize(12).Medium().TextColor(t.TextMuted).NoWrap()).
 		Child(ui.Icon(icons.ChevronUp).Size(13).Color(t.TextSubtle))
 }
 
@@ -1996,7 +2034,7 @@ func (a *App) isAction(r row) bool {
 	}
 	var d core.QuestionData
 	r.item.Decode(&d)
-	return !d.Cancelled && len(d.Answers) == 0
+	return d.Waiting()
 }
 
 // offscreenActions returns the rows of Solo's chat that wait on the user and have scrolled out of

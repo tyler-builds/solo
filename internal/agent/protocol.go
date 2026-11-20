@@ -85,6 +85,17 @@ type Question struct {
 	Header      string           `json:"header"`
 	MultiSelect bool             `json:"multiSelect"`
 	Options     []QuestionOption `json:"options"`
+	// Secret makes this a request for a secret (the request_secret tool): the user types its value in
+	// a masked field, and it goes to the keyring, never into an answer. Only the app sets it; a
+	// question from the sidecar (AskUserQuestion) never has it.
+	Secret *SecretRequest `json:"secret,omitempty"`
+}
+
+// SecretRequest is what an agent asks for with request_secret.
+type SecretRequest struct {
+	Name    string `json:"name"`              // the environment variable it is given as (CLOUDFLARE_API_TOKEN)
+	Reason  string `json:"reason"`            // why, in a few words, shown to the user
+	Replace bool   `json:"replace,omitempty"` // one by this name is kept already, and is to be replaced
 }
 
 // AskParams is the sidecar's question.ask request.

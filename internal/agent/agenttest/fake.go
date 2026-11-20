@@ -14,6 +14,8 @@
 //
 //	write <path> <content...>  writes the file under the session's cwd, then completes
 //	tool <name> <json args>    calls tool.call; the turn's result is the tool's text
+//	mcp <name> <json args>     the same, shown in the transcript as Claude shows an MCP tool call
+//	                           (mcp__solo__<name>, its tool_use and its tool_result)
 //	ask                        calls question.ask; the result is the first answer
 //	cancel                     calls question.ask and cancels it with $/cancel
 //	slow                       runs until interrupted (status "interrupted")
@@ -350,16 +352,26 @@ func turn(s *fakeSession, sid, uuid, text string, event func(string, map[string]
 		out, err := cmd.CombinedOutput()
 		event(sid, map[string]any{"kind": "tool_result", "toolUseId": toolID, "text": string(out), "isError": err != nil})
 		result = "ran it"
-	case "tool":
+	case "tool", "mcp":
 		name, args, _ := strings.Cut(rest, " ")
 		if args == "" {
 			args = "{}"
 		}
+		toolID := fmt.Sprintf("toolu_%d", time.Now().UnixNano())
+		if cmd == "mcp" {
+			event(sid, map[string]any{"kind": "assistant", "messageId": "m-" + uuid, "blocks": []any{
+				map[string]any{"type": "tool_use", "id": toolID, "name": "mcp__solo__" + name, "input": json.RawMessage(args)},
+			}})
+		}
 		_, ch := request("tool.call", map[string]any{"sessionId": sid, "name": name, "args": json.RawMessage(args)})
 		var r struct {
-			Text string `json:"text"`
+			Text    string `json:"text"`
+			IsError bool   `json:"isError"`
 		}
 		json.Unmarshal(<-ch, &r)
+		if cmd == "mcp" {
+			event(sid, map[string]any{"kind": "tool_result", "toolUseId": toolID, "text": r.Text, "isError": r.IsError})
+		}
 		result = r.Text
 	case "ask":
 		_, ch := request("question.ask", map[string]any{"sessionId": sid, "toolUseId": "toolu_ask", "questions": []any{

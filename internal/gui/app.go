@@ -57,6 +57,7 @@ type App struct {
 	plain    *ui.Signal[[]string]                          // searched folders that aren't in git
 	rate     *ui.Signal[[]agent.Event]                     // the latest of each usage limit (usage.go)
 	pending  *ui.Signal[map[string][]core.PendingQuestion] // worker questions, by thread
+	secrets  *ui.Signal[[]core.SecretInfo]                 // the secrets kept for agents (api.Secrets), names only
 	navSel   *ui.Signal[string]                            // sidebar: "orchestrator" or "repo:<path>"
 	drawer   *ui.Signal[bool]                              // a compact window's drawer of threads is open
 	compact  bool                                          // the window is compact, as of its last render (UI thread only)
@@ -157,6 +158,7 @@ type App struct {
 	ClearNotifications func()
 	undoToast          func(msg string, undo func())
 	dirtyAll           bool
+	dirtySecrets       bool
 	dirty              map[string]bool
 	watched            map[string]bool
 	wake               chan struct{} // wakes the refresher: something changed (see onChange)
@@ -186,6 +188,7 @@ func New(b Backend) *App {
 		plain:       ui.NewSignal(b.PlainFolders()),
 		rate:        ui.NewSignal(b.RateLimits()),
 		pending:     ui.NewSignal(loadPending(b, b.Threads())),
+		secrets:     ui.NewSignal(loadSecrets(b)),
 		navSel:      ui.NewSignal("orchestrator"),
 		drawer:      ui.NewSignal(false),
 		openID:      ui.NewSignal(""),
@@ -273,6 +276,8 @@ func (a *App) onChange(ch core.Change) {
 	switch ch.Kind {
 	case core.ChangeItems:
 		a.dirty[ch.ThreadID] = true
+	case core.ChangeSecrets:
+		a.dirtySecrets = true
 	default:
 		a.dirtyAll = true
 	}
@@ -320,8 +325,8 @@ func (a *App) refresher() {
 func (a *App) refresh() <-chan struct{} {
 	applied := make(chan struct{})
 	a.mu.Lock()
-	all, dirty := a.dirtyAll, a.dirty
-	a.dirtyAll, a.dirty = false, map[string]bool{}
+	all, dirty, dirtySecrets := a.dirtyAll, a.dirty, a.dirtySecrets
+	a.dirtyAll, a.dirty, a.dirtySecrets = false, map[string]bool{}, false
 	var load []string
 	for id := range dirty {
 		if a.watched[id] {
@@ -345,6 +350,10 @@ func (a *App) refresh() <-chan struct{} {
 		plain = a.b.PlainFolders()
 		rate = a.b.RateLimits()
 		pending = loadPending(a.b, threads)
+	}
+	var secrets []core.SecretInfo
+	if dirtySecrets {
+		secrets = loadSecrets(a.b)
 	}
 	loaded := map[string][]core.Item{}
 	for _, id := range load {
@@ -377,6 +386,9 @@ func (a *App) refresh() <-chan struct{} {
 			if !reflect.DeepEqual(cfg, a.cfg.Peek()) {
 				a.cfg.Set(cfg)
 			}
+		}
+		if dirtySecrets && !reflect.DeepEqual(secrets, a.secrets.Peek()) {
+			a.secrets.Set(secrets)
 		}
 		for id, items := range loaded {
 			if s := a.items[id]; s != nil {

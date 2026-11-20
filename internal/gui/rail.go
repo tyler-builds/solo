@@ -349,6 +349,9 @@ func (a *App) activityLine(th core.ThreadView) string {
 		return "Creating its worktree"
 	case core.StatusWaiting:
 		if qs := a.pending.Get()[th.ID]; len(qs) > 0 && len(qs[0].Questions) > 0 {
+			if s := qs[0].Secret(); s != nil {
+				return "Asks for a secret: " + s.Name
+			}
 			return "Asks: " + qs[0].Questions[0].Question
 		}
 		return "Needs your answer"

@@ -473,6 +473,9 @@ func (c *Core) openParams(row store.Thread) agent.OpenParams {
 		PermissionMode: agent.PermissionBypass,
 		ToolPolicy:     agent.ToolPolicyAllow,
 		ClaudePath:     agent.FindClaude(claudePath).Path,
+		// A thread's only app tools are the secret ones (secrets.go), as mcp__solo__<name>.
+		MCPServerName: "solo",
+		MCPTools:      SecretToolSpecs,
 	}
 }
 
@@ -497,6 +500,7 @@ files at once, with no branch or copy to review first, and other threads may wor
 ` + quietWakeRule + `
 ` + screenshotRules(true) + `
 ` + ChartRules + `
+` + SecretRules + `
 - If you need a decision only the user can make, ask with AskUserQuestion.`
 	}
 	if len(ps) > 1 {
@@ -535,6 +539,7 @@ repository's or your own defaults:
 ` + quietWakeRule + `
 ` + screenshotRules(false) + `
 ` + ChartRules + `
+` + SecretRules + `
 - If you need a decision only the user can make, ask with AskUserQuestion.` + rules
 }
 
@@ -544,6 +549,16 @@ const quietWakeRule = `- When work you ran in the background ends, a turn starts
   that your last summary doesn't already say, reply with just "` + Noted + `": that summary stays what
   Solo and the user see. If it brings anything new (results you were waiting for, a failure), end with
   a summary as usual, complete on its own.`
+
+// SecretRules tell an agent (a thread, or Solo) how to get and use a secret without seeing it
+// (secrets.go).
+const SecretRules = `- When the work needs a secret (an API key, token or password), never ask the user to paste it into
+  the chat, and don't look for it in files, the environment or the system keyring. Check list_secrets,
+  and if it isn't there, ask for it with request_secret: a name such as CLOUDFLARE_API_TOKEN and a few
+  words on what it is for. Then run each command that needs it with run_with_secrets, where it is $NAME:
+  Solo sets it in that one command only, and shows you the output with the value replaced by
+  [secret NAME]. You never see the value and must not try to: don't print, encode, split or reverse
+  it, and don't save it in a file or log a tool in with it; pass it to each command that needs it.`
 
 // ChartRules tell an agent (a thread, or Solo) when and how to show data as a chart: a chart block,
 // which the app draws where it stands (see chartspec).
@@ -655,6 +670,8 @@ func (c *Core) send(ctx context.Context, threadID, text string, images []string,
 	if strings.TrimSpace(text) == "" && len(images) == 0 {
 		return errors.New("empty message")
 	}
+	// A secret the user pasted into a message anyway never reaches Claude or the transcript.
+	text = c.Scrub(text)
 	blocks, err := c.loadImages(images)
 	if err != nil {
 		return err
@@ -948,14 +965,34 @@ func (c *Core) Interrupt(ctx context.Context, threadID string) error {
 	return err
 }
 
-// Answer records the user's answer to a pending question. answers is keyed by question text.
+// Answer records the user's answer to a pending question. answers is keyed by question text. A request
+// for a secret isn't answered this way (see ProvideSecret).
 func (c *Core) Answer(threadID, toolUseID string, answers map[string]string) error {
+	if err := c.notSecret(threadID, toolUseID); err != nil {
+		return err
+	}
 	return c.resolveAsk(threadID, toolUseID, agent.AskResult{Answers: answers}, FromUser)
 }
 
 // AnswerFromOrchestrator answers a worker's pending question for the user, as Answer does.
 func (c *Core) AnswerFromOrchestrator(threadID, toolUseID string, answers map[string]string) error {
+	if err := c.notSecret(threadID, toolUseID); err != nil {
+		return err
+	}
 	return c.resolveAsk(threadID, toolUseID, agent.AskResult{Answers: answers}, FromOrchestrator)
+}
+
+// ErrSecretAnswer refuses an answer to a request for a secret: only the user enters one, in its masked
+// field at the desktop, so that its value is never in an answer, the transcript, or an agent's context.
+var ErrSecretAnswer = errors.New("this asks the user for a secret, which only they can enter, in its masked field in the desktop app; it can't be answered with text")
+
+func (c *Core) notSecret(threadID, toolUseID string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if t := c.threads[threadID]; t != nil && SecretOf(t.askQs[toolUseID]) != nil {
+		return ErrSecretAnswer
+	}
+	return nil
 }
 
 // Dismiss declines a pending question for the user.

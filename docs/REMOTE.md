@@ -13,6 +13,10 @@ a machine.
 A relay that turns hostile, or anyone reading its traffic, cannot read messages, threads, diffs or images,
 cannot forge or alter a request, cannot add a device, and cannot replay old traffic.
 
+Secrets an agent asks for (see ARCHITECTURE.md, Secrets) are typed only at the machine: a device shows
+that one is waiting and can decline it, but no request or reply that carries a value exists, so a value
+never crosses the relay.
+
 Not protected, by design:
 
 - **Whoever controls the Cloudflare account can replace the web client's code**, and so use a paired

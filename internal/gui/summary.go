@@ -287,8 +287,10 @@ func (a *App) stepPhrases(steps []*core.Item) []phrase {
 			add("git "+filepath.Base(folder), named{})
 		case "Read", "Grep", "Glob":
 			add("read", named{})
-		case "Bash":
+		case "Bash", "run_with_secrets":
 			add("ran", named{})
+		case "request_secret":
+			add("secret", named{})
 		case "Edit", "MultiEdit", "Write":
 			add("edited", named{})
 		case "WebFetch", "WebSearch":
@@ -339,6 +341,8 @@ func (a *App) stepPhrases(steps []*core.Item) []phrase {
 			out = append(out, phrase{text: count(k.n, "edited a file", "edited %d files")})
 		case "web":
 			out = append(out, phrase{text: "searched the web"})
+		case "secret":
+			out = append(out, phrase{text: "asked you for a secret"})
 		case "subagent":
 			out = append(out, phrase{text: count(k.n, "used a subagent", "used %d subagents")})
 		default:

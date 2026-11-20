@@ -17,6 +17,7 @@ import {
   query,
   tool,
   type CanUseTool,
+  type HookCallback,
   type Options,
   type PermissionResult,
   type Query,
@@ -26,6 +27,7 @@ import {
   type SpawnedProcess,
 } from "@anthropic-ai/claude-agent-sdk";
 import { fromJSONSchema, type ZodObject } from "zod";
+import { GUARDED_TOOLS, secretGuard } from "./guard";
 import { ENTRYPOINT, claudeProcess } from "./launch";
 import { Normalizer } from "./normalize";
 import type { AgentEventBody, AskResult, OpenParams, Question, SendParams, ToolCallResult } from "./protocol";
@@ -329,6 +331,8 @@ export class Session {
       settingSources: ["user", "project", "local"],
       systemPrompt: { type: "preset", preset: "claude_code", ...(p.systemAppend ? { append: p.systemAppend } : {}) },
       ...(p.mcpTools?.length ? { mcpServers: { [p.mcpServerName ?? "solo"]: this.mcpServer(p) } } : {}),
+      // A hook, not canUseTool: hooks run under bypassPermissions too, and for subagents.
+      hooks: { PreToolUse: [{ matcher: GUARDED_TOOLS, hooks: [guardHook] }] },
       spawnClaudeCodeProcess: (o) => this.spawn(o, live),
     };
 
@@ -459,13 +463,15 @@ export class Session {
         spec.name,
         spec.description,
         schema.shape ?? {},
-        async (args: Record<string, unknown>) => {
+        async (args: Record<string, unknown>, extra: unknown) => {
           try {
-            const res = await this.host.peer.request<ToolCallResult>("tool.call", {
-              sessionId: this.id,
-              name: spec.name,
-              args,
-            });
+            // An interrupted turn withdraws the call (a request for a secret the user hasn't answered).
+            const signal = (extra as { signal?: AbortSignal } | undefined)?.signal;
+            const res = await this.host.peer.request<ToolCallResult>(
+              "tool.call",
+              { sessionId: this.id, name: spec.name, args },
+              signal,
+            );
             return { content: [{ type: "text" as const, text: res.text }], ...(res.isError ? { isError: true } : {}) };
           } catch (e) {
             return { content: [{ type: "text" as const, text: `Tool failed: ${errorText(e)}` }], isError: true };
@@ -492,6 +498,14 @@ export class Session {
     } catch {}
   }
 }
+
+/** guardHook denies the tool calls secretGuard refuses. */
+export const guardHook: HookCallback = async (input) => {
+  if (input.hook_event_name !== "PreToolUse") return {};
+  const why = secretGuard(input.tool_name, (input.tool_input ?? {}) as Record<string, unknown>);
+  if (!why) return {};
+  return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: why } };
+};
 
 function killGroup(child: { pid?: number; kill(s: NodeJS.Signals): boolean }, signal: NodeJS.Signals) {
   try {
