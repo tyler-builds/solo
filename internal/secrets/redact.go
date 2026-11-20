@@ -43,6 +43,7 @@ const minVariant = 6
 // Redactor takes secret values, and their common encodings, out of text.
 type Redactor struct {
 	full  *strings.Replacer // every value and its encodings, longest first
+	mask  *strings.Replacer // the same, each replaced with as many '*' (Mask)
 	pats  []string          // the same, for Contains
 	frags map[string]string // runs of fragLen bytes of each value (and of it reversed), by run: the name
 	empty bool
@@ -75,8 +76,17 @@ func NewRedactor(values map[string]string) *Redactor {
 		for _, e := range Encodings(v) {
 			add(e, name, minVariant)
 		}
-		if len(v) > fragLen {
-			for _, s := range []string{v, reverse(v)} {
+		parts := secretParts(v)
+		for _, p := range parts {
+			if p != v {
+				add(p, name, fragLen) // a URL's password, printed alone
+			}
+		}
+		for _, p := range parts {
+			if len(p) <= fragLen {
+				continue
+			}
+			for _, s := range []string{p, reverse(p)} {
 				for i := 0; i+fragLen <= len(s); i++ {
 					frags[s[i:i+fragLen]] = name
 				}
@@ -87,12 +97,47 @@ func NewRedactor(values map[string]string) *Redactor {
 	slices.SortStableFunc(pats, func(a, b pat) int { return len(b.s) - len(a.s) })
 	r := &Redactor{frags: frags, empty: len(pats) == 0}
 	args := make([]string, 0, 2*len(pats))
+	masks := make([]string, 0, 2*len(pats))
 	for _, p := range pats {
 		args = append(args, p.s, Placeholder(p.name))
+		masks = append(masks, p.s, strings.Repeat("*", len(p.s)))
 		r.pats = append(r.pats, p.s)
 	}
 	r.full = strings.NewReplacer(args...)
+	r.mask = strings.NewReplacer(masks...)
 	return r
+}
+
+// secretParts are the parts of v whose runs the fragment rule takes out. For most values that is v
+// itself. A URL (postgres://app:pw@localhost:5432/app) is mostly not secret: its scheme, host, port and
+// path are words ordinary output has, so only its password and query values count, and the whole URL
+// is still taken out wherever it appears whole or encoded.
+func secretParts(v string) []string {
+	u, err := url.Parse(v)
+	if err != nil || u.Scheme == "" || u.Host == "" || strings.ContainsAny(v, " \t\n") {
+		return []string{v}
+	}
+	var parts []string
+	if pw, ok := u.User.Password(); ok && pw != "" {
+		parts = append(parts, pw)
+	}
+	for _, vals := range u.Query() {
+		for _, q := range vals {
+			if q != "" {
+				parts = append(parts, q)
+			}
+		}
+	}
+	return parts
+}
+
+// Mask is RedactFull for binary data: each value, and each of its encodings, becomes as many '*', so
+// that nothing in the data moves.
+func (r *Redactor) Mask(b []byte) []byte {
+	if r.Empty() || !r.Contains(string(b)) {
+		return b
+	}
+	return []byte(r.mask.Replace(string(b)))
 }
 
 // Empty reports whether the Redactor has nothing to take out.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tyler-builds/solo/internal/agent"
 	"github.com/tyler-builds/solo/internal/secrets"
 )
 
@@ -192,6 +194,7 @@ func TestRunWithSecrets(t *testing.T) {
 		t.Skip("POSIX shell commands")
 	}
 	e := newEnv(t)
+	t.Setenv("HOME", t.TempDir()) // credential files of the test's own
 	ctx := context.Background()
 	if err := e.c.SetSecret("API_TOKEN", testToken); err != nil {
 		t.Fatal(err)
@@ -234,11 +237,12 @@ func TestRunWithSecrets(t *testing.T) {
 
 func TestRunWithSecretsRefuses(t *testing.T) {
 	e := newEnv(t)
+	t.Setenv("HOME", t.TempDir())
 	ctx := context.Background()
 	e.c.SetSecret("API_TOKEN", testToken)
 	for prompt, want := range map[string]string{
 		`mcp run_with_secrets {"command":"echo hi","secrets":["MISSING"]}`:                                   "no secret named",
-		`mcp run_with_secrets {"command":"secret-tool lookup service solo-secrets","secrets":["API_TOKEN"]}`: "read secret stores",
+		`mcp run_with_secrets {"command":"secret-tool lookup service solo-secrets","secrets":["API_TOKEN"]}`: "from the system keyring",
 		`mcp run_with_secrets {"command":"pwd","secrets":["API_TOKEN"],"cwd":"/"}`:                           "must be inside your working directory",
 	} {
 		v, _ := e.c.CreateWorker(ctx, WorkerSpec{Repo: "proj", Prompt: prompt})
@@ -351,5 +355,65 @@ func TestRestartKeepsSecretRequest(t *testing.T) {
 	}
 	if leak := transcriptLeaks(t, c2, v.ID); leak != "" {
 		t.Fatalf("transcript holds the value: %s", leak)
+	}
+}
+
+// A value too short to take out of text safely is refused, by Settings and by a request's card; the
+// request then still waits.
+func TestShortSecretRefused(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	for _, v := range []string{"a", "1234", "admin", "true", "1234567\n"} {
+		if err := e.c.SetSecret("PIN", v); !errors.Is(err, ErrSecretTooShort) {
+			t.Errorf("SetSecret(%q) = %v, want ErrSecretTooShort", v, err)
+		}
+	}
+	v, _ := e.c.CreateWorker(ctx, WorkerSpec{Repo: "proj", Prompt: requestToken})
+	pq := pendingSecret(t, e.c, v.ID)
+	if err := e.c.ProvideSecret(v.ID, pq.ToolUseID, "1234"); !errors.Is(err, ErrSecretTooShort) {
+		t.Fatalf("ProvideSecret: %v", err)
+	}
+	if len(e.c.PendingQuestions(v.ID)) != 1 || len(e.c.Secrets()) != 0 {
+		t.Fatal("a short value answered the request")
+	}
+	if err := e.c.ProvideSecret(v.ID, pq.ToolUseID, "12345678"); err != nil {
+		t.Fatal(err)
+	}
+	waitStatus(t, e.c, v.ID, StatusIdle)
+}
+
+// A short value kept from before the rule never reaches transcript redaction, which would take
+// ordinary text out of every message.
+func TestTranscriptRedactionSkipsShortValues(t *testing.T) {
+	r := transcriptRedactor(map[string]string{"PIN": "a", "API_TOKEN": testToken})
+	if got := r.RedactFull("a banana and a database"); got != "a banana and a database" {
+		t.Errorf("RedactFull = %q", got)
+	}
+	if got := r.RedactFull("t " + testToken); got != "t [secret API_TOKEN]" {
+		t.Errorf("RedactFull = %q", got)
+	}
+}
+
+// The sidecar's hook asks core about an agent's own tool calls (tool.guard).
+func TestGuardRoute(t *testing.T) {
+	e := newEnv(t)
+	ask := func(tool, input string) string {
+		res, err := e.c.onGuard(context.Background(), agent.GuardParams{ToolName: tool, Input: json.RawMessage(input)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res.Deny
+	}
+	if ask("Bash", `{"command":"secret-tool lookup service solo-secrets username API_TOKEN"}`) == "" {
+		t.Error("reading Solo's keyring items is allowed")
+	}
+	for tool, in := range map[string]string{
+		"Bash": `{"command":"grep -rn solo-secrets internal/"}`,
+		"Grep": `{"pattern":"gnome-keyring","path":"."}`,
+		"Read": `{"file_path":"/proc/1/environ"}`,
+	} {
+		if why := ask(tool, in); why != "" {
+			t.Errorf("%s %s refused: %s", tool, in, why)
+		}
 	}
 }

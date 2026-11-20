@@ -191,6 +191,7 @@ func New(cfg Config) (*Core, error) {
 		OnEvent:    c.onEvent,
 		OnToolCall: c.onToolCall,
 		OnAsk:      c.onAsk,
+		OnGuard:    c.onGuard,
 	}, cfg.Log)
 	c.repos, c.plain = git.ScanAll(c.settings.Folders, c.settings.ScanDepth, c.worktreesDir())
 	for id, t := range c.threads {

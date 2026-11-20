@@ -204,6 +204,15 @@ type PendingQuestion struct {
 // Secret is the secret the question asks for (request_secret), or nil for an ordinary question.
 func (q PendingQuestion) Secret() *agent.SecretRequest { return SecretOf(q.Questions) }
 
+// MinSecretLength is the fewest characters a secret's value may have. Solo takes every value out of
+// what agents read and what it stores, wherever the value appears, so a shorter one ("1234", "admin")
+// would take ordinary words and numbers out of the conversation with it.
+const MinSecretLength = 8
+
+// ErrSecretTooShort refuses a value shorter than MinSecretLength.
+var ErrSecretTooShort = fmt.Errorf("a secret needs at least %d characters: Solo takes its value out of everything agents read "+
+	"and the conversation stores, and a shorter one would take ordinary text with it", MinSecretLength)
+
 // SecretInfo describes a secret Solo keeps for its agents, without its value, which is in the OS
 // keyring only.
 type SecretInfo struct {

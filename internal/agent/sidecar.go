@@ -36,6 +36,8 @@ type Callbacks struct {
 	OnEvent    func(Event)
 	OnToolCall func(ctx context.Context, p ToolCallParams) (ToolCallResult, error)
 	OnAsk      func(ctx context.Context, p AskParams) (AskResult, error)
+	// OnGuard checks a tool call an agent is about to make (the sidecar's PreToolUse hook).
+	OnGuard func(ctx context.Context, p GuardParams) (GuardResult, error)
 }
 
 // Command is how to start the sidecar.
@@ -86,6 +88,16 @@ func StartSidecar(ctx context.Context, c Command, cb Callbacks, log *slog.Logger
 			return ToolCallResult{Text: "This tool is not available.", IsError: true}, nil
 		}
 		return cb.OnToolCall(ctx, p)
+	})
+	s.conn.handle("tool.guard", func(ctx context.Context, raw json.RawMessage) (any, error) {
+		var p GuardParams
+		if err := json.Unmarshal(raw, &p); err != nil {
+			return nil, err
+		}
+		if cb.OnGuard == nil {
+			return GuardResult{}, nil
+		}
+		return cb.OnGuard(ctx, p)
 	})
 	s.conn.handle("question.ask", func(ctx context.Context, raw json.RawMessage) (any, error) {
 		var p AskParams

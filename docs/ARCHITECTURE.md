@@ -328,28 +328,47 @@ environment of one command that Solo, not the agent, runs.
   thread's folder (a thread's `cwd` must be inside it), with a temporary folder of its own (removed
   after), stdin closed, and the secrets in its environment and nowhere else. When it ends, its process
   group is killed (POSIX), so nothing it left running keeps the values.
+- **Values** need at least 8 characters (`core.MinSecretLength`): every value is taken out of what Solo
+  stores wherever it appears, and a shorter one ("1234", "admin") would take ordinary text with it. The
+  card and Settings say so and won't save one.
 - **Redaction** (`secrets.Redactor`): every kept value, not only the ones given, is replaced with
   `[secret NAME]` in the output, as is its hex, base64 (both alphabets, padded, and at each alignment it
   can have inside longer encoded text), URL, JSON and Go escaping, the value reversed, and any run of 8
-  or more of its characters (a prefix, a half). Files the command changed that hold a value (in its
-  folder and the thread's, the repository's git config, and common credential files in the home folder
-  such as `.npmrc` and `gh`'s `hosts.yml`) are rewritten with the placeholder, and the agent is told.
-  As a net under all that, every transcript item Solo stores, and every message to an agent (a secret
-  the user pastes anyway), has the values and their full encodings taken out.
-- **Guard:** commands that read a secret store or another process's environment (`secret-tool`, the
-  Secret Service over D-Bus, `security find-generic-password`, `cmdkey`, `/proc/*/environ`, …) are
-  refused, by `run_with_secrets` and, for agents' own Bash, PowerShell, Read, Grep and Glob calls, by a
-  PreToolUse hook in the sidecar (`sidecar/src/guard.ts`), which runs under `bypassPermissions` too.
+  or more of its characters (a prefix, a half). For a URL-shaped value (`postgres://app:pw@host:5432/db`)
+  that last rule covers only its password and query values, so the host, port and path don't take
+  ordinary words out of the output; the URL itself, and the password alone, are still taken out. As a
+  net under all that, every transcript item, thread summary and memory Solo stores, and every message to
+  an agent (a secret the user pastes anyway), has the values and their full encodings taken out.
+- **Files** (`secrets/files.go`): no file is left worse than it was. Before the command runs, Solo reads
+  the agent's own folder (a thread's worktree, Solo's working folder), the user's common credential
+  files (`.npmrc`, `gh`'s `hosts.yml`, `.aws/credentials`, …) and the git config of the command's folder.
+  Afterwards, a file that held a value before is left alone; a credential file or git config the command
+  made hold one is put back as it was (or removed, if the command made it), never given a placeholder;
+  and a file in the agent's own folder the command wrote a value into gets the placeholder, or, in a
+  binary file, as many `*`, so nothing in it moves. No other folder is looked through or changed: Solo's
+  own commands may run in the user's checkout, and a file they write there keeps what they wrote. A folder
+  too large to read in 5 seconds is reported as not fully checked.
+- **Guard:** an agent's own Bash, PowerShell, Read, Grep and Glob calls go through a PreToolUse hook in the
+  sidecar (`sidecar/src/guard.ts`, which runs under `bypassPermissions` too), which asks core
+  (`tool.guard`, `secrets.Guard`); commands for `run_with_secrets` are checked the same way. It refuses
+  only what reads Solo's secrets: a keyring reader (`secret-tool lookup`, the Secret Service over D-Bus,
+  `security find-generic-password`, `cmdkey`, Python's `keyring`, …) in a command that names
+  `solo-secrets`, and `/proc/<pid>/environ` or `mem` of a process in the group of a command running with
+  secrets (`/proc/*/…`, a variable in place of the PID, or `ps e` only while one runs). Searching code
+  for these words, and reading an unrelated process's environment, go through. Linux has no way to make
+  the command's environment unreadable to the same user (a process can only make itself undumpable, and
+  `execve` undoes it), so this is a check on what the agent asks for, not a wall.
 - **Remote:** a secret is typed only at the desktop. A paired device shows the request and can decline
   it; `api.Secrets` is the desktop backend's alone, and `core.Answer` refuses a text answer to a request,
   from a device or from Solo's `answer_question`. The relay never carries a value.
 - **Limits.** An agent runs as the user with a shell. Solo keeps the value out of every path it controls
   (tool results, transcripts, the agents' environments and prompts, the relay, its database and logs)
   and closes the obvious deliberate ways around that, but it can't stop an agent set on defeating it:
-  a command can transform the value beyond what redaction recognizes (split it into short pieces, add
-  to each character), send it over the network, or write it outside the folders scanned; a program the
-  agent writes can read the keyring, or the command's environment while it runs, without matching the
-  guard. Redaction is a safeguard for honest agents, not a sandbox.
+  a command can transform the value beyond what redaction recognizes (`fold -w 7`, adding to each
+  character), send it over the network, or write it outside the agent's own folder; a program the agent
+  writes can read the keyring, or the command's environment while it runs, without matching the guard,
+  and a Bash call started alongside `run_with_secrets` is checked before that command exists. Redaction
+  is a safeguard for honest agents, not a sandbox.
 
 ## UI (jamb)
 

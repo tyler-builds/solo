@@ -7,12 +7,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"runtime"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -41,11 +38,10 @@ type RunSpec struct {
 	// keeps, not only the ones the command was given.
 	Redactor *Redactor
 	Timeout  time.Duration
-	// Roots are the folders to look in for files the command wrote a secret into (an agent's worktree),
-	// besides Dir and the user's well-known credential files.
-	Roots []string
-	// Skip are folders under the roots not to look through (too large, and not the agent's).
-	Skip []string
+	// Own is the agent's own folder (a thread's worktree): files the command writes a secret into there
+	// are scrubbed. No other folder is looked through; the user's credential files and the git config
+	// of Dir and Own are put back as they were instead (see guardFiles).
+	Own string
 	// Shell overrides the shell the command runs in: the program, then its arguments before the
 	// command. Tests set it.
 	Shell []string
@@ -58,15 +54,22 @@ type RunResult struct {
 	TimedOut bool
 	Dropped  int  // bytes of output past maxCapture, not kept
 	Redacted bool // the output held a secret, now taken out
-	// Scrubbed are files the command wrote a secret into, which now hold its Placeholder instead.
+	// Scrubbed are files in Own the command wrote a secret into, which now hold its Placeholder (or,
+	// in a binary file, as many '*') instead.
 	Scrubbed []string
+	// Restored are credential and git config files the command wrote a secret into, put back as they
+	// were before it ran (or removed, when it made them).
+	Restored []string
+	// Unchecked: Own was too large to look through in time, before or after the command, so files there
+	// may hold a secret it wrote.
+	Unchecked bool
 }
 
 // Run runs spec.Command in a shell of its own, with the secrets in its environment and nowhere else:
 // not in Solo's environment or any agent's, and not on its command line. Its output comes back
-// redacted. It gets a temporary folder of its own (TMPDIR, TMP, TEMP), removed after, and once it
-// ends, everything left in its process group is killed (on POSIX) and the files it wrote that hold a
-// secret are scrubbed.
+// redacted. It gets a temporary folder of its own (TMPDIR, TMP, TEMP), removed after; while it runs, its
+// process group is in Running (for Guard); once it ends, everything left in that group is killed (on
+// POSIX), and files it wrote a secret into are scrubbed or put back (guardFiles).
 func Run(ctx context.Context, spec RunSpec) (RunResult, error) {
 	var res RunResult
 	if spec.Timeout <= 0 {
@@ -82,7 +85,7 @@ func Run(ctx context.Context, spec RunSpec) (RunResult, error) {
 		return res, err
 	}
 	defer os.RemoveAll(tmp)
-	start := time.Now()
+	files := guardFiles(spec.Redactor, spec.Own, []string{spec.Dir, spec.Own})
 
 	runCtx, cancel := context.WithTimeout(ctx, spec.Timeout)
 	defer cancel()
@@ -95,8 +98,12 @@ func Run(ctx context.Context, spec RunSpec) (RunResult, error) {
 	setGroup(cmd)
 	cmd.Cancel = func() error { return killGroup(cmd) }
 	cmd.WaitDelay = 5 * time.Second // a child that keeps the pipes open doesn't hold Run
-	err = cmd.Run()
-	_ = killGroup(cmd) // background children it left would hold the secrets
+	if err = cmd.Start(); err == nil {
+		running.add(cmd.Process.Pid)
+		err = cmd.Wait()
+		_ = killGroup(cmd) // background children it left would hold the secrets
+		running.remove(cmd.Process.Pid)
+	}
 	res.TimedOut = errors.Is(runCtx.Err(), context.DeadlineExceeded)
 	var exit *exec.ExitError
 	switch {
@@ -114,8 +121,7 @@ func Run(ctx context.Context, spec RunSpec) (RunResult, error) {
 	res.Dropped = dropped
 	res.Output = spec.Redactor.Redact(raw)
 	res.Redacted = res.Output != raw
-	roots := append([]string{spec.Dir}, spec.Roots...)
-	res.Scrubbed = scrub(roots, spec.Skip, start, spec.Redactor)
+	res.Scrubbed, res.Restored, res.Unchecked = files.settle()
 	return res, nil
 }
 
@@ -184,93 +190,4 @@ func (c *capture) result() (string, int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.buf.String(), c.dropped
-}
-
-// credentialFiles are where common command-line tools keep a login, under the home folder: a command
-// that logs one in with a secret leaves the secret there.
-var credentialFiles = []string{
-	".npmrc", ".yarnrc.yml", ".netrc", "_netrc", ".git-credentials", ".config/git/credentials",
-	".docker/config.json", ".config/gh/hosts.yml", ".config/glab-cli/config.yml", ".pypirc",
-	".aws/credentials", ".kube/config", ".cargo/credentials", ".cargo/credentials.toml",
-	".gem/credentials", ".wrangler/config/default.toml", ".config/.wrangler/config/default.toml",
-	".config/hub", ".terraform.d/credentials.tfrc.json", ".config/configstore/firebase-tools.json",
-}
-
-// scrub replaces each secret in the files under roots (but not under skip) changed since start, and in the user's
-// credential files and the roots' git config changed since then, with its Placeholder. It returns the
-// files it changed. It looks for at most scanBudget, skipping git's object store and files over
-// scanMaxFile.
-func scrub(roots, skip []string, start time.Time, r *Redactor) []string {
-	if r.Empty() {
-		return nil
-	}
-	since := start.Add(-2 * time.Second) // file systems keep coarse times
-	deadline := time.Now().Add(scanBudget)
-	seen := map[string]bool{}
-	var changed []string
-	check := func(path string, info fs.FileInfo) {
-		if seen[path] || !info.Mode().IsRegular() || info.ModTime().Before(since) || info.Size() > scanMaxFile {
-			return
-		}
-		seen[path] = true
-		data, err := os.ReadFile(path)
-		if err != nil || !r.Contains(string(data)) {
-			return
-		}
-		if os.WriteFile(path, []byte(r.RedactFull(string(data))), info.Mode().Perm()) == nil {
-			changed = append(changed, path)
-		}
-	}
-	if home, err := os.UserHomeDir(); err == nil {
-		for _, f := range credentialFiles {
-			p := filepath.Join(home, filepath.FromSlash(f))
-			if info, err := os.Stat(p); err == nil {
-				check(p, info)
-			}
-		}
-	}
-	for _, root := range roots {
-		if root == "" {
-			continue
-		}
-		if cfg := gitConfig(root); cfg != "" {
-			if info, err := os.Stat(cfg); err == nil {
-				check(cfg, info)
-			}
-		}
-		_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-			if time.Now().After(deadline) {
-				return filepath.SkipAll
-			}
-			if err != nil {
-				return nil
-			}
-			if d.IsDir() {
-				if slices.Contains(skip, path) {
-					return filepath.SkipDir
-				}
-				if d.Name() == "objects" && filepath.Base(filepath.Dir(path)) == ".git" {
-					return filepath.SkipDir
-				}
-				return nil
-			}
-			if info, err := d.Info(); err == nil {
-				check(path, info)
-			}
-			return nil
-		})
-	}
-	return changed
-}
-
-// gitConfig is the config file of the repository root is in (for a worktree, the main repository's,
-// which `git remote set-url` writes), or "".
-func gitConfig(root string) string {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	out, err := proc.CommandContext(ctx, "git", "-C", root, "rev-parse", "--path-format=absolute", "--git-common-dir").Output()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(strings.TrimSpace(string(out)), "config")
 }

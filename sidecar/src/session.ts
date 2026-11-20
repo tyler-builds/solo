@@ -17,7 +17,6 @@ import {
   query,
   tool,
   type CanUseTool,
-  type HookCallback,
   type Options,
   type PermissionResult,
   type Query,
@@ -27,7 +26,7 @@ import {
   type SpawnedProcess,
 } from "@anthropic-ai/claude-agent-sdk";
 import { fromJSONSchema, type ZodObject } from "zod";
-import { GUARDED_TOOLS, secretGuard } from "./guard";
+import { GUARDED_TOOLS, guardHook } from "./guard";
 import { ENTRYPOINT, claudeProcess } from "./launch";
 import { Normalizer } from "./normalize";
 import type { AgentEventBody, AskResult, OpenParams, Question, SendParams, ToolCallResult } from "./protocol";
@@ -331,8 +330,14 @@ export class Session {
       settingSources: ["user", "project", "local"],
       systemPrompt: { type: "preset", preset: "claude_code", ...(p.systemAppend ? { append: p.systemAppend } : {}) },
       ...(p.mcpTools?.length ? { mcpServers: { [p.mcpServerName ?? "solo"]: this.mcpServer(p) } } : {}),
-      // A hook, not canUseTool: hooks run under bypassPermissions too, and for subagents.
-      hooks: { PreToolUse: [{ matcher: GUARDED_TOOLS, hooks: [guardHook] }] },
+      hooks: {
+        PreToolUse: [
+          {
+            matcher: GUARDED_TOOLS,
+            hooks: [guardHook((toolName, input) => this.host.peer.request("tool.guard", { sessionId: this.id, toolName, input }))],
+          },
+        ],
+      },
       spawnClaudeCodeProcess: (o) => this.spawn(o, live),
     };
 
@@ -498,14 +503,6 @@ export class Session {
     } catch {}
   }
 }
-
-/** guardHook denies the tool calls secretGuard refuses. */
-export const guardHook: HookCallback = async (input) => {
-  if (input.hook_event_name !== "PreToolUse") return {};
-  const why = secretGuard(input.tool_name, (input.tool_input ?? {}) as Record<string, unknown>);
-  if (!why) return {};
-  return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: why } };
-};
 
 function killGroup(child: { pid?: number; kill(s: NodeJS.Signals): boolean }, signal: NodeJS.Signals) {
   try {

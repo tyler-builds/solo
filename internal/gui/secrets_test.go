@@ -152,6 +152,32 @@ func TestSecretRequestSaves(t *testing.T) {
 	}
 }
 
+// A value too short to redact safely can't be saved, and the card says why.
+func TestSecretRequestTooShort(t *testing.T) {
+	f := demoBackend()
+	secretAsk(f)
+	_, u := newUI(t, f)
+	u.Get("secret-value").Type("1234")
+	u.Frame()
+	if !showsText(u, "At least 8 characters") {
+		t.Fatal("the card doesn't say why a short value can't be saved")
+	}
+	u.Press("enter")
+	u.Frame()
+	time.Sleep(100 * time.Millisecond)
+	f.mu.Lock()
+	provided := slices.Clone(f.provided)
+	f.mu.Unlock()
+	if len(provided) != 0 {
+		t.Fatalf("a short value was saved: %v", provided)
+	}
+	u.Get("secret-value").Type("5678")
+	u.Frame()
+	if showsText(u, "At least 8 characters") {
+		t.Fatal("the warning stays once the value is long enough")
+	}
+}
+
 // Decline drops the request with Dismiss, as Skip does a question.
 func TestSecretRequestDeclines(t *testing.T) {
 	f := demoBackend()

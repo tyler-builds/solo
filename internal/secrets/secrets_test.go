@@ -112,26 +112,6 @@ func mustJSON(v string) string {
 	return v
 }
 
-func TestForbidden(t *testing.T) {
-	for _, c := range []string{
-		"secret-tool lookup service solo-secrets username X",
-		"cat /proc/1234/environ",
-		"for p in /proc/*/environ; do cat $p; done",
-		"security find-generic-password -s solo-secrets -w",
-		"python -c 'import keyring; keyring.get_password(\"solo-secrets\",\"X\")'",
-		"busctl --user call org.freedesktop.secrets /org/freedesktop/secrets",
-	} {
-		if Forbidden(c) == "" {
-			t.Errorf("Forbidden(%q) = \"\", want a reason", c)
-		}
-	}
-	for _, c := range []string{`curl -H "Authorization: Bearer $TOKEN" https://api.example.com`, "wrangler deploy", "env | grep -c PATH"} {
-		if r := Forbidden(c); r != "" {
-			t.Errorf("Forbidden(%q) = %q, want none", c, r)
-		}
-	}
-}
-
 func shell(t *testing.T) []string {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX shell commands")
@@ -140,6 +120,7 @@ func shell(t *testing.T) []string {
 }
 
 func TestRunInjectsAndRedacts(t *testing.T) {
+	home(t)
 	sh := shell(t)
 	dir := t.TempDir()
 	r := NewRedactor(map[string]string{"TOKEN": token, "OTHER": "unused-other-secret-value"})
@@ -184,46 +165,8 @@ func TestRunInjectsAndRedacts(t *testing.T) {
 	}
 }
 
-func TestRunScrubsFilesItWrote(t *testing.T) {
-	sh := shell(t)
-	dir, other := t.TempDir(), t.TempDir()
-	old := filepath.Join(dir, "old.txt")
-	os.WriteFile(old, []byte("untouched "+token), 0o644) // there before: not the command's doing
-	past := time.Now().Add(-time.Hour)
-	os.Chtimes(old, past, past)
-	r := NewRedactor(map[string]string{"TOKEN": token})
-	res, err := Run(context.Background(), RunSpec{
-		Command:  `mkdir -p sub && echo "TOKEN=$TOKEN" > .env && printf %s "$TOKEN" | base64 > sub/b64 && echo "$TOKEN" > "` + other + `/x" && echo done`,
-		Dir:      dir,
-		Secrets:  map[string]string{"TOKEN": token},
-		Redactor: r,
-		Roots:    []string{other},
-		Shell:    sh,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, f := range []string{filepath.Join(dir, ".env"), filepath.Join(dir, "sub", "b64"), filepath.Join(other, "x")} {
-		b, err := os.ReadFile(f)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if leaks(string(b)) {
-			t.Errorf("%s still holds the value: %q", f, b)
-		}
-	}
-	if len(res.Scrubbed) != 3 {
-		t.Errorf("Scrubbed = %v, want the 3 files", res.Scrubbed)
-	}
-	if b, _ := os.ReadFile(old); !strings.Contains(string(b), token) {
-		t.Error("a file the command didn't write was changed")
-	}
-	if strings.TrimSpace(res.Output) != "done" {
-		t.Errorf("Output = %q", res.Output)
-	}
-}
-
 func TestRunKillsWhatItLeft(t *testing.T) {
+	home(t)
 	sh := shell(t)
 	dir := t.TempDir()
 	mark := filepath.Join(dir, "alive")
@@ -247,6 +190,7 @@ func TestRunKillsWhatItLeft(t *testing.T) {
 }
 
 func TestRunTimeout(t *testing.T) {
+	home(t)
 	sh := shell(t)
 	start := time.Now()
 	res, err := Run(context.Background(), RunSpec{Command: "echo hi; sleep 30", Dir: t.TempDir(), Timeout: 500 * time.Millisecond,
@@ -263,6 +207,7 @@ func TestRunTimeout(t *testing.T) {
 }
 
 func TestRunDefaultShell(t *testing.T) {
+	home(t)
 	if _, err := exec.LookPath("bash"); err != nil && runtime.GOOS == "windows" {
 		t.Skip("no bash")
 	}

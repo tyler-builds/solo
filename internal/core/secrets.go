@@ -4,6 +4,7 @@ package core
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -13,6 +14,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/tyler-builds/solo/internal/agent"
 	"github.com/tyler-builds/solo/internal/secrets"
@@ -60,7 +62,7 @@ var SecretToolSpecs = []agent.ToolSpec{
 		Name: ToolRunWithSecrets,
 		Description: "Run a shell command (bash) with saved secrets set as environment variables in it, and only in it: refer to them as $NAME. " +
 			"The app runs it, not your shell, and returns its exit code and output (stdout and stderr) with every secret value, and common encodings of it, replaced by [secret NAME]. " +
-			"Files it writes that hold a secret are scrubbed too, so don't use it to write a secret into a file or to log a tool in for later: pass the secret in each command that needs it.",
+			"A secret it writes into a file in your folder is replaced there too, and a tool login or git config it changes to hold one is put back as it was, so don't use it to save a secret or log a tool in for later: pass the secret to each command that needs it.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{
 			"command":{"type":"string","description":"The command, such as: npx wrangler deploy, or curl -H \"Authorization: Bearer $API_TOKEN\" https://..."},
 			"secrets":{"type":"array","items":{"type":"string"},"description":"Names of the secrets to set, from list_secrets."},
@@ -110,9 +112,22 @@ func (c *Core) loadSecretValues() {
 		}
 		c.secretMu.Lock()
 		c.sec.values[s.Name] = v
-		c.sec.redactor = secrets.NewRedactor(c.sec.values)
+		c.sec.redactor = transcriptRedactor(c.sec.values)
 		c.secretMu.Unlock()
 	}
+}
+
+// transcriptRedactor redacts the values long enough to redact everywhere (MinSecretLength): one kept
+// before that rule would take ordinary text out of every message. Commands run with secrets redact
+// every value, whatever its length.
+func transcriptRedactor(values map[string]string) *secrets.Redactor {
+	long := map[string]string{}
+	for k, v := range values {
+		if utf8.RuneCountInString(v) >= MinSecretLength {
+			long[k] = v
+		}
+	}
+	return secrets.NewRedactor(long)
 }
 
 // Secrets lists the secrets kept for agents, by name. Values are in the keyring only.
@@ -144,6 +159,8 @@ func (c *Core) setSecret(name, value, requestedBy string) error {
 		return fmt.Errorf("%q can't name a secret: use letters, digits and underscores, not starting with a digit", name)
 	case value == "":
 		return errors.New("the secret is empty")
+	case utf8.RuneCountInString(value) < MinSecretLength:
+		return ErrSecretTooShort
 	}
 	if err := c.secretStore.Set(name, value); err != nil {
 		return err
@@ -160,7 +177,7 @@ func (c *Core) setSecret(name, value, requestedBy string) error {
 		c.sec.index[i].RequestedBy = requestedBy
 	}
 	c.sec.values[name] = value
-	c.sec.redactor = secrets.NewRedactor(c.sec.values)
+	c.sec.redactor = transcriptRedactor(c.sec.values)
 	err := c.saveSecretIndexLocked()
 	c.secretMu.Unlock()
 	c.notify(Change{Kind: ChangeSecrets})
@@ -230,6 +247,13 @@ func scrubValue(v any, r *secrets.Redactor) any {
 		}
 	}
 	return v
+}
+
+// onGuard checks an agent's own tool call against reading Solo's secrets (secrets.Guard).
+func (c *Core) onGuard(_ context.Context, p agent.GuardParams) (agent.GuardResult, error) {
+	var input map[string]any
+	_ = json.Unmarshal(p.Input, &input)
+	return agent.GuardResult{Deny: secrets.Guard(p.ToolName, input)}, nil
 }
 
 // ProvideSecret saves the value the user typed for a thread's request_secret, and tells the thread it
@@ -361,7 +385,7 @@ func (c *Core) runWithSecrets(ctx context.Context, t *thread, args []byte) (stri
 	c.mu.Lock()
 	row := t.row
 	c.mu.Unlock()
-	root, dir, skip, err := c.runDir(row, a.Cwd)
+	own, dir, err := c.runDir(row, a.Cwd)
 	if err != nil {
 		return "", err
 	}
@@ -389,18 +413,13 @@ func (c *Core) runWithSecrets(ctx context.Context, t *thread, args []byte) (stri
 	for k, v := range env {
 		all[k] = v
 	}
-	var roots []string
-	if root != dir {
-		roots = append(roots, root)
-	}
 	res, err := secrets.Run(ctx, secrets.RunSpec{
 		Command:  a.Command,
 		Dir:      dir,
 		Secrets:  env,
 		Redactor: secrets.NewRedactor(all),
 		Timeout:  time.Duration(a.Timeout) * time.Second,
-		Roots:    roots,
-		Skip:     skip,
+		Own:      own,
 	})
 	if err != nil {
 		return "", err
@@ -436,25 +455,34 @@ func (c *Core) runWithSecrets(ctx context.Context, t *thread, args []byte) (stri
 		fmt.Fprintf(&b, "[The command wrote a secret into %s; Solo replaced it there with [secret NAME]. Pass secrets to each command that needs them instead of saving them in files or logins.]\n",
 			strings.Join(res.Scrubbed, ", "))
 	}
+	if len(res.Restored) > 0 {
+		fmt.Fprintf(&b, "[The command wrote a secret into %s; Solo put back what they held before it ran. Don't log tools in with a secret: pass it to each command that needs it.]\n",
+			strings.Join(res.Restored, ", "))
+	}
+	if res.Unchecked {
+		b.WriteString("[Your folder was too large for Solo to check every file for secrets the command wrote.]\n")
+	}
 	return b.String(), nil
 }
 
-// runDir is where a thread's run_with_secrets command runs: root is the thread's own folder (its
-// worktree, or Solo's working folder), dir is cwd resolved in it. A thread's command stays inside its
-// own folder. skip are folders not to look through for files the command wrote.
-func (c *Core) runDir(row store.Thread, cwd string) (root, dir string, skip []string, err error) {
+// runDir is where a thread's run_with_secrets command runs: own is the agent's own folder (a thread's
+// worktree, Solo's working folder), whose files are checked for secrets the command wrote, and dir is
+// cwd resolved in it. A thread's command stays inside its own folder; Solo's may run anywhere (in the
+// user's checkout, say), but only its own folder is checked and changed (secrets.RunSpec.Own).
+func (c *Core) runDir(row store.Thread, cwd string) (own, dir string, err error) {
+	root := ""
 	if row.Kind == store.KindOrchestrator {
-		root = filepath.Join(c.cfg.DataDir, "orchestrator")
-		if _, err := os.Stat(root); err != nil {
-			root = c.cfg.DataDir
+		own = filepath.Join(c.cfg.DataDir, "orchestrator")
+		if _, err := os.Stat(own); err != nil {
+			own = ""
 		}
-		// Every thread's worktree is under the data folder: too much to look through after each command.
-		skip = []string{filepath.Join(c.cfg.DataDir, "worktrees"), filepath.Join(c.cfg.DataDir, "attachments")}
+		root = cmp.Or(own, c.cfg.DataDir)
 	} else {
-		root = c.sessionDir(row)
+		own = c.sessionDir(row)
+		root = own
 	}
 	if root == "" {
-		return "", "", nil, errors.New("this thread has no folder to run commands in")
+		return "", "", errors.New("this thread has no folder to run commands in")
 	}
 	dir = root
 	if cwd = strings.TrimSpace(cwd); cwd != "" {
@@ -464,14 +492,14 @@ func (c *Core) runDir(row store.Thread, cwd string) (root, dir string, skip []st
 		dir = filepath.Clean(cwd)
 		if row.Kind != store.KindOrchestrator {
 			if rel, err := filepath.Rel(root, dir); err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-				return "", "", nil, fmt.Errorf("cwd must be inside your working directory, %s", root)
+				return "", "", fmt.Errorf("cwd must be inside your working directory, %s", root)
 			}
 		}
 	}
 	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
-		return "", "", nil, fmt.Errorf("%s isn't a folder", dir)
+		return "", "", fmt.Errorf("%s isn't a folder", dir)
 	}
-	return root, dir, skip, nil
+	return own, dir, nil
 }
 
 func (c *Core) markUsed(names []string, row store.Thread) {

@@ -3,9 +3,11 @@ package gui
 import (
 	"cmp"
 	"context"
+	"fmt"
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/tyler-builds/jamb/access"
 	"github.com/tyler-builds/jamb/icons"
@@ -151,7 +153,7 @@ func (a *App) secretForm(ctx *ui.Context, threadID, toolUseID string, s agent.Se
 		}
 		save := func() {
 			v := value.Peek()
-			if strings.TrimSpace(v) == "" {
+			if !secretValueOK(v) {
 				return
 			}
 			value.Set("") // the value leaves the UI with this click
@@ -163,8 +165,9 @@ func (a *App) secretForm(ctx *ui.Context, threadID, toolUseID string, s agent.Se
 			Child(ui.Div().Row().Align(ui.Center).Gap(space2).
 				Child(field).
 				Child(ui.Button("Save securely").Icon(icons.LockKeyhole).Primary().Small().
-					Disabled(strings.TrimSpace(value.Get()) == "").OnClick(save)).
+					Disabled(!secretValueOK(value.Get())).OnClick(save)).
 				Child(decline)).
+			Child(tooShort(ctx, value.Get())).
 			Child(note(icons.ShieldCheck, t.TextSubtle, "Saved in your system keyring. Solo and its threads can use it in commands but never see it."))
 	})
 }
@@ -288,7 +291,7 @@ func (a *App) secretRow(ctx *ui.Context, sec api.Secrets, s core.SecretInfo, can
 	}
 	save := func() {
 		v := value.Peek()
-		if strings.TrimSpace(v) == "" {
+		if !secretValueOK(v) {
 			return
 		}
 		value.Set("") // the value leaves the UI with this click
@@ -300,8 +303,9 @@ func (a *App) secretRow(ctx *ui.Context, sec api.Secrets, s core.SecretInfo, can
 		Child(ui.Div().Row().Align(ui.Center).Gap(space2).PaddingLeft(space4 + 15 + space3).PaddingRight(space3).PaddingBottom(space3).
 			Child(ui.TextInput(value).Masked().Placeholder("Paste or type the new value").Label("New value of " + name).
 				Small().Grow(1).AutoFocus().Key("secret-new-value").OnSubmit(func(string) { save() })).
-			Child(ui.Button("Save").Primary().Small().Disabled(strings.TrimSpace(value.Get()) == "").OnClick(save)).
-			Child(ui.Button("Cancel").Ghost().Small().OnClick(cancel)))
+			Child(ui.Button("Save").Primary().Small().Disabled(!secretValueOK(value.Get())).OnClick(save)).
+			Child(ui.Button("Cancel").Ghost().Small().OnClick(cancel))).
+		Child(ui.Div().PaddingLeft(space4 + 15 + space3).PaddingBottom(space3).Child(tooShort(ctx, value.Get())))
 }
 
 // addSecretRow adds a secret by hand: its name, checked as it is typed, and a masked value.
@@ -314,7 +318,7 @@ func (a *App) addSecretRow(ctx *ui.Context, sec api.Secrets) ui.Element {
 	add := func() {
 		n := strings.TrimSpace(name.Peek())
 		v := value.Peek()
-		if !validSecretName(n) || strings.TrimSpace(v) == "" {
+		if !validSecretName(n) || !secretValueOK(v) {
 			return
 		}
 		value.Set("") // the value leaves the UI with this click
@@ -327,7 +331,7 @@ func (a *App) addSecretRow(ctx *ui.Context, sec api.Secrets) ui.Element {
 		Child(ui.TextInput(value).Masked().Placeholder("Value").Label("Value of the secret").Small().Grow(1).
 			Key("secret-add-value").OnSubmit(func(string) { add() })).
 		Child(ui.Button("Add").Icon(icons.Plus).Secondary().Small().
-			Disabled(!validSecretName(n) || strings.TrimSpace(value.Get()) == "").OnClick(add))
+			Disabled(!validSecretName(n) || !secretValueOK(value.Get())).OnClick(add))
 	col := ui.Div().Column().Gap(space2).PaddingX(space4).PaddingY(space3).Child(inputs)
 	switch {
 	case n != "" && !validSecretName(n):
@@ -337,5 +341,24 @@ func (a *App) addSecretRow(ctx *ui.Context, sec api.Secrets) ui.Element {
 	case saved:
 		col = col.Child(caption(ctx, "Replaces the saved "+n+"."))
 	}
-	return col
+	return col.Child(tooShort(ctx, value.Get()))
+}
+
+// secretValueOK reports whether v can be saved as a secret: core.MinSecretLength characters or more,
+// once the line breaks a paste brings are trimmed, as core trims them.
+func secretValueOK(v string) bool {
+	return strings.TrimSpace(v) != "" && utf8.RuneCountInString(strings.Trim(v, "\r\n")) >= core.MinSecretLength
+}
+
+// tooShort says why a value being typed can't be saved yet: it is shorter than core.MinSecretLength. It
+// says nothing of an empty field, or of one long enough.
+func tooShort(ctx *ui.Context, v string) ui.Element {
+	if v == "" || secretValueOK(v) {
+		return nil
+	}
+	t := ctx.Theme()
+	return ui.Div().Row().Align(ui.Center).Gap(space1 + 2).
+		Child(ui.Icon(icons.CircleAlert).Size(13).Color(t.Warning)).
+		Child(ui.Text(fmt.Sprintf("At least %d characters. Solo takes the value out of everything agents read, and a "+
+			"shorter one would take ordinary words with it.", core.MinSecretLength)).FontSize(12).TextColor(t.TextMuted))
 }

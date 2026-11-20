@@ -84,6 +84,7 @@ func (m *Manager) sidecar(ctx context.Context) (*Sidecar, int, error) {
 			OnEvent:    m.onEvent,
 			OnToolCall: m.cb.OnToolCall,
 			OnAsk:      m.cb.OnAsk,
+			OnGuard:    m.cb.OnGuard,
 		}, m.log)
 
 		m.mu.Lock()

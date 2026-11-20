@@ -127,6 +127,19 @@ type ToolCallResult struct {
 	IsError bool   `json:"isError,omitempty"`
 }
 
+// GuardParams is the sidecar's tool.guard request: a tool call an agent is about to make (its own
+// Bash, PowerShell, Read, Grep or Glob), from the PreToolUse hook.
+type GuardParams struct {
+	SessionID string          `json:"sessionId"`
+	ToolName  string          `json:"toolName"`
+	Input     json.RawMessage `json:"input"`
+}
+
+// GuardResult answers tool.guard: Deny, when set, is why the call may not run.
+type GuardResult struct {
+	Deny string `json:"deny,omitempty"`
+}
+
 // ModelInfo is a model Claude Code offers.
 type ModelInfo struct {
 	Value        string   `json:"value"`

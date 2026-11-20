@@ -1,48 +1,32 @@
-// The secrets guard: agents' own tool calls may not read Solo's secrets where they are kept. Solo puts a
-// secret's value in the environment of one command it runs itself (run_with_secrets) and redacts it
-// from what comes back; an agent's shell runs as the user, so it could otherwise read the value
-// straight from the keyring, or from that command's environment while it runs. This closes the obvious
-// ways, not every way: a program the agent writes can still do it. Mirrors internal/secrets/guard.go.
+// The secrets guard: an agent's own tool calls may not read Solo's secrets, from the keyring or from the
+// environment of a command run_with_secrets is running. The hook asks Go (tool.guard), which knows
+// which commands are running and decides (internal/secrets/guard.go); anything else goes through,
+// including searches that only mention keyrings or /proc. It closes the obvious ways, not every way.
 
-const READERS: RegExp[] = [
-  /\bsecret-tool\b/i,
-  /org\.freedesktop\.secrets/i,
-  /\bgnome-keyring\b/i,
-  /\bkwallet/i,
-  /\bsolo-secrets\b/i,
-  /\bkeyring\s+get\b/i,
-  /\bkeyring\.get_password\b/i,
-  /\bfind-(generic|internet)-password\b/i,
-  /\bcmdkey\b/i,
-  /\bCredRead/i,
-  /\bGet-StoredCredential\b/i,
-  /\bPasswordVault\b/i,
-  /\/proc\/[^\s/]+\/environ\b/i,
-  /\benviron\b.*\/proc|\/proc\b.*\benviron\b/i,
-];
+import type { HookCallback } from "@anthropic-ai/claude-agent-sdk";
+import { errorText, log } from "./rpc";
 
 /** The tools the guard looks at: the shells, and the tools that read files. */
 export const GUARDED_TOOLS = "Bash|PowerShell|Read|Grep|Glob";
 
+/** GuardCheck asks the app about a tool call: deny, when set, is why it may not run. */
+export type GuardCheck = (toolName: string, input: Record<string, unknown>) => Promise<{ deny?: string }>;
+
 /**
- * secretGuard says why a tool call may not run because it reads a secret store or another process's
- * environment, or undefined when it may.
+ * guardHook is a PreToolUse hook that denies the calls check refuses. A hook, not canUseTool: hooks run
+ * under bypassPermissions too, and for subagents. If the app can't be asked, the call goes through.
  */
-export function secretGuard(toolName: string, input: Record<string, unknown>): string | undefined {
-  if (!GUARDED_TOOLS.split("|").includes(toolName)) return undefined;
-  const text =
-    toolName === "Bash" || toolName === "PowerShell"
-      ? input.command
-      : [input.file_path, input.path, input.pattern].filter((v) => typeof v === "string").join(" ");
-  if (typeof text !== "string" || !text) return undefined;
-  for (const re of READERS) {
-    const m = text.match(re);
-    if (m) {
-      return (
-        `Solo doesn't let agents read secret stores or other processes' environments (matched ${m[0]}). ` +
-        "Secrets are used only through run_with_secrets, which sets them in one command for you; you never see their values."
-      );
+export function guardHook(check: GuardCheck): HookCallback {
+  return async (input) => {
+    if (input.hook_event_name !== "PreToolUse") return {};
+    let deny: string | undefined;
+    try {
+      deny = (await check(input.tool_name, (input.tool_input ?? {}) as Record<string, unknown>)).deny;
+    } catch (e) {
+      log(`guard: ${errorText(e)}`);
+      return {};
     }
-  }
-  return undefined;
+    if (!deny) return {};
+    return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: deny } };
+  };
 }
