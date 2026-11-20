@@ -6,7 +6,7 @@ require (
 	github.com/coder/websocket v1.8.15
 	github.com/flynn/noise v1.1.0
 	github.com/godbus/dbus/v5 v5.2.4
-	github.com/tyler-builds/jamb v0.9.0
+	github.com/tyler-builds/jamb v0.9.1
 	github.com/zalando/go-keyring v0.2.8
 	golang.org/x/crypto v0.59.0
 	golang.org/x/image v0.47.0
