@@ -294,8 +294,9 @@ Raw `SDKMessage`s are also appended to a per-session JSONL file for debugging an
   Changes and the diff prefix paths with the repository. Open PRs opens one per changed repository,
   each description listing the others; the split button's menu opens or merges one repository on its
   own. Auto-merge is each forge's own. The thread is merged once every changed repository has landed.
-- Discarding a thread deletes its message images (the user's and its agent's), except ones another
-  thread's history still shows, such as a screenshot Solo showed the user again.
+- Discarding a thread deletes its message images and files (the user's and its agent's), except ones
+  another thread's history still shows, such as a screenshot Solo showed the user again or a file Solo
+  passed on.
 - **Screenshots of UI changes:** both prompts ask for them. A worker whose work changes what a user
   sees (in any repository) puts screenshots of each changed view in its summary, before and after (the
   base commit rendered from before its changes or a temporary checkout) or after alone for a new view,
@@ -406,6 +407,34 @@ environment of one command that Solo, not the agent, runs.
   `<data>/attachments` (scaled to at most 2000 px and 3.5 MB) and sent as image blocks before the text.
   Messages to Solo also list the saved paths, so Solo can pass them on with `spawn_thread` or
   `message_thread`'s `images`.
+- **Files:** the paperclip in any message box ("Attach files") takes any file. An image (PNG, JPEG, GIF
+  or WebP by name, that Claude takes) is attached as above; any other file, or an image too large or
+  not readable as one, is copied onto the machine that runs Solo beside the images, as
+  `<data>/attachments/<uuid>-<name>` (`core.ImportFile` from a path, `SaveFile` from contents,
+  `BeginFile` from parts; at most `core.MaxFileSize`, 64 MB, and 20 a message). The name says which
+  kind an attachment is (`core.FileName`: an image is `<uuid>.<ext>`), so the API's `Send` still takes
+  one list of attachments and the original name travels with the path. A name from another device is
+  untrusted: `core.SafeFileName` keeps its last element only, drops control and invisible formatting
+  characters (a right-to-left override can't disguise an extension), replaces the characters Windows
+  refuses and trims the dots and spaces Windows drops, and the file is created new (`O_EXCL`) with mode
+  0600, never executable. The guard on what is read stays the images': a message names only files
+  directly in the attachments folder (`isAttachment`), a file must also be a regular file there, not a
+  link (`isFileAttachment`, checked again when a queued message goes), and `ReadImage` and image blocks
+  never read a file attachment. A file arriving in parts waits in `<data>/uploads`, which nothing reads
+  and which is emptied when Solo starts, and becomes an attachment only once its size and SHA-256
+  check out. The composer shows a file as a chip with its name and size (`gui/attach.go`):
+  a spinner while it is copied, the share that has arrived while a page uploads it, and why when it
+  fails, with Try again; × removes it, stopping an upload. Send stays disabled, and Enter only says
+  why, while any file is on its way or failed, so a message never names a half-written file. The sent
+  message, and a queued one, show the files as chips (`UserData.Files`, `QueuedMessage.Files`: path,
+  name and size). Claude reads a file with its own tools: after the text, the message it is sent ends
+  with `[Attached files, copied to this machine. Read them with your tools:` and a line for each,
+  `- name (size): path` (`core.filesNote`), which the transcript leaves out. Solo's adds that it passes
+  them on in `files`: `spawn_thread` and `message_thread` take `files` beside `images`, rather than a
+  wider `images`, because the two reach the thread differently (pixels it sees, paths it reads) and an
+  image is sometimes wanted as a file to process. A dropped file that isn't an image is still
+  mentioned as `@path` on the desktop; a page gets no drops from jamb, so there files come through the
+  paperclip.
 - **Images in agents' messages:** an agent (a worker or Solo) shows an image by writing
   `![caption](path)`, with an absolute path or one relative to its working directory. Before the
   message is applied (`core.embedImages`), each local image it names is imported as the user's are
@@ -512,8 +541,10 @@ shows its UI. With `?sample=1` it runs over `internal/sample` instead: generated
 as large as a busy real database, one of them streaming, which is what the UI is measured against.
 
 Attachments work without a file system: a file picked in a page is stored by its contents
-(`SaveImageData`), and the UI reads every image through the backend (`ReadImage`), which reads only the
-attachments folder. With `App.RemoteImages` the UI fetches them off the UI thread and asks for previews
+(`SaveImageData` for an image, `SaveFile` for any other file, which a page's backend sends to the
+machine in parts; see REMOTE.md), and the UI reads every image through the backend (`ReadImage`), which
+reads only the attachments folder, and never a file attachment: a file is shown by the name and size the
+message keeps, not read back. With `App.RemoteImages` the UI fetches them off the UI thread and asks for previews
 scaled down; the lightbox fetches the image at full size and keeps its file for Copy image, which a
 browser lets a page write only while it handles the click. A page has no files, so it doesn't offer
 Save image as….

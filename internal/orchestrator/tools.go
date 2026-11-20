@@ -82,6 +82,7 @@ var toolSpecs = []agent.ToolSpec{
 			"effort":{"type":"string","description":"Optional effort level (low, medium, high, xhigh, max); default from Settings."},
 			"base":{"type":"string","description":"Optional branch to start from; default is the repository's current branch."},
 			"images":{"type":"array","items":{"type":"string"},"description":"Optional paths of image files to send with it, such as the attached images the user gave you."},
+			"files":{"type":"array","items":{"type":"string"},"description":"Optional paths of other files to send with it (documents, archives, logs, data; any kind), such as the attached files the user gave you. Each is copied for the thread, which is told its path and reads it with its tools. An image passed here goes as a file to read, not as a picture."},
 			"todo":{"type":"string","description":"Optional ID of a todo (from add_todo or list_todos) that this thread's work finishes: the app ticks it off when the work lands. Leave it out when the thread does only part of the todo."},
 			"scratch":{"type":"boolean","description":"Start it as a scratch thread: the user only wants to try or test something (a benchmark, a spike) and doesn't mean to land it through git. It still gets its worktree and branch, but nothing asks the user to land it, and you never propose a merge for it. Only when the user says so."}},
 			"required":["repo","title","prompt"]}`),
@@ -92,7 +93,8 @@ var toolSpecs = []agent.ToolSpec{
 		InputSchema: schema(`{"type":"object","properties":{
 			"id":{"type":"string","description":"Thread ID or short ID."},
 			"text":{"type":"string"},
-			"images":{"type":"array","items":{"type":"string"},"description":"Optional paths of image files to send with it, such as the attached images the user gave you."}},"required":["id","text"]}`),
+			"images":{"type":"array","items":{"type":"string"},"description":"Optional paths of image files to send with it, such as the attached images the user gave you."},
+			"files":{"type":"array","items":{"type":"string"},"description":"Optional paths of other files to send with it (documents, archives, logs, data; any kind), such as the attached files the user gave you. Each is copied for the thread, which is told its path and reads it with its tools. An image passed here goes as a file to read, not as a picture."}},"required":["id","text"]}`),
 	},
 	{
 		Name:        "interrupt_thread",
@@ -221,6 +223,7 @@ func (o *Orchestrator) handleTool(ctx context.Context, threadID, name string, ra
 		Days          int               `json:"days"`
 		Answers       map[string]string `json:"answers"`
 		Images        []string          `json:"images"`
+		Files         []string          `json:"files"`
 		Repos         []string          `json:"repos"`
 		Effort        string            `json:"effort"`
 		Folder        string            `json:"folder"`
@@ -292,7 +295,7 @@ func (o *Orchestrator) handleTool(ctx context.Context, threadID, name string, ra
 		}
 	case "spawn_thread":
 		var v core.ThreadView
-		if v, err = o.c.CreateWorker(ctx, core.WorkerSpec{Repo: a.Repo, Repos: a.Repos, Title: a.Title, Prompt: a.Prompt, Model: a.Model, Effort: a.Effort, Base: a.Base, Images: a.Images, Scratch: a.Scratch}); err == nil {
+		if v, err = o.c.CreateWorker(ctx, core.WorkerSpec{Repo: a.Repo, Repos: a.Repos, Title: a.Title, Prompt: a.Prompt, Model: a.Model, Effort: a.Effort, Base: a.Base, Images: a.Images, Files: a.Files, Scratch: a.Scratch}); err == nil {
 			out = fmt.Sprintf("Started thread %s %q in %s (status: %s). You'll get a thread update when it finishes or needs input.",
 				short(v.ID), v.Title, repoList(v), v.Status)
 			if v.InPlace {
@@ -312,11 +315,14 @@ func (o *Orchestrator) handleTool(ctx context.Context, threadID, name string, ra
 	case "message_thread":
 		var v core.ThreadView
 		if v, err = worker(); err == nil {
-			var images []string
+			var images, files []string
 			if images, err = o.c.ImportImages(a.Images); err != nil {
 				break
 			}
-			if err = o.c.SendFromOrchestrator(ctx, v.ID, a.Text, images...); err == nil {
+			if files, err = o.c.ImportFiles(a.Files); err != nil {
+				break
+			}
+			if err = o.c.SendFromOrchestrator(ctx, v.ID, a.Text, append(images, files...)...); err == nil {
 				out = fmt.Sprintf("Sent to %s.", short(v.ID))
 			}
 		}

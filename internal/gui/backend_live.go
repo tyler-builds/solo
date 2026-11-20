@@ -26,3 +26,13 @@ func (l Live) SendToOrchestrator(ctx context.Context, text string, images ...str
 func (l Live) Open(threadID string) { l.Core.SetViewing("window", threadID, time.Time{}) }
 
 var _ api.Secrets = Live{}
+var _ api.Uploads = Live{}
+
+// BeginFile takes a file a device sends in parts (api.Uploads).
+func (l Live) BeginFile(name string, size int64) (api.FileUpload, error) {
+	u, err := l.Core.BeginFile(name, size)
+	if err != nil {
+		return nil, err
+	}
+	return u, nil
+}

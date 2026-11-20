@@ -18,6 +18,9 @@ import (
 // scaled down, so this bounds what is read, not what is sent on.
 const MaxImageUpload = 16 << 20
 
+// MaxFileUpload is the largest file SaveFile and ImportFile take.
+const MaxFileUpload = core.MaxFileSize
+
 // Backend is what the UI drives: the engine and the orchestrator.
 //
 // The methods that only read state (Threads, Thread, Items, PendingQuestions, Todos, Settings,
@@ -33,9 +36,11 @@ type Backend interface {
 	CompleteTodo(id string) error
 	UpdateTodo(id string, ch core.TodoChange) (core.Todo, error)
 
-	// Images in a message are named by the references SaveImage, SaveImageData and ImportImage return.
-	SendToOrchestrator(ctx context.Context, text string, images ...string) error
-	Send(ctx context.Context, threadID, text string, images ...string) error
+	// A message's attachments are named by the references SaveImage, SaveImageData and ImportImage
+	// return (images, which Claude sees), and SaveFile and ImportFile (files, which it is told the paths
+	// of): core.IsFileAttachment tells them apart.
+	SendToOrchestrator(ctx context.Context, text string, attachments ...string) error
+	Send(ctx context.Context, threadID, text string, attachments ...string) error
 	// SaveImage stores a decoded image, such as one pasted from the clipboard, as an attachment.
 	SaveImage(img image.Image) (string, error)
 	// SaveImageData stores an image file's contents (PNG, JPEG, GIF or WebP, at most MaxImageUpload) as
@@ -44,6 +49,13 @@ type Backend interface {
 	// ImportImage stores a copy of an image file on the machine that runs Solo as an attachment. A web
 	// page has no such files and uses SaveImageData.
 	ImportImage(path string) (string, error)
+	// SaveFile stores a file's contents (any file, at most MaxFileUpload) as an attachment named name,
+	// copied onto the machine that runs Solo. progress, when not nil, is told how many bytes have
+	// arrived there, off the UI thread. Cancelling ctx stops it, and what arrived is removed.
+	SaveFile(ctx context.Context, name string, data []byte, progress func(int64)) (string, error)
+	// ImportFile stores a copy of a file on the machine that runs Solo as an attachment. A web page has
+	// no such files and uses SaveFile.
+	ImportFile(path string) (string, error)
 	// ReadImage returns an attachment's contents. With maxSide above zero, an image with a longer side
 	// comes scaled down to it.
 	ReadImage(ctx context.Context, ref string, maxSide int) ([]byte, error)
@@ -80,6 +92,20 @@ type Backend interface {
 	InitRepo(ctx context.Context, folder string) (string, error)
 	RateLimits() []agent.Event
 	CheckClaude(ctx context.Context, override string) core.ClaudeStatus
+}
+
+// Uploads is a backend on the machine that runs Solo that takes a file in parts, as a device sends one
+// (see core.Core.BeginFile).
+type Uploads interface {
+	BeginFile(name string, size int64) (FileUpload, error)
+}
+
+// FileUpload is a file arriving in parts: Write them in order, then Finish with the SHA-256 sum of the
+// whole, which checks it and returns the attachment's reference, or Abort, which removes what arrived.
+type FileUpload interface {
+	Write(p []byte) (int, error)
+	Finish(sum []byte) (string, error)
+	Abort()
 }
 
 // Watcher is a backend that wants to know which threads the UI shows, such as one that fetches their

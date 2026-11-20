@@ -19,11 +19,12 @@ import (
 const (
 	maxText       = 512 << 10 // a message's text
 	maxImages     = 20        // images named in one message
+	maxFiles      = 20        // other files named in one message (core.MaxFiles)
 	maxItems      = 400       // transcript items in a window
 	maxHits       = 50        // search results
 	maxQuery      = 256       // a search's length
 	maxDiff       = 4 << 20   // a diff's size; more is cut, and said to be
-	maxFiles      = 5000      // changed files listed
+	maxChanged    = 5000      // changed files listed
 	maxPreview    = 4096      // an image preview's longest side
 	maxWatched    = 8         // threads watched at once
 	maxAnswers    = 64        // answers in one reply to a question
@@ -35,6 +36,10 @@ type method struct {
 	// write: it changes something. A read-only device may not send it, it is recorded in the audit log,
 	// and it runs once however often it is sent.
 	write bool
+	// quiet: a write left out of the audit log, as a part of an upload is (its beginning and end are in).
+	quiet bool
+	// blob is the most bytes it may carry after its JSON; most carry none.
+	blob int
 	// run returns the result, any bytes to send with it, and what the audit log says it was about.
 	run func(ctx context.Context, c *conn, p json.RawMessage, blob []byte) (result any, out []byte, detail string, err error)
 }
@@ -55,6 +60,18 @@ type (
 	}
 	imageResult struct {
 		Ref string `json:"ref"`
+	}
+	uploadBeginParams struct {
+		Name string `json:"name"`
+		Size int64  `json:"size"`
+	}
+	uploadParams struct {
+		Upload string `json:"upload"`
+		Offset int64  `json:"offset,omitempty"` // uploadPart: where the part goes, which is what has arrived
+		Sum    string `json:"sum,omitempty"`    // uploadEnd: the whole file's SHA-256, in hex
+	}
+	uploadResult struct {
+		Upload string `json:"upload"`
 	}
 	answerParams struct {
 		Thread  string            `json:"thread"`
@@ -216,13 +233,21 @@ func init() {
 			if len(a.Text) > maxText || !utf8.ValidString(a.Text) {
 				return nil, nil, "", invalid("the message is too long")
 			}
-			if len(a.Images) > maxImages {
-				return nil, nil, "", invalid("at most %d images in a message", maxImages)
-			}
+			// Images holds every attachment: images, and files, which their names tell apart.
+			files := 0
 			for _, ref := range a.Images {
 				if len(ref) == 0 || len(ref) > 4096 {
-					return nil, nil, "", invalid("that isn't an image")
+					return nil, nil, "", invalid("that isn't an attachment")
 				}
+				if core.IsFileAttachment(ref) {
+					files++
+				}
+			}
+			if len(a.Images)-files > maxImages {
+				return nil, nil, "", invalid("at most %d images in a message", maxImages)
+			}
+			if files > maxFiles {
+				return nil, nil, "", invalid("at most %d files in a message", maxFiles)
 			}
 			if a.Thread == "" {
 				return nil, nil, core.OrchestratorID, c.h.b.SendToOrchestrator(ctx, a.Text, a.Images...)
@@ -232,13 +257,19 @@ func init() {
 			}
 			return nil, nil, a.Thread, c.h.b.Send(ctx, a.Thread, a.Text, a.Images...)
 		}},
-		"saveImage": {write: true, run: func(ctx context.Context, c *conn, _ json.RawMessage, blob []byte) (any, []byte, string, error) {
+		"saveImage": {write: true, blob: api.MaxImageUpload, run: func(ctx context.Context, c *conn, _ json.RawMessage, blob []byte) (any, []byte, string, error) {
 			if len(blob) == 0 || len(blob) > api.MaxImageUpload {
 				return nil, nil, "", invalid("an image is at most %d MB", api.MaxImageUpload>>20)
 			}
 			ref, err := c.h.b.SaveImageData(ctx, blob)
 			return imageResult{Ref: ref}, nil, "", err
 		}},
+		// A file crosses in parts, each its own request: uploadBegin, uploadPart for each in order,
+		// uploadEnd with the whole file's checksum (see upload.go).
+		"uploadBegin":  {write: true, run: uploadBegin},
+		"uploadPart":   {write: true, quiet: true, blob: maxUploadPart, run: uploadPart},
+		"uploadEnd":    {write: true, run: uploadEnd},
+		"uploadCancel": {write: true, quiet: true, run: uploadCancel},
 		"readImage": {run: func(ctx context.Context, c *conn, p json.RawMessage, _ []byte) (any, []byte, string, error) {
 			a, err := decode[imageParams](p)
 			if err != nil {
@@ -298,8 +329,8 @@ func init() {
 				return nil, nil, "", err
 			}
 			files, err := c.h.b.Changes(ctx, a.Thread)
-			if len(files) > maxFiles {
-				files = files[:maxFiles]
+			if len(files) > maxChanged {
+				files = files[:maxChanged]
 			}
 			if files == nil {
 				files = []git.FileChange{}

@@ -83,6 +83,7 @@ type mem struct {
 	images   map[string][]byte
 	onMerge  func() (string, error)
 	onOpenPR func() ([]forge.PR, error)
+	files    *core.Core // takes uploads (api.Uploads), when set
 
 	claudeChecks atomic.Int32
 }
@@ -264,6 +265,17 @@ func (m *mem) OpenPRFor(context.Context, string, string, bool) ([]forge.PR, erro
 	return f()
 }
 
+func (m *mem) BeginFile(name string, size int64) (api.FileUpload, error) {
+	if m.files == nil {
+		return nil, errors.New("no files here")
+	}
+	u, err := m.files.BeginFile(name, size)
+	if err != nil {
+		return nil, err
+	}
+	return u, nil
+}
+
 func (m *mem) SaveImageData(_ context.Context, data []byte) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -309,18 +321,23 @@ func newRig(t *testing.T, m *mem, dev Device) *rig {
 	return newRigWith(t, m, dev, ClientOptions{})
 }
 
-// newRigWith is newRig with the client's options (its Random is set here).
-func newRigWith(t *testing.T, m *mem, dev Device, opts ClientOptions) *rig {
+// newRigWith is newRig with the client's options (its Random is set here), and any changes to the
+// host's.
+func newRigWith(t *testing.T, m *mem, dev Device, opts ClientOptions, host ...func(*Options)) *rig {
 	t.Helper()
 	r := &rig{t: t, m: m, dev: dev}
-	r.h = NewHost(m, Options{FlushEvery: 5 * time.Millisecond, Lease: time.Second,
+	ho := Options{FlushEvery: 5 * time.Millisecond, Lease: time.Second,
 		IsDir: func(p string) bool { return p == "/code" },
 		Info:  func() HostInfo { return HostInfo{Name: "box", OS: "linux", Home: "/home/u", Version: "1.2.3"} },
 		Audit: func(d Device, method, detail string, err error) {
 			r.amu.Lock()
 			r.audit = append(r.audit, fmt.Sprintf("%s %s %s %v", d.Name, method, detail, err))
 			r.amu.Unlock()
-		}})
+		}}
+	for _, f := range host {
+		f(&ho)
+	}
+	r.h = NewHost(m, ho)
 	opts.Random = countingReader{}
 	r.c = NewClient(opts)
 	t.Cleanup(func() {

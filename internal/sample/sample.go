@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -299,26 +300,41 @@ func (b *Backend) UpdateTodo(id string, ch core.TodoChange) (core.Todo, error) {
 
 var errSample = errors.New("this is the sample page: nothing here is connected to a machine")
 
-func (b *Backend) send(thread, text string) error {
+func (b *Backend) send(thread, text string, attachments []string) error {
+	// A sample has no images to show, but it shows the files a machine stored (cmd/solo-localrelay).
+	var files []core.FileRef
+	for _, p := range attachments {
+		if name, ok := core.FileName(p); ok {
+			size := int64(-1)
+			if fi, err := os.Stat(p); err == nil {
+				size = fi.Size()
+			}
+			files = append(files, core.FileRef{Path: p, Name: name, Size: size})
+		}
+	}
 	b.mu.Lock()
-	b.add(thread, core.ItemUser, "", core.UserData{Text: text}, time.Now())
+	b.add(thread, core.ItemUser, "", core.UserData{Text: text, Files: files}, time.Now())
 	b.add(thread, core.ItemAssistant, "", core.TextData{Text: "This is the sample page, so nothing ran. You wrote: " + text}, time.Now())
 	b.mu.Unlock()
 	b.notify(core.Change{Kind: core.ChangeItems, ThreadID: thread})
 	return nil
 }
 
-func (b *Backend) SendToOrchestrator(_ context.Context, text string, _ ...string) error {
-	return b.send(core.OrchestratorID, text)
+func (b *Backend) SendToOrchestrator(_ context.Context, text string, attachments ...string) error {
+	return b.send(core.OrchestratorID, text, attachments)
 }
-func (b *Backend) Send(_ context.Context, id, text string, _ ...string) error {
-	return b.send(id, text)
+func (b *Backend) Send(_ context.Context, id, text string, attachments ...string) error {
+	return b.send(id, text, attachments)
 }
 func (b *Backend) SaveImage(image.Image) (string, error) { return "", errSample }
 func (b *Backend) ImportImage(string) (string, error)    { return "", errSample }
 func (b *Backend) SaveImageData(context.Context, []byte) (string, error) {
 	return "", errSample
 }
+func (b *Backend) SaveFile(context.Context, string, []byte, func(int64)) (string, error) {
+	return "", errSample
+}
+func (b *Backend) ImportFile(string) (string, error)                      { return "", errSample }
 func (b *Backend) ReadImage(context.Context, string, int) ([]byte, error) { return nil, errSample }
 func (b *Backend) Interrupt(context.Context, string) error                { return errSample }
 func (b *Backend) Answer(string, string, map[string]string) error         { return errSample }

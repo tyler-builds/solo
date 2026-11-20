@@ -248,6 +248,7 @@ type WorkerSpec struct {
 	Effort string   // empty: Settings.WorkerEffort
 	Base   string   // branch to start from; empty: the repository's current branch
 	Images []string // image files to send with the prompt
+	Files  []string // other files to send with it (ImportFile): the thread is told their paths
 	// Scratch: the user started it only to try or test something, not to land it (SetScratch).
 	Scratch bool
 }
@@ -285,6 +286,11 @@ func (c *Core) CreateWorker(ctx context.Context, spec WorkerSpec) (ThreadView, e
 	if err != nil {
 		return ThreadView{}, err
 	}
+	files, err := c.ImportFiles(spec.Files)
+	if err != nil {
+		return ThreadView{}, err
+	}
+	images = append(images, files...) // the prompt's attachments: send tells them apart
 	title := strings.TrimSpace(spec.Title)
 	if title == "" {
 		title = firstLine(spec.Prompt, 60)
@@ -592,8 +598,9 @@ func screenshotRules(inPlace bool) string {
   working directory; the app keeps a copy in the conversation.`
 }
 
-// Send sends the user's message, with any images (see ImportImage), to a thread, starting its session
-// if needed. Sent while a worker is working, it steers: Claude stops what it is doing and reads it. Sent
+// Send sends the user's message, with any attachments, to a thread, starting its session if needed.
+// An attachment is an image (see ImportImage), sent as an image, or a file (see ImportFile), whose path
+// the agent is told after the text (filesNote). Sent while a worker is working, it steers: Claude stops what it is doing and reads it. Sent
 // while Solo (the orchestrator) works, it waits instead, and Solo reads it as its next turn (queue).
 func (c *Core) Send(ctx context.Context, threadID, text string, images ...string) error {
 	return c.send(ctx, threadID, text, images, false, FromUser, "")
@@ -666,12 +673,16 @@ func joinHidden(parts ...string) string {
 }
 
 // send records text as the message and sends it to Claude, after hidden when that isn't empty.
-func (c *Core) send(ctx context.Context, threadID, text string, images []string, synthetic bool, from, hidden string) error {
-	if strings.TrimSpace(text) == "" && len(images) == 0 {
+func (c *Core) send(ctx context.Context, threadID, text string, attachments []string, synthetic bool, from, hidden string) error {
+	if strings.TrimSpace(text) == "" && len(attachments) == 0 {
 		return errors.New("empty message")
 	}
 	// A secret the user pasted into a message anyway never reaches Claude or the transcript.
 	text = c.Scrub(text)
+	images, files, err := c.splitAttachments(attachments)
+	if err != nil {
+		return err
+	}
 	blocks, err := c.loadImages(images)
 	if err != nil {
 		return err
@@ -688,7 +699,7 @@ func (c *Core) send(ctx context.Context, threadID, text string, images []string,
 	// others wait, to keep their order. A question Solo is waiting on is answered in its own card; a
 	// message then goes to Claude, which holds it for after the turn, as it always has.
 	if queues(threadID, synthetic, from) && (len(t.queue) > 0 || (len(t.asks) == 0 && queueBusyLocked(t))) {
-		t.queue = append(t.queue, QueuedMessage{Text: text, Images: images, At: now()})
+		t.queue = append(t.queue, QueuedMessage{Text: text, Images: images, Files: files, At: now()})
 		t.queueHidden = append(t.queueHidden, hidden)
 		c.saveQueueLocked(t)
 		status := t.row.Status
@@ -698,7 +709,7 @@ func (c *Core) send(ctx context.Context, threadID, text string, images []string,
 		c.sendQueued(ctx, threadID) // in case nothing it waits for is running any more
 		return nil
 	}
-	return c.dispatchLocked(ctx, t, text, images, blocks, synthetic, from, joinHidden(ctxText, hidden), restore)
+	return c.dispatchLocked(ctx, t, text, images, files, blocks, synthetic, from, joinHidden(ctxText, hidden), restore)
 }
 
 // sendableLocked reports why the thread can't take a message now, if it can't. Call with c.mu held.
@@ -727,6 +738,9 @@ func (c *Core) sendQueued(ctx context.Context, threadID string) {
 	m := t.queue[0]
 	c.mu.Unlock()
 	blocks, imgErr := c.loadImages(m.Images)
+	if imgErr == nil {
+		imgErr = c.checkFiles(m.Files)
+	}
 	ctxText, restore := c.takeContext(threadID, false, FromUser)
 	c.mu.Lock()
 	if len(t.queue) == 0 || !t.queue[0].At.Equal(m.At) || queueBusyLocked(t) {
@@ -751,7 +765,7 @@ func (c *Core) sendQueued(ctx context.Context, threadID string) {
 		c.sendQueued(ctx, threadID)
 		return
 	}
-	if err := c.dispatchLocked(ctx, t, m.Text, m.Images, blocks, false, FromUser, joinHidden(ctxText, hidden), restore); err != nil {
+	if err := c.dispatchLocked(ctx, t, m.Text, m.Images, m.Files, blocks, false, FromUser, joinHidden(ctxText, hidden), restore); err != nil {
 		c.sendQueued(ctx, threadID) // it says it wasn't delivered; the next one may get through
 	}
 }
@@ -784,14 +798,18 @@ func (c *Core) loadQueueLocked(t *thread) {
 // dispatchLocked records the message and sends it to Claude, with hidden before it when that isn't
 // empty. restore puts back hidden context taken for it, when the message doesn't get through. Call
 // with c.mu held, which it releases.
-func (c *Core) dispatchLocked(ctx context.Context, t *thread, text string, images []string, blocks []agent.Image,
-	synthetic bool, from, hidden string, restore func()) error {
+func (c *Core) dispatchLocked(ctx context.Context, t *thread, text string, images []string, files []FileRef,
+	blocks []agent.Image, synthetic bool, from, hidden string, restore func()) error {
 	threadID := t.row.ID
 	// Solo only sees the pixels; it needs the files' paths to hand the images on to a thread.
 	sent := text
 	if threadID == OrchestratorID && len(images) > 0 {
 		sent = strings.TrimSpace(text + "\n\n[Attached images, saved at: " + strings.Join(images, ", ") +
 			". To give them to a thread, pass these paths in images when you call spawn_thread or message_thread.]")
+	}
+	// Any other file reaches Claude only as its path, after the text, which the transcript shows alone.
+	if note := filesNote(files, threadID == OrchestratorID); note != "" {
+		sent = strings.TrimSpace(sent + "\n\n" + note)
 	}
 	if hidden != "" {
 		sent = hidden + "\n\n---\n\n" + sent
@@ -803,7 +821,7 @@ func (c *Core) dispatchLocked(ctx context.Context, t *thread, text string, image
 	// Record the message and the running state before Claude can answer, so a fast reply never lands
 	// ahead of the message or leaves the thread marked running after its turn ended.
 	uuid := agent.NewUUID()
-	data, _ := json.Marshal(UserData{Text: text, Synthetic: synthetic, From: from, Images: images, Steer: steer})
+	data, _ := json.Marshal(UserData{Text: text, Synthetic: synthetic, From: from, Images: images, Files: files, Steer: steer})
 	if err := c.db.AddItem(&store.Item{ThreadID: threadID, Kind: ItemUser, TurnUUID: uuid, Data: data, CreatedAt: now()}); err != nil {
 		c.mu.Unlock()
 		restore()
@@ -1681,8 +1699,8 @@ func (c *Core) recount(id string) bool {
 	return true
 }
 
-// removeAttachments deletes the images of a discarded thread's messages, the user's and its agent's,
-// that no other thread uses (Solo's messages often share them, and show a thread's screenshots again).
+// removeAttachments deletes the images and files of a discarded thread's messages, the user's and its
+// agent's, that no other thread uses (Solo's messages often share them, and show a thread's screenshots again).
 func (c *Core) removeAttachments(ctx context.Context, threadID string) {
 	items, err := c.db.Items(ctx, threadID, 0)
 	if err != nil {
@@ -1700,6 +1718,9 @@ func (c *Core) removeAttachments(ctx context.Context, threadID string) {
 			var d UserData
 			if json.Unmarshal(it.Data, &d) == nil {
 				paths = append(paths, d.Images...)
+				for _, f := range d.Files {
+					paths = append(paths, f.Path)
+				}
 			}
 		case ItemAssistant:
 			var d TextData

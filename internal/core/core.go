@@ -147,6 +147,7 @@ func New(cfg Config) (*Core, error) {
 		pollNow:   make(chan struct{}, 1),
 		fetched:   map[string]time.Time{},
 	}
+	c.sweepUploads()
 	c.secretStore = cfg.Secrets
 	if c.secretStore == nil {
 		c.secretStore = secrets.Unavailable{}

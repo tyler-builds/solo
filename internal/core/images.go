@@ -37,8 +37,8 @@ const (
 
 var imageTypes = map[string]string{"image/png": ".png", "image/jpeg": ".jpg", "image/gif": ".gif", "image/webp": ".webp"}
 
-// attachmentsDir holds the images sent in messages, so a message keeps its images when the originals
-// move.
+// attachmentsDir holds the images and files sent in messages, so a message keeps them when the
+// originals move.
 func (c *Core) attachmentsDir() string { return filepath.Join(c.cfg.DataDir, "attachments") }
 
 // SaveImage stores an image, such as one pasted from the clipboard, as an attachment and returns its
@@ -52,10 +52,11 @@ func (c *Core) SaveImage(img image.Image) (string, error) {
 }
 
 // ImportImage stores a copy of an image file as an attachment and returns its path. An image already
-// among the attachments is used as it is. A large image is scaled down to fit Claude's limits.
+// among the attachments is used as it is; an image attached as a file is copied as an image. A large
+// image is scaled down to fit Claude's limits.
 func (c *Core) ImportImage(path string) (string, error) {
 	path = filepath.Clean(path)
-	if c.isAttachment(path) {
+	if c.isAttachment(path) && !IsFileAttachment(path) {
 		if _, err := os.Stat(path); err != nil {
 			return "", err
 		}
@@ -111,19 +112,20 @@ func (c *Core) saveImageData(data []byte, name string) (string, error) {
 	return c.writeAttachment(data, ext)
 }
 
-// isAttachment reports whether path names a file directly in the attachments folder. Images reach
-// Claude and the UI by path, and only these paths are read: a message can't name another file.
+// isAttachment reports whether path names a file directly in the attachments folder. Images and files
+// reach Claude and the UI by path, and only these paths are read: a message can't name another file. A
+// file attachment (FileName) is one of these too; isFileAttachment tells them apart.
 func (c *Core) isAttachment(path string) bool {
 	// In its plain spelling only: an attachment is found again by its path (a thread's are removed
 	// with it, unless another message has the same), and two spellings of one file would be two files.
 	return filepath.IsAbs(path) && path == filepath.Clean(path) && filepath.Dir(path) == filepath.Clean(c.attachmentsDir())
 }
 
-// ReadImage returns the contents of an attachment, by the path SaveImage, SaveImageData or
-// ImportImage returned. With maxSide above zero, an image with a longer side is scaled down to it,
-// for a preview that costs less to send and to decode.
+// ReadImage returns the contents of an image attachment, by the path SaveImage, SaveImageData or
+// ImportImage returned; a file attachment isn't read back. With maxSide above zero, an image with a
+// longer side is scaled down to it, for a preview that costs less to send and to decode.
 func (c *Core) ReadImage(_ context.Context, path string, maxSide int) ([]byte, error) {
-	if !c.isAttachment(path) {
+	if !c.isAttachment(path) || IsFileAttachment(path) {
 		return nil, errors.New("not an attachment")
 	}
 	fi, err := os.Lstat(path)
@@ -268,7 +270,7 @@ func (c *Core) loadImages(paths []string) ([]agent.Image, error) {
 	}
 	var out []agent.Image
 	for _, p := range paths {
-		if !c.isAttachment(p) {
+		if !c.isAttachment(p) || IsFileAttachment(p) {
 			return nil, fmt.Errorf("image %s isn't an attachment", filepath.Base(p))
 		}
 		data, err := os.ReadFile(p)

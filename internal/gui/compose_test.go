@@ -111,7 +111,7 @@ func TestAttachedImagesFocusComposer(t *testing.T) {
 		_, u := newUI(t, f)
 		u.Runtime().SetWindow(&filesWindow{files: []string{shot}})
 		u.Get("orch-draft-area").Type("From the picker")
-		u.ByRole(access.RoleButton, "Attach images").Click()
+		u.ByRole(access.RoleButton, "Attach files").Click()
 		waitAttached(u, 1)
 		if !u.Get("orch-draft-area").Focused() {
 			t.Fatalf("after attaching, focus is on %s, not the composer", focusedName(u))
@@ -127,7 +127,7 @@ func TestAttachedImagesFocusComposer(t *testing.T) {
 		_, u := newUI(t, f)
 		area := u.Get("orch-draft-area")
 		area.Type("Dropped in")
-		u.ByRole(access.RoleButton, "Attach images").Focus() // focus elsewhere: the drop brings it back
+		u.ByRole(access.RoleButton, "Attach files").Focus() // focus elsewhere: the drop brings it back
 		b := area.Bounds()
 		u.Runtime().DropFiles(b.X+b.W/2, b.Y+b.H/2, []string{shot})
 		waitAttached(u, 1)
@@ -145,7 +145,7 @@ func TestAttachedImagesFocusComposer(t *testing.T) {
 		_, u := newUI(t, f)
 		u.Runtime().SetWindow(&filesWindow{files: []string{shot}})
 		u.Get("orch-draft-area").Type("Never mind the picture")
-		u.ByRole(access.RoleButton, "Attach images").Click()
+		u.ByRole(access.RoleButton, "Attach files").Click()
 		waitAttached(u, 1)
 		u.ByRole(access.RoleButton, "Remove image").Click()
 		waitAttached(u, 0)
@@ -167,7 +167,7 @@ func TestRemoteImagesLoadAsync(t *testing.T) {
 	a, u := newUI(t, f)
 	a.RemoteImages = true
 	shot := sampleScreenshot(t.TempDir(), color.RGBA{R: 0x30, G: 0x60, B: 0xc0, A: 0xff})
-	a.orchImages.Set([]string{shot})
+	a.orchAttachments.Set([]attachment{{id: 1, ref: shot, image: true, name: "shot.png"}})
 	u.Frame()
 	u.WaitFor("the image to show", func() bool {
 		found := false

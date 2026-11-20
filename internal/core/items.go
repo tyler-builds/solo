@@ -42,6 +42,8 @@ type UserData struct {
 	From string `json:"from,omitempty"`
 	// Images are the image files sent with it.
 	Images []string `json:"images,omitempty"`
+	// Files are the other files sent with it, which the agent was told the paths of.
+	Files []FileRef `json:"files,omitempty"`
 	// Steer marks a message sent into a running turn, which Claude read at once.
 	Steer bool `json:"steer,omitempty"`
 }

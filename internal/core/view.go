@@ -129,6 +129,7 @@ type ThreadView struct {
 type QueuedMessage struct {
 	Text   string    `json:"text"`
 	Images []string  `json:"images,omitempty"`
+	Files  []FileRef `json:"files,omitempty"`
 	At     time.Time `json:"at"`
 }
 

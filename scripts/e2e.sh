@@ -1,7 +1,8 @@
 #!/bin/sh
 # e2e.sh runs remote access end to end in a real browser (e2e/remote.cjs): a phone-sized page pairs
-# with a demo machine through the relay that runs on this machine, uses it, loses and regains it,
-# comes back after a reload, and is removed. Screenshots go to dist/e2e.
+# with a demo machine through the relay that runs on this machine, uses it, sends it a 6 MB file and
+# checks the bytes that arrived, loses and regains it, comes back after a reload, and is removed.
+# Screenshots go to dist/e2e.
 #
 # It needs the web client built (scripts/web.sh; built here when dist/web is missing), node, and
 # Playwright's Chromium (cd e2e && bun install && bunx playwright install chromium). A machine with a
