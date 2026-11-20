@@ -374,6 +374,12 @@ environment of one command that Solo, not the agent, runs.
 
 - **Center:** orchestrator chat. Markdown via `jamb/markdown`; tool calls as collapsed chips;
   status chips; Merge and Question cards inline.
+- **Code blocks in messages** (every message `App.md` draws: Solo's, the threads' and the user's) have
+  a copy button in the top right corner (jamb's `markdown.View.CopyCode`), which copies the block's
+  code alone, without the fence or language; its icon turns into a check for a moment. It always shows,
+  so a tap reaches it in the web client, sits on the block's background without moving the block or
+  its text, and leaves selecting, sideways scrolling and the right-click menu as they were. Inline
+  code has none.
 - **Right rail:** thread cards (title, repo, status dot, elapsed time, last activity line).
 - **Slide-over:** a thread's transcript, a diff (`codeedit`, read-only), an input to message it
   directly, and Interrupt / Merge / Discard buttons.
