@@ -52,6 +52,21 @@ func TestShots(t *testing.T) {
 	}
 	// Elements clicked, by key, once the window is up.
 	clicking := map[string][]string{"merge-pill-menu": {"merge-pill-more-" + longReposID}}
+	// Elements right-clicked, by key, once the window is up: their context menus.
+	rightClicking := map[string]string{"lightbox-menu": "lightbox-view"}
+	// The lightbox among three large screenshots, on the second, so that both arrows show.
+	gallery := func(zoom viewer) func(a *App, f *fakeBackend) {
+		return func(a *App, f *fakeBackend) {
+			dir := t.TempDir()
+			var paths []string
+			for _, c := range []color.RGBA{{47, 214, 193, 255}, {90, 120, 230, 255}, {240, 170, 60, 255}} {
+				paths = append(paths, largeScreenshot(dir, c))
+			}
+			v := openViewer(paths[1], paths)
+			v.scale, v.x, v.y = zoom.scale, zoom.x, zoom.y
+			a.lightbox.Set(v)
+		}
+	}
 	// pill puts the merge pill's cards in the chat (mergePillBackend), the conversation moved past them,
 	// with its list open or not.
 	pill := func(cards []string, open bool) func(a *App, f *fakeBackend) {
@@ -308,9 +323,14 @@ func TestShots(t *testing.T) {
 			a.items = map[string]*ui.Signal[[]core.Item]{}
 			a.openThread("c3d4e5f6-forms", "conversation")
 		}},
-		{"lightbox", func(a *App, f *fakeBackend) {
-			a.lightbox.Set(sampleScreenshot(t.TempDir(), color.RGBA{47, 214, 193, 255}))
+		{"lightbox", gallery(viewer{})},
+		{"lightbox-single", func(a *App, f *fakeBackend) {
+			a.lightbox.Set(openViewer(sampleScreenshot(t.TempDir(), color.RGBA{47, 214, 193, 255}), nil))
 		}},
+		// Zoomed in to the image's own size, over the field the screenshot shows broken.
+		{"lightbox-zoomed", gallery(viewer{scale: 1, x: -700, y: -400})},
+		{"lightbox-menu", gallery(viewer{})},
+		{"lightbox-compact", gallery(viewer{})},
 		{"done", func(a *App, f *fakeBackend) { a.openThread("a0b1c2d3-audit", "conversation") }},
 		{"in-place", func(a *App, f *fakeBackend) { a.openThread("a7a7a7a7-subs", "conversation") }},
 		// Quoting: text selected in the chat offers Quote; quotes wait above the composer, and a
@@ -389,6 +409,7 @@ func TestShots(t *testing.T) {
 		{"phone-settings", func(a *App, f *fakeBackend) { a.settings.Set(true) }},
 		{"phone-settings-branches", func(a *App, f *fakeBackend) { a.settingsTab = "branches"; a.settings.Set(true) }},
 		{"phone-palette", func(a *App, f *fakeBackend) { a.palette.Set(true) }},
+		{"phone-lightbox", gallery(viewer{})},
 		{"phone-merge-pill", pill(pillThree, false)},
 		{"phone-merge-pill-open", pill(pillMany, true)},
 		{"phone-empty", nil},
@@ -413,7 +434,7 @@ func TestShots(t *testing.T) {
 			}
 			if theme.name == "light" && sh.name != "main" && sh.name != "changes" && sh.name != "land-cards" &&
 				sh.name != "scrolled-up" && sh.name != "usage" && sh.name != "phone-main" && !busy &&
-				sh.name != "merge-pill-three" && sh.name != "merge-pill-three-open" {
+				sh.name != "merge-pill-three" && sh.name != "merge-pill-three-open" && !strings.HasPrefix(sh.name, "lightbox") {
 				continue
 			}
 			f := demoBackend()
@@ -459,6 +480,12 @@ func TestShots(t *testing.T) {
 					u.Advance(100 * time.Millisecond)
 				}
 			}
+			if key := rightClicking[sh.name]; key != "" {
+				u.Get(key).RightClick()
+				for i := 0; i < 4; i++ {
+					u.Advance(100 * time.Millisecond)
+				}
+			}
 			if key := scrollUp[sh.name]; key != "" {
 				u.Get(key).Scroll(0, -3000)
 				for i := 0; i < 10; i++ {
@@ -493,6 +520,35 @@ func TestShots(t *testing.T) {
 			u.Close()
 		}
 	}
+}
+
+// largeScreenshot is sampleScreenshot at three times its size, 1920 by 1200: larger than the lightbox
+// shows it fitted.
+func largeScreenshot(dir string, accent color.RGBA) string {
+	small := sampleScreenshot(dir, accent)
+	in, err := os.Open(small)
+	if err != nil {
+		panic(err)
+	}
+	defer in.Close()
+	img, err := png.Decode(in)
+	if err != nil {
+		panic(err)
+	}
+	big := image.NewRGBA(image.Rect(0, 0, img.Bounds().Dx()*3, img.Bounds().Dy()*3))
+	for y := range big.Rect.Dy() {
+		for x := range big.Rect.Dx() {
+			big.Set(x, y, img.At(x/3, y/3))
+		}
+	}
+	p := strings.TrimSuffix(small, ".png") + "-large.png"
+	out, err := os.Create(p)
+	if err != nil {
+		panic(err)
+	}
+	defer out.Close()
+	png.Encode(out, big)
+	return p
 }
 
 // openThreadCard ends Solo's conversation with its answer to the settings thread finishing while the

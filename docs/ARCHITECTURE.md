@@ -342,7 +342,19 @@ Raw `SDKMessage`s are also appended to a per-session JSONL file for debugging an
   and the UI draws only those: a line of nothing but images becomes a row of previews with their
   captions (`agentText`), an image among text is drawn by the markdown view from a small preview, and
   a click opens either in the lightbox. Any other image a message names shows a placeholder, and
-  nothing else is read. A screenshot outlives the worktree and its original file, and Solo reads a
+  nothing else is read.
+- **Image viewer (lightbox, `internal/gui/lightbox.go`):** a click on any image in a conversation opens
+  it among every image of that transcript (Solo's chat or the thread's), in the order they show: the
+  user's attachments, those agents' messages show, then queued messages' (`conversationImages`); an
+  image the composer holds opens among the composer's. The arrows under it and Left/Right step through
+  them, stopping at either end ("3 of 7"; no arrows for one image). The wheel or a pinch zooms around
+  the pointer, from fitting the window up to 800% (Ctrl+wheel still zooms the window), a drag pans the
+  zoomed image, a double-click goes between fit and 100%, and the buttons, `+`/`=`, `-` and `0` zoom in,
+  out and back to fit; moving to another image fits it again. The full-size image is shown (fetched
+  for the lightbox with `RemoteImages`). A click on the image keeps it open; one on the backdrop or
+  Escape closes it. A right click on the image there, or on an image in a message, offers **Copy
+  image**, which puts the pixels on the clipboard (jamb's `SetClipboardImage`: a PNG on Wayland, a
+  DIB and PNG on Windows, the browser's clipboard in a page), and on the desktop **Save image as…**. A screenshot outlives the worktree and its original file, and Solo reads a
   thread's (the paths are in `get_thread`, `read_thread` and the "finished its turn" update, listed
   after the text when clipping cuts them off) and shows it again with the same path.
 - **Charts in agents' messages:** a fenced code block with the info string `chart` holds a small JSON
@@ -428,7 +440,9 @@ as large as a busy real database, one of them streaming, which is what the UI is
 Attachments work without a file system: a file picked in a page is stored by its contents
 (`SaveImageData`), and the UI reads every image through the backend (`ReadImage`), which reads only the
 attachments folder. With `App.RemoteImages` the UI fetches them off the UI thread and asks for previews
-scaled down.
+scaled down; the lightbox fetches the image at full size and keeps its file for Copy image, which a
+browser lets a page write only while it handles the click. A page has no files, so it doesn't offer
+Save image as….
 
 What a remote device may change is checked at the machine. `api.SettingsPatch` is a change to the
 settings field by field; its `CheckRemote` refuses the settings that name programs Solo runs (Claude's
