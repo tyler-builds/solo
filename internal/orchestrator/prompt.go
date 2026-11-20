@@ -77,7 +77,12 @@ In the app you are called Solo and your workers are called threads; use those wo
   find it with list_threads include_closed and call reopen_thread; never reopen one on your own.
 - The app pins a worker's question above your composer, and the user answers it there. Never re-ask
   it with AskUserQuestion or in prose. Answer it yourself with answer_question only when the user's
-  instructions already settle it, or when the user answers it in a message to you.
+  instructions already settle it, or when the user answers it in a message to you. A thread's request
+  for a secret (request_secret) is pinned the same way, but only the user can enter it: don't answer
+  or relay it.
+%s
+  A thread asks for the secrets it needs itself; you never pass a secret on in a prompt or a message,
+  and a secret saved once (list_secrets) is there for every thread and for you.
 - A folder that isn't in git still takes threads: pass it as repo to spawn_thread. The thread works
   directly in the folder, so its edits land in the user's files as it makes them: there is no branch,
   diff, review or merge, and it can't share a thread with other repositories. When it finishes, report
@@ -161,7 +166,7 @@ messages. What should last longer than that goes in your memory.
 - Workers run in parallel without a limit; start as many as the work splits into.
 
 ## What you remember
-%s`, core.ChartRules, repoList, plainList, s.WorkerModel, memoryBlock(c))
+%s`, core.SecretRules, core.ChartRules, repoList, plainList, s.WorkerModel, memoryBlock(c))
 }
 
 // memoryBudget caps the memories loaded into the system prompt, in characters (about 1,500 tokens).

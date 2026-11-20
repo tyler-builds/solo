@@ -266,7 +266,7 @@ func (c *Core) onEvent(e agent.Event) {
 		// A turn that says it has nothing new (Noted: say, background work it waited on ended as
 		// expected) leaves the summary its last turn with news wrote.
 		if e.Status == agent.TurnCompleted && e.Result != "" && !IsNoted(e.Result) {
-			t.row.Summary = e.Result
+			t.row.Summary = c.Scrub(e.Result)
 		}
 		itemsChanged, streamChanged = true, true
 		if e.QueuedTurns > 0 {
@@ -445,6 +445,7 @@ func (c *Core) bgWakeTimeout(id string, gen int) {
 // addItemLocked saves a transcript item and returns its ID. Call with c.mu held.
 func (c *Core) addItemLocked(t *thread, kind, ref string, data any) int64 {
 	raw, _ := json.Marshal(data)
+	raw = c.scrubJSON(raw)
 	it := &store.Item{ThreadID: t.row.ID, Kind: kind, Ref: ref, Data: raw, CreatedAt: now()}
 	if err := c.db.AddItem(it); err != nil {
 		c.log.Error("core: saving item", "err", err)
@@ -454,6 +455,7 @@ func (c *Core) addItemLocked(t *thread, kind, ref string, data any) int64 {
 
 func (c *Core) addItemTurnLocked(t *thread, turnUUID string, data TurnData) {
 	raw, _ := json.Marshal(data)
+	raw = c.scrubJSON(raw)
 	it := &store.Item{ThreadID: t.row.ID, Kind: ItemTurn, TurnUUID: turnUUID, Data: raw, CreatedAt: now()}
 	if err := c.db.AddItem(it); err != nil {
 		c.log.Error("core: saving item", "err", err)
@@ -468,6 +470,7 @@ func (c *Core) updateItemLocked(itemID int64, f func(json.RawMessage) any) {
 		return
 	}
 	raw, _ := json.Marshal(f(items.Data))
+	raw = c.scrubJSON(raw)
 	if err := c.db.UpdateItemData(itemID, raw); err != nil {
 		c.log.Error("core: updating item", "err", err)
 	}
@@ -488,6 +491,11 @@ func (c *Core) onToolCall(ctx context.Context, p agent.ToolCallParams) (agent.To
 	t := c.bySession[p.SessionID]
 	h := c.tools
 	c.mu.Unlock()
+	if t != nil {
+		if text, isErr, ok := c.secretTool(ctx, t, p.Name, p.Args); ok {
+			return agent.ToolCallResult{Text: text, IsError: isErr}, nil
+		}
+	}
 	if t == nil || h == nil {
 		return agent.ToolCallResult{Text: "This tool is not available here.", IsError: true}, nil
 	}
@@ -519,7 +527,19 @@ func (c *Core) onAsk(ctx context.Context, p agent.AskParams) (agent.AskResult, e
 	if key == "" {
 		key = agent.NewUUID()
 	}
-	itemID := c.addItemLocked(t, ItemQuestion, key, QuestionData{ToolUseID: key, Questions: p.Questions})
+	for i := range p.Questions {
+		p.Questions[i].Secret = nil // only request_secret asks for a secret
+	}
+	res, _ := c.askLocked(ctx, t, key, p.Questions)
+	return res, nil
+}
+
+// askLocked shows thread t's questions, keyed by key, and waits for the answer (Answer, Dismiss, or
+// ProvideSecret for a secret), or until ctx ends. Call with c.mu held; it returns with c.mu released.
+// ok is false when Solo is closing: the question then stays open for after the restart.
+func (c *Core) askLocked(ctx context.Context, t *thread, key string, qs []agent.Question) (res agent.AskResult, ok bool) {
+	id := t.row.ID
+	itemID := c.addItemLocked(t, ItemQuestion, key, QuestionData{ToolUseID: key, Questions: qs})
 	ch := make(chan agent.AskResult, 1)
 	if t.asks == nil {
 		t.asks = map[string]chan agent.AskResult{}
@@ -528,12 +548,11 @@ func (c *Core) onAsk(ctx context.Context, p agent.AskParams) (agent.AskResult, e
 	if t.askQs == nil {
 		t.askQs = map[string][]agent.Question{}
 	}
-	t.askQs[key] = p.Questions
+	t.askQs[key] = qs
 	statusCh := c.setStatusLocked(t, StatusWaiting, "")
 	c.mu.Unlock()
 	c.notify(Change{Kind: ChangeItems, ThreadID: id}, statusCh)
 
-	var res agent.AskResult
 	select {
 	case res = <-ch:
 	case <-ctx.Done():
@@ -546,12 +565,13 @@ func (c *Core) onAsk(ctx context.Context, p agent.AskParams) (agent.AskResult, e
 	if c.closed && res.Cancelled {
 		// Solo is closing, not the user skipping: the question stays open for after the restart.
 		c.mu.Unlock()
-		return res, nil
+		return res, false
 	}
 	c.updateItemLocked(itemID, func(raw json.RawMessage) any {
 		var d QuestionData
 		_ = json.Unmarshal(raw, &d)
 		d.Answers, d.Cancelled = res.Answers, res.Cancelled
+		d.Provided = SecretOf(qs) != nil && !res.Cancelled
 		return d
 	})
 	var back Change
@@ -560,5 +580,5 @@ func (c *Core) onAsk(ctx context.Context, p agent.AskParams) (agent.AskResult, e
 	}
 	c.mu.Unlock()
 	c.notify(Change{Kind: ChangeItems, ThreadID: id}, back)
-	return res, nil
+	return res, true
 }
