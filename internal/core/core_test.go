@@ -22,6 +22,7 @@ import (
 	"github.com/tyler-builds/solo/internal/agent"
 	"github.com/tyler-builds/solo/internal/agent/agenttest"
 	"github.com/tyler-builds/solo/internal/git"
+	"github.com/tyler-builds/solo/internal/secrets"
 	"github.com/tyler-builds/solo/internal/store"
 )
 
@@ -45,6 +46,7 @@ type env struct {
 	dataDir string
 	root    string
 	repo    string
+	secrets *secrets.Mem // the keyring, kept across e.open
 }
 
 func newEnv(t *testing.T) *env {
@@ -58,7 +60,7 @@ func newEnv(t *testing.T) *env {
 			t.Fatal(err)
 		}
 	}
-	e := &env{dataDir: t.TempDir(), root: root, repo: repo}
+	e := &env{dataDir: t.TempDir(), root: root, repo: repo, secrets: &secrets.Mem{}}
 	e.c = e.open(t)
 	if err := e.c.UpdateSettings(func(s *Settings) { s.Folders = []string{root} }); err != nil {
 		t.Fatal(err)
@@ -70,7 +72,7 @@ func (e *env) open(t *testing.T) *Core {
 	t.Helper()
 	exe, vars := agenttest.Command()
 	c, err := New(Config{DataDir: e.dataDir, Agent: agent.Command{Path: exe, Env: vars},
-		Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
+		Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Secrets: e.secrets})
 	if err != nil {
 		t.Fatal(err)
 	}

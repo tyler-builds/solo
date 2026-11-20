@@ -43,11 +43,17 @@ func (a *App) notifyChange(ch core.Change) {
 	case ch.PREvent == core.PRMerged:
 		n = &Notification{Title: fmt.Sprintf("“%s” merged.", v.Title), Body: prBody(v, ch.Repo), Thread: v.ID}
 	case ch.Status == core.StatusWaiting && ch.PrevStatus != core.StatusWaiting:
-		body := "It's waiting for your answer."
+		title, body := fmt.Sprintf("“%s” has a question.", v.Title), "It's waiting for your answer."
 		if qs := a.b.PendingQuestions(v.ID); len(qs) > 0 && len(qs[0].Questions) > 0 {
 			body = qs[0].Questions[0].Question
+			if s := qs[0].Secret(); s != nil {
+				title, body = fmt.Sprintf("“%s” asks for a secret: %s", v.Title, s.Name), "Enter it in Solo."
+				if r := secretReason(*s); r != "" {
+					body = r
+				}
+			}
 		}
-		n = &Notification{Title: fmt.Sprintf("“%s” has a question.", v.Title), Body: body, Thread: v.ID}
+		n = &Notification{Title: title, Body: body, Thread: v.ID}
 	case ch.Status == core.StatusFailed && ch.PrevStatus != core.StatusFailed:
 		n = &Notification{Title: fmt.Sprintf("“%s” failed.", v.Title), Body: firstLine(v.Error), Thread: v.ID}
 	case ch.Status == core.StatusIdle && ch.PrevStatus == core.StatusRunning:

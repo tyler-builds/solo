@@ -123,3 +123,20 @@ type Setup interface {
 	// signed in (see core.Core.CheckForges).
 	CheckForges(ctx context.Context) []core.ForgeStatus
 }
+
+// Secrets is a backend on the machine that runs Solo, which keeps the secrets agents ask the user for
+// (request_secret) in the OS keyring. A web page's backend isn't one: a secret is typed and managed only
+// at the machine, so that its value never crosses the relay or reaches a device. A page shows that a
+// request waits there, and can decline it (Dismiss). No method returns a value.
+type Secrets interface {
+	// Secrets lists the secrets kept, by name.
+	Secrets() []core.SecretInfo
+	// SecretsAvailable says why secrets can't be kept on this machine (no usable OS keyring), or nil.
+	SecretsAvailable() error
+	// ProvideSecret saves the value the user typed for a pending request (core.PendingQuestion.Secret)
+	// and tells the agent it was saved.
+	ProvideSecret(threadID, toolUseID, value string) error
+	// SetSecret adds a secret or replaces its value; DeleteSecret removes it.
+	SetSecret(name, value string) error
+	DeleteSecret(name string) error
+}

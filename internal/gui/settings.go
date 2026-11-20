@@ -271,12 +271,14 @@ var settingsTabs = []struct {
 	{"models", "Models", icons.Bot},
 	{"branches", "Branches and commits", icons.GitBranch},
 	{"prs", "Pull requests", icons.GitPullRequest},
+	{"secrets", "Secrets", icons.KeyRound},
 	{"remote", "Remote", icons.MonitorSmartphone},
 	{"history", "History", icons.Archive},
 }
 
-// settingsNav is Settings' list of pages.
-func settingsNav(ctx *ui.Context, tab *ui.Signal[string], hasRemote bool) ui.Element {
+// settingsNav is Settings' list of pages. Remote is listed with remote access (hasRemote), and Secrets
+// with a backend that keeps them (hasSecrets): neither is managed from a web page.
+func settingsNav(ctx *ui.Context, tab *ui.Signal[string], hasRemote, hasSecrets bool) ui.Element {
 	t := ctx.Theme()
 	nav := ui.Div().Column().Gap(2).Width(ui.Px(184)).Shrink(0).Role(access.RoleTabList).Label("Settings pages")
 	compact := isCompact(ctx)
@@ -285,7 +287,7 @@ func settingsNav(ctx *ui.Context, tab *ui.Signal[string], hasRemote bool) ui.Ele
 		nav = ui.Div().Row().Gap(2).Shrink(0).ScrollX().Role(access.RoleTabList).Label("Settings pages")
 	}
 	for _, p := range settingsTabs {
-		if p.value == "remote" && !hasRemote {
+		if p.value == "remote" && !hasRemote || p.value == "secrets" && !hasSecrets {
 			continue
 		}
 		value := p.value
@@ -769,6 +771,10 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 			if page = a.remotePage(ctx); page == nil {
 				page = general
 			}
+		case "secrets":
+			if page = a.secretsPage(ctx); page == nil {
+				page = general
+			}
 		case "history":
 			page = settingsPage(ctx, "History", "Restoring a thread puts it back in your list with its worktree, so you can keep talking to it.",
 				a.historyList(ctx))
@@ -780,7 +786,7 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 		winW, winH := ctx.WindowSize()
 		bodyH := min(max(winH-220, 360), 660)
 		body := ui.Div().Row().Width(ui.Full).Height(ui.Px(bodyH)).Gap(space6).
-			Child(settingsNav(ctx, tab, a.Remote != nil)).
+			Child(settingsNav(ctx, tab, a.Remote != nil, a.secretsBackend() != nil)).
 			Child(ui.Div().Column().Grow(1).MinWidth(ui.Px(0)).ScrollY().PaddingRight(space4).PaddingBottom(space6).
 				Key("settings-page-" + tab.Get()).
 				Child(page))
@@ -790,7 +796,7 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 			// page under them.
 			width = ui.Px(max(winW-2*space2, 280))
 			body = ui.Div().Column().Width(ui.Full).Height(ui.Px(max(winH-200, 240))).Gap(space3).
-				Child(settingsNav(ctx, tab, a.Remote != nil)).
+				Child(settingsNav(ctx, tab, a.Remote != nil, a.secretsBackend() != nil)).
 				Child(ui.Div().Column().Grow(1).MinHeight(ui.Px(0)).ScrollY().PaddingBottom(space4).
 					Key("settings-page-" + tab.Get()).
 					Child(page))

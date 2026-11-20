@@ -198,6 +198,7 @@ const recallsPerTurn = 2
 func init() {
 	toolSpecs = append(toolSpecs, todoSpecs...)
 	toolSpecs = append(toolSpecs, memorySpecs...)
+	toolSpecs = append(toolSpecs, core.SecretToolSpecs...) // served by core, as threads' are
 }
 
 // handleTool runs one orchestrator tool. Errors go back to the model as error results.
@@ -365,7 +366,7 @@ func (o *Orchestrator) handleTool(ctx context.Context, threadID, name string, ra
 	case "remember":
 		var m core.Memory
 		var similar []core.Memory
-		if m, similar, err = o.c.Remember(ctx, a.Text, a.Keywords, a.Repo, a.Replaces); err == nil {
+		if m, similar, err = o.c.Remember(ctx, o.c.Scrub(a.Text), o.c.Scrub(a.Keywords), a.Repo, a.Replaces); err == nil {
 			out = fmt.Sprintf("Saved memory #%d.", m.ID)
 			if len(similar) > 0 {
 				out += " Similar memories; if one says the same, forget it, or save again with replaces:\n" + memoryLines(similar)
@@ -651,6 +652,11 @@ func (o *Orchestrator) describe(ctx context.Context, v core.ThreadView) string {
 	if qs := o.c.PendingQuestions(v.ID); len(qs) > 0 {
 		b.WriteString("\nWaiting on these questions:\n")
 		for _, pq := range qs {
+			if s := pq.Secret(); s != nil {
+				fmt.Fprintf(&b, "- It asks the user for the secret %s (%s). Only the user can enter it, in its masked field in the app, "+
+					"pinned above your composer; answer_question can't. Don't relay it or ask for the value.\n", s.Name, s.Reason)
+				continue
+			}
 			for _, q := range pq.Questions {
 				fmt.Fprintf(&b, "- %s", q.Question)
 				var opts []string
@@ -735,6 +741,17 @@ func (o *Orchestrator) transcript(ctx context.Context, threadID string, limit in
 		case core.ItemQuestion:
 			var d core.QuestionData
 			it.Decode(&d)
+			if s := d.Secret(); s != nil {
+				state := "(waiting for the user)"
+				switch {
+				case d.Provided:
+					state = "saved"
+				case d.Cancelled:
+					state = "declined"
+				}
+				fmt.Fprintf(&b, "[Secret request] %s (%s) → %s\n", s.Name, s.Reason, state)
+				break
+			}
 			for _, q := range d.Questions {
 				ans := d.Answers[q.Question]
 				switch {

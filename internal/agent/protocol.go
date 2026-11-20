@@ -85,6 +85,17 @@ type Question struct {
 	Header      string           `json:"header"`
 	MultiSelect bool             `json:"multiSelect"`
 	Options     []QuestionOption `json:"options"`
+	// Secret makes this a request for a secret (the request_secret tool): the user types its value in
+	// a masked field, and it goes to the keyring, never into an answer. Only the app sets it; a
+	// question from the sidecar (AskUserQuestion) never has it.
+	Secret *SecretRequest `json:"secret,omitempty"`
+}
+
+// SecretRequest is what an agent asks for with request_secret.
+type SecretRequest struct {
+	Name    string `json:"name"`              // the environment variable it is given as (CLOUDFLARE_API_TOKEN)
+	Reason  string `json:"reason"`            // why, in a few words, shown to the user
+	Replace bool   `json:"replace,omitempty"` // one by this name is kept already, and is to be replaced
 }
 
 // AskParams is the sidecar's question.ask request.
@@ -114,6 +125,19 @@ type ToolCallParams struct {
 type ToolCallResult struct {
 	Text    string `json:"text"`
 	IsError bool   `json:"isError,omitempty"`
+}
+
+// GuardParams is the sidecar's tool.guard request: a tool call an agent is about to make (its own
+// Bash, PowerShell, Read, Grep or Glob), from the PreToolUse hook.
+type GuardParams struct {
+	SessionID string          `json:"sessionId"`
+	ToolName  string          `json:"toolName"`
+	Input     json.RawMessage `json:"input"`
+}
+
+// GuardResult answers tool.guard: Deny, when set, is why the call may not run.
+type GuardResult struct {
+	Deny string `json:"deny,omitempty"`
 }
 
 // ModelInfo is a model Claude Code offers.

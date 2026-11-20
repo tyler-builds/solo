@@ -135,7 +135,8 @@ Raw `SDKMessage`s are also appended to a per-session JSONL file for debugging an
   can't merge yet, and the card's button says why), `answer_question(id, answer)`, `reopen_thread(id)` (Restore from History when
   the user asks: its kept branch, or a new one from the base branch's head when its work landed, it
   had none, or it was discarded), `set_scratch(id, on)` (turns a thread's scratch mode on or
-  off when the user asks; see Worker threads › Scratch threads).
+  off when the user asks; see Worker threads › Scratch threads). Solo also has the secret tools every
+  thread has (see Secrets).
 - **Proactive updates:** when a worker finishes, fails, or asks a question, Go queues a synthetic
   `[thread update]` message. Updates are batched while the orchestrator is busy and delivered when
   it's idle, so it reports without being asked. Solo's chat shows neither these nor Solo's steps as
@@ -302,6 +303,73 @@ Raw `SDKMessage`s are also appended to a per-session JSONL file for debugging an
   a thread such a task, shows them when it reports, and sends the thread back when they're missing
   without a reason. Both are told how to embed an image (below).
 
+## Secrets
+
+An agent can ask the user for a secret (an API key, token or password) and use it without seeing it
+(`internal/secrets`, `core/secrets.go`). The shape follows t3code's `request_secret` (a masked card in the
+conversation; the agent hears only saved or declined), but where t3code keeps the value in a 0600 file
+and hands the agent its path to `cat`, Solo keeps it in the OS keyring and puts it only in the
+environment of one command that Solo, not the agent, runs.
+
+- **Tools** (`core.SecretToolSpecs`, served by core for Solo and every thread, as `mcp__solo__<name>`):
+  `request_secret(name, reason, replace?)` asks the user and waits; it is pinned and answered like a
+  thread's question (a `QuestionData` whose question carries `agent.SecretRequest`), with a masked field,
+  Save securely and Decline. `list_secrets` lists names. `run_with_secrets(command, secrets[], cwd?,
+  timeout_seconds?)` runs the command with bash (Git Bash on Windows; else sh or cmd) and the named
+  secrets set as environment variables, and returns its exit code and output.
+- **Storage:** global, by name: one list for every repository, as Solo is, since a token such as
+  `CLOUDFLARE_API_TOKEN` or `NPM_TOKEN` is the user's across repositories and names are environment
+  variable names. Values are in the keyring under the service `solo-secrets` (go-keyring: the Secret
+  Service on Linux, Credential Manager on Windows, the Keychain on macOS) and never fall back to a file;
+  without a keyring, `request_secret` says so. The list (names, when saved and last used, by which
+  thread) is the `secrets.index` setting. Settings › Secrets adds, replaces and deletes them; no value is
+  ever shown, there or anywhere.
+- **Use:** Solo reads the values from the keyring and runs the command in a shell of its own, in the
+  thread's folder (a thread's `cwd` must be inside it), with a temporary folder of its own (removed
+  after), stdin closed, and the secrets in its environment and nowhere else. When it ends, its process
+  group is killed (POSIX), so nothing it left running keeps the values.
+- **Values** need at least 8 characters (`core.MinSecretLength`): every value is taken out of what Solo
+  stores wherever it appears, and a shorter one ("1234", "admin") would take ordinary text with it. The
+  card and Settings say so and won't save one.
+- **Redaction** (`secrets.Redactor`): every kept value, not only the ones given, is replaced with
+  `[secret NAME]` in the output, as is its hex, base64 (both alphabets, padded, and at each alignment it
+  can have inside longer encoded text), URL, JSON and Go escaping, the value reversed, and any run of 8
+  or more of its characters (a prefix, a half). For a URL-shaped value (`postgres://app:pw@host:5432/db`)
+  that last rule covers only its password and query values, so the host, port and path don't take
+  ordinary words out of the output; the URL itself, and the password alone, are still taken out. As a
+  net under all that, every transcript item, thread summary and memory Solo stores, and every message to
+  an agent (a secret the user pastes anyway), has the values and their full encodings taken out.
+- **Files** (`secrets/files.go`): no file is left worse than it was. Before the command runs, Solo reads
+  the agent's own folder (a thread's worktree, Solo's working folder), the user's common credential
+  files (`.npmrc`, `gh`'s `hosts.yml`, `.aws/credentials`, …) and the git config of the command's folder.
+  Afterwards, a file that held a value before is left alone; a credential file or git config the command
+  made hold one is put back as it was (or removed, if the command made it), never given a placeholder;
+  and a file in the agent's own folder the command wrote a value into gets the placeholder, or, in a
+  binary file, as many `*`, so nothing in it moves. No other folder is looked through or changed: Solo's
+  own commands may run in the user's checkout, and a file they write there keeps what they wrote. A folder
+  too large to read in 5 seconds is reported as not fully checked.
+- **Guard:** an agent's own Bash, PowerShell, Read, Grep and Glob calls go through a PreToolUse hook in the
+  sidecar (`sidecar/src/guard.ts`, which runs under `bypassPermissions` too), which asks core
+  (`tool.guard`, `secrets.Guard`); commands for `run_with_secrets` are checked the same way. It refuses
+  only what reads Solo's secrets: a keyring reader (`secret-tool lookup`, the Secret Service over D-Bus,
+  `security find-generic-password`, `cmdkey`, Python's `keyring`, …) in a command that names
+  `solo-secrets`, and `/proc/<pid>/environ` or `mem` of a process in the group of a command running with
+  secrets (`/proc/*/…`, a variable in place of the PID, or `ps e` only while one runs). Searching code
+  for these words, and reading an unrelated process's environment, go through. Linux has no way to make
+  the command's environment unreadable to the same user (a process can only make itself undumpable, and
+  `execve` undoes it), so this is a check on what the agent asks for, not a wall.
+- **Remote:** a secret is typed only at the desktop. A paired device shows the request and can decline
+  it; `api.Secrets` is the desktop backend's alone, and `core.Answer` refuses a text answer to a request,
+  from a device or from Solo's `answer_question`. The relay never carries a value.
+- **Limits.** An agent runs as the user with a shell. Solo keeps the value out of every path it controls
+  (tool results, transcripts, the agents' environments and prompts, the relay, its database and logs)
+  and closes the obvious deliberate ways around that, but it can't stop an agent set on defeating it:
+  a command can transform the value beyond what redaction recognizes (`fold -w 7`, adding to each
+  character), send it over the network, or write it outside the agent's own folder; a program the agent
+  writes can read the keyring, or the command's environment while it runs, without matching the guard,
+  and a Bash call started alongside `run_with_secrets` is checked before that command exists. Redaction
+  is a safeguard for honest agents, not a sandbox.
+
 ## UI (jamb)
 
 - **Center:** orchestrator chat. Markdown via `jamb/markdown`; tool calls as collapsed chips;
@@ -348,7 +416,19 @@ Raw `SDKMessage`s are also appended to a per-session JSONL file for debugging an
   and the UI draws only those: a line of nothing but images becomes a row of previews with their
   captions (`agentText`), an image among text is drawn by the markdown view from a small preview, and
   a click opens either in the lightbox. Any other image a message names shows a placeholder, and
-  nothing else is read. A screenshot outlives the worktree and its original file, and Solo reads a
+  nothing else is read.
+- **Image viewer (lightbox, `internal/gui/lightbox.go`):** a click on any image in a conversation opens
+  it among every image of that transcript (Solo's chat or the thread's), in the order they show: the
+  user's attachments, those agents' messages show, then queued messages' (`conversationImages`); an
+  image the composer holds opens among the composer's. The arrows under it and Left/Right step through
+  them, stopping at either end ("3 of 7"; no arrows for one image). The wheel or a pinch zooms around
+  the pointer, from fitting the window up to 800% (Ctrl+wheel still zooms the window), a drag pans the
+  zoomed image, a double-click goes between fit and 100%, and the buttons, `+`/`=`, `-` and `0` zoom in,
+  out and back to fit; moving to another image fits it again. The full-size image is shown (fetched
+  for the lightbox with `RemoteImages`). A click on the image keeps it open; one on the backdrop or
+  Escape closes it. A right click on the image there, or on an image in a message, offers **Copy
+  image**, which puts the pixels on the clipboard (jamb's `SetClipboardImage`: a PNG on Wayland, a
+  DIB and PNG on Windows, the browser's clipboard in a page), and on the desktop **Save image as…**. A screenshot outlives the worktree and its original file, and Solo reads a
   thread's (the paths are in `get_thread`, `read_thread` and the "finished its turn" update, listed
   after the text when clipping cuts them off) and shows it again with the same path.
 - **Charts in agents' messages:** a fenced code block with the info string `chart` holds a small JSON
@@ -434,7 +514,9 @@ as large as a busy real database, one of them streaming, which is what the UI is
 Attachments work without a file system: a file picked in a page is stored by its contents
 (`SaveImageData`), and the UI reads every image through the backend (`ReadImage`), which reads only the
 attachments folder. With `App.RemoteImages` the UI fetches them off the UI thread and asks for previews
-scaled down.
+scaled down; the lightbox fetches the image at full size and keeps its file for Copy image, which a
+browser lets a page write only while it handles the click. A page has no files, so it doesn't offer
+Save image as….
 
 What a remote device may change is checked at the machine. `api.SettingsPatch` is a change to the
 settings field by field; its `CheckRemote` refuses the settings that name programs Solo runs (Claude's
@@ -460,6 +542,7 @@ cmd/solo-localrelay/ the relay and the web client on this machine, for developme
 relay/               the relay: a Cloudflare Worker and a Durable Object (TypeScript)
 e2e/                 remote access end to end in a real browser (scripts/e2e.sh)
 internal/core/       orchestrator, threads, notifications
+internal/secrets/    agents' secrets: the keyring, running a command with them, redaction
 internal/store/      SQLite schema + queries
 internal/git/        repo scan, worktrees, diff, merge
 internal/agent/      sidecar supervisor + JSON-RPC client + event types

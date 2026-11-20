@@ -95,6 +95,23 @@ type QuestionData struct {
 	Questions []agent.Question  `json:"questions"`
 	Answers   map[string]string `json:"answers,omitempty"`
 	Cancelled bool              `json:"cancelled,omitempty"`
+	// Provided: the user entered the secret this asked for (Questions[0].Secret). Its value is in the
+	// keyring and nowhere here.
+	Provided bool `json:"provided,omitempty"`
+}
+
+// Waiting reports whether the question still waits for the user.
+func (d QuestionData) Waiting() bool { return !d.Cancelled && !d.Provided && len(d.Answers) == 0 }
+
+// Secret is the secret the question asks for, or nil for an ordinary question.
+func (d QuestionData) Secret() *agent.SecretRequest { return SecretOf(d.Questions) }
+
+// SecretOf is the secret questions ask for (request_secret), or nil.
+func SecretOf(qs []agent.Question) *agent.SecretRequest {
+	if len(qs) > 0 {
+		return qs[0].Secret
+	}
+	return nil
 }
 
 type TurnData struct {

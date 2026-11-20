@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/tyler-builds/solo/internal/launch"
+	"image"
 	"maps"
 	"reflect"
 	"slices"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/tyler-builds/jamb/access"
+	"github.com/tyler-builds/jamb/dialog"
 	"github.com/tyler-builds/jamb/icons"
 	"github.com/tyler-builds/jamb/input"
 	"github.com/tyler-builds/jamb/ui"
@@ -57,6 +59,7 @@ type App struct {
 	plain    *ui.Signal[[]string]                          // searched folders that aren't in git
 	rate     *ui.Signal[[]agent.Event]                     // the latest of each usage limit (usage.go)
 	pending  *ui.Signal[map[string][]core.PendingQuestion] // worker questions, by thread
+	secrets  *ui.Signal[[]core.SecretInfo]                 // the secrets kept for agents (api.Secrets), names only
 	navSel   *ui.Signal[string]                            // sidebar: "orchestrator" or "repo:<path>"
 	drawer   *ui.Signal[bool]                              // a compact window's drawer of threads is open
 	compact  bool                                          // the window is compact, as of its last render (UI thread only)
@@ -81,12 +84,13 @@ type App struct {
 	// The merge pill's list of open merge cards is open (mergepill.go); pillFocus is the pill's focus.
 	pillOpen    *ui.Signal[bool]
 	pillFocus   *ui.FocusHandle
-	lightbox    *ui.Signal[string]          // the image shown full size, or ""
+	lightbox    *ui.Signal[viewer]          // the image shown full size, if any (lightbox.go)
 	settingsTab string                      // the tab Settings opens on
 	orchImages  *ui.Signal[[]string]        // images attached to the message being written to Solo
 	busy        *ui.Signal[map[string]bool] // threads with a landing action under way (merge, open PR)
 	railQuery   *ui.Signal[string]          // the rail's filter
 	imgs        map[string]*ui.ImageSource  // decoded attachments, by path (UI thread only)
+	imgData     map[string][]byte           // attachments fetched at full size (RemoteImages), as stored (UI thread only)
 	imgLoading  map[string]bool             // attachments being fetched (RemoteImages; UI thread only)
 	chartSpecs  map[string]parsedChart      // chart blocks read, by body (see chartSpec; UI thread only)
 	imgVer      *ui.Signal[int]             // counts the attachments that have arrived
@@ -115,10 +119,12 @@ type App struct {
 	mu         sync.Mutex
 	post       func(func())
 	toast      func(variant ui.ToastVariant, title, msg string)
-	focused    func() bool       // whether Solo's window is in front (UI thread only)
-	wasFocused bool              // the window's focus at the last check (focusWatch)
-	raise      func()            // brings Solo's window to the front (UI thread only)
-	clipboard  func(text string) // copies text (UI thread only)
+	focused    func() bool                                       // whether Solo's window is in front (UI thread only)
+	wasFocused bool                                              // the window's focus at the last check (focusWatch)
+	raise      func()                                            // brings Solo's window to the front (UI thread only)
+	clipboard  func(text string)                                 // copies text (UI thread only)
+	clipImage  func(image.Image)                                 // copies an image, as pixels (UI thread only)
+	saveFile   func(dialog.FileOptions, func(dialog.FileResult)) // asks where to save a file (UI thread only)
 
 	// Touch says the UI is used with fingers, as on a phone: it is drawn larger (touchZoom), Enter in a
 	// message makes a new line rather than sending it, and the hints of keyboard shortcuts are left out.
@@ -157,6 +163,7 @@ type App struct {
 	ClearNotifications func()
 	undoToast          func(msg string, undo func())
 	dirtyAll           bool
+	dirtySecrets       bool
 	dirty              map[string]bool
 	watched            map[string]bool
 	wake               chan struct{} // wakes the refresher: something changed (see onChange)
@@ -186,6 +193,7 @@ func New(b Backend) *App {
 		plain:       ui.NewSignal(b.PlainFolders()),
 		rate:        ui.NewSignal(b.RateLimits()),
 		pending:     ui.NewSignal(loadPending(b, b.Threads())),
+		secrets:     ui.NewSignal(loadSecrets(b)),
 		navSel:      ui.NewSignal("orchestrator"),
 		drawer:      ui.NewSignal(false),
 		openID:      ui.NewSignal(""),
@@ -204,11 +212,12 @@ func New(b Backend) *App {
 		askOpen:     ui.NewSignal(""),
 		pillOpen:    ui.NewSignal(false),
 		pillFocus:   ui.NewFocusHandle(),
-		lightbox:    ui.NewSignal(""),
+		lightbox:    ui.NewSignal(viewer{}),
 		orchImages:  ui.NewSignal([]string(nil)),
 		busy:        ui.NewSignal(map[string]bool{}),
 		railQuery:   ui.NewSignal(""),
 		imgs:        map[string]*ui.ImageSource{},
+		imgData:     map[string][]byte{},
 		imgLoading:  map[string]bool{},
 		chartSpecs:  map[string]parsedChart{},
 		imgVer:      ui.NewSignal(0),
@@ -273,6 +282,8 @@ func (a *App) onChange(ch core.Change) {
 	switch ch.Kind {
 	case core.ChangeItems:
 		a.dirty[ch.ThreadID] = true
+	case core.ChangeSecrets:
+		a.dirtySecrets = true
 	default:
 		a.dirtyAll = true
 	}
@@ -320,8 +331,8 @@ func (a *App) refresher() {
 func (a *App) refresh() <-chan struct{} {
 	applied := make(chan struct{})
 	a.mu.Lock()
-	all, dirty := a.dirtyAll, a.dirty
-	a.dirtyAll, a.dirty = false, map[string]bool{}
+	all, dirty, dirtySecrets := a.dirtyAll, a.dirty, a.dirtySecrets
+	a.dirtyAll, a.dirty, a.dirtySecrets = false, map[string]bool{}, false
 	var load []string
 	for id := range dirty {
 		if a.watched[id] {
@@ -345,6 +356,10 @@ func (a *App) refresh() <-chan struct{} {
 		plain = a.b.PlainFolders()
 		rate = a.b.RateLimits()
 		pending = loadPending(a.b, threads)
+	}
+	var secrets []core.SecretInfo
+	if dirtySecrets {
+		secrets = loadSecrets(a.b)
 	}
 	loaded := map[string][]core.Item{}
 	for _, id := range load {
@@ -377,6 +392,9 @@ func (a *App) refresh() <-chan struct{} {
 			if !reflect.DeepEqual(cfg, a.cfg.Peek()) {
 				a.cfg.Set(cfg)
 			}
+		}
+		if dirtySecrets && !reflect.DeepEqual(secrets, a.secrets.Peek()) {
+			a.secrets.Set(secrets)
 		}
 		for id, items := range loaded {
 			if s := a.items[id]; s != nil {
@@ -659,6 +677,8 @@ func (a *App) Root(ctx *ui.Context) ui.Element {
 		a.focused = ctx.Window().Focused
 		a.raise = ctx.Window().Focus
 		a.clipboard = ctx.SetClipboard
+		a.clipImage = ctx.SetClipboardImage
+		a.saveFile = ctx.Window().SaveFile
 		if rm := a.Remote; rm != nil {
 			a.remoteState.Set(rm.State())
 			post := ctx.Post

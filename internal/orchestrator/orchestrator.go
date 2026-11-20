@@ -547,6 +547,15 @@ func (o *Orchestrator) onAnswer(ch core.Change) {
 	if !ok || v.Kind != store.KindWorker {
 		return
 	}
+	if s := core.SecretOf(a.Questions); s != nil {
+		n := fmt.Sprintf("[Solo: the user saved the secret %s that %s asked for, and the thread carries on.]", s.Name, label(v))
+		if a.Skipped {
+			n = fmt.Sprintf("[Solo: the user declined to give the secret %s that %s asked for; the thread carries on without it.]", s.Name, label(v))
+		}
+		o.dropAsking(v)
+		o.note(n)
+		return
+	}
 	var parts []string
 	for _, q := range a.Questions {
 		part := fmt.Sprintf("%q", clip(oneLine(q.Question), 200))
@@ -563,7 +572,13 @@ func (o *Orchestrator) onAnswer(ch core.Change) {
 	if a.Skipped {
 		n = fmt.Sprintf("[Solo: the user skipped %s's question without answering it, so the thread carries on with its own judgment. It asked: %s]", label(v), strings.Join(parts, "; "))
 	}
-	// Solo hasn't heard the question yet: the note says all there is.
+	o.dropAsking(v)
+	o.note(n)
+}
+
+// dropAsking takes the update that v is asking a question out of the ones waiting for Solo: Solo hasn't
+// heard the question yet, and the note about its answer says all there is.
+func (o *Orchestrator) dropAsking(v core.ThreadView) {
 	o.mu.Lock()
 	ask := askingLine(v)
 	if i := slices.Index(o.pending, ask); i >= 0 {
@@ -571,7 +586,6 @@ func (o *Orchestrator) onAnswer(ch core.Change) {
 		o.savePendingLocked()
 	}
 	o.mu.Unlock()
-	o.note(n)
 }
 
 // busy reports whether thread updates are on their way to Solo: waiting to be sent, or being sent.
