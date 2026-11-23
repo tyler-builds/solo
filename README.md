@@ -61,3 +61,10 @@ go test -tags live -run Live ./internal/...     # real Claude, small cost
 SOLO_SHOTS=/tmp/shots go test ./internal/gui -run 'TestShots|TestSetupShots'   # screenshots for review
 go run ./cmd/solo-harness -cwd <repo> "<task>"  # one session in the terminal
 ```
+
+## License
+
+Solo is licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+Its release builds also contain third-party software under its own licenses, listed in NOTICE,
+including the Claude Agent SDK, which is not open-source software: Anthropic provides it under its
+own terms, not Solo's license.
