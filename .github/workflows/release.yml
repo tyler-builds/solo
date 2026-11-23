@@ -76,9 +76,12 @@ jobs:
       - name: Checksums
         run: cd dist && sha256sum *.AppImage *-setup.exe *.zip > SHA256SUMS
 
+      # The artifact only carries the build to the publish job, and the release keeps the files, so
+      # it is kept a day; a build run by hand, which has no release, is kept a week.
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: solo-${{ steps.version.outputs.version }}
+          retention-days: ${{ github.ref_type == 'tag' && 1 || 7 }}
           path: |
             dist/*.AppImage
             dist/*-setup.exe
