@@ -1,0 +1,44 @@
+Solo
+Copyright 2026 tyler-builds
+
+Solo's release builds (the AppImage and the Windows installer and zip) also contain
+third-party software, under its own licenses:
+
+Go program (solo, solo.exe), and the relay and web client built into it
+
+- jamb (github.com/tyler-builds/jamb), Copyright 2026 The jamb Authors, Apache
+  License 2.0. Its NOTICE attributes material that jamb compiles in and Solo uses:
+  translations and themes from gpui-component / GPUI Kit, Copyright 2024-2026
+  Longbridge, Apache License 2.0; the @pierre/highlights WebAssembly module,
+  Copyright 2025 Pierre Computer Company, Apache License 2.0; and the Lucide icons,
+  Copyright (c) 2026 Lucide Icons and Contributors, ISC License, some derived from
+  Feather, Copyright (c) 2013-present Cole Bemis, MIT License.
+- wazero (github.com/tetratelabs/wazero), Copyright 2020-2023 wazero authors,
+  Apache License 2.0.
+- purego (github.com/ebitengine/purego), Apache License 2.0 (Linux build).
+- The Go runtime and standard library, golang.org/x/crypto, x/image (with the Go
+  fonts), x/sys and x/text, rsc.io/qr, github.com/remyoudompheng/bigfft and
+  github.com/google/uuid: BSD 3-Clause License.
+- modernc.org/sqlite, libc, mathutil and memory: BSD 3-Clause License. They contain
+  SQLite (public domain) and code from musl libc (MIT License); see
+  LICENSE-3RD-PARTY.md in modernc.org/sqlite and modernc.org/libc.
+- github.com/flynn/noise: BSD 3-Clause License. github.com/godbus/dbus: BSD 2-Clause
+  License. github.com/go-text/typesetting: Unlicense or BSD 3-Clause License.
+- github.com/coder/websocket: ISC License. github.com/yuin/goldmark,
+  github.com/zalando/go-keyring and github.com/dustin/go-humanize: MIT License.
+  On Windows also github.com/danieljoos/wincred, github.com/mattn/go-isatty and
+  github.com/ncruces/go-strftime: MIT License.
+- The web client is compiled with TinyGo, whose runtime it contains, Copyright
+  2018-2026 The TinyGo Authors, BSD 3-Clause License.
+
+Sidecar (solo-agent, solo-agent.exe)
+
+- Bun (https://bun.sh), MIT License. Bun statically links JavaScriptCore and WebKit,
+  licensed under the LGPL 2, and other libraries under their own licenses; see
+  https://github.com/oven-sh/bun/blob/main/LICENSE.md. The sidecar's source is in
+  sidecar/ of this repository, so it can be rebuilt with a modified Bun.
+- zod, Copyright (c) 2025 Colin McDonnell, MIT License.
+- Claude Agent SDK (@anthropic-ai/claude-agent-sdk), (c) Anthropic PBC, all rights
+  reserved. It is not open-source software and is not covered by Solo's license; it
+  is included under Anthropic's terms:
+  https://code.claude.com/docs/en/legal-and-compliance
