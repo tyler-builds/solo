@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -12,12 +13,16 @@ import (
 
 // statusLog records a thread's status changes, as "prev>status".
 type statusLog struct {
-	mu  sync.Mutex
-	log []string
+	mu   sync.Mutex
+	log  []string
+	from string // the thread's status when the log began
 }
 
 func watchStatuses(t *testing.T, c *Core, id string) *statusLog {
 	l := &statusLog{}
+	if v, ok := c.Thread(id); ok {
+		l.from = v.Status
+	}
 	unsub := c.Subscribe(func(ch Change) {
 		if ch.Kind == ChangeThread && ch.ThreadID == id && ch.PrevStatus != ch.Status {
 			l.mu.Lock()
@@ -37,12 +42,23 @@ func (l *statusLog) String() string {
 
 // waitFor waits for the log to say want, and fails the test if it doesn't: a change reaches the log a
 // moment after the thread shows it.
+//
+// For the same reason the log may hold one change from before it began: the one that brought the
+// thread to the status it had then, told to subscribers after the thread already showed it, and so
+// after the log began. It can come first or between the others, and is left out.
 func (l *statusLog) waitFor(t *testing.T, want string) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		got := l.String()
 		if got == want {
+			return
+		}
+		l.mu.Lock()
+		entries := slices.Clone(l.log)
+		l.mu.Unlock()
+		if i := slices.IndexFunc(entries, func(e string) bool { return strings.HasSuffix(e, ">"+l.from) }); i >= 0 &&
+			strings.Join(slices.Delete(entries, i, i+1), " ") == want {
 			return
 		}
 		if time.Now().After(deadline) {
