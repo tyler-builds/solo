@@ -8,7 +8,7 @@ Claude **worker threads**, each working in its own git worktree.
 | Area | Decision |
 |---|---|
 | UI | Go + [jamb](https://github.com/tyler-builds/jamb). Windows is the primary target; Linux (Wayland) is experimental and has no IME; macOS waits on jamb. |
-| Claude | Official `@anthropic-ai/claude-agent-sdk` in one **Bun sidecar** (`bun build --compile`). The SDK isn't open source and wraps a closed `claude` binary over an undocumented protocol, so it isn't reimplemented in Go. |
+| Claude | The user's own Claude Code, run by **`claudesdk`**: a minimal Go port of the open-source Claude Agent SDK for Python (MIT), in Solo's own process. It speaks the CLI's stream-json control protocol directly; there is no sidecar. |
 | Orchestrator | One **global** session, resumed across restarts. Knowledge of live state comes from tools, not its transcript. |
 | Repos | Settings hold a list of folders; every git repo found under them is known to the orchestrator. A folder there that isn't in git (and holds no repo) is listed too and takes threads the way t3code does: the thread works directly in the folder (`Part.InPlace`), with no worktree, branch, diff or merge, alone (not with other repos), and Done or Discard never touch the folder. Settings or Solo's `init_repo` tool can put the folder in git instead: `git init` on main, a default `.gitignore` if it has none, and a first commit. |
 | Workers | One git worktree + branch per thread, `bypassPermissions`, no sandbox. |
@@ -26,96 +26,95 @@ Claude **worker threads**, each working in its own git worktree.
 │                       ├─ RepoIndex (scan folders, git info) │
 │                       ├─ Worktrees (git worktree add/rm)    │
 │                       ├─ Store (SQLite)                     │
-│                       └─ SidecarClient (supervisor + RPC)   │
+│                       └─ agent.Direct (sessions)            │
+│                            └─ claudesdk.Client per session  │
+│                               normalizer: messages → events │
+│                               in-process MCP tools, hooks   │
 └──────────────┬──────────────────────────────────────────────┘
-               │ NDJSON JSON-RPC over stdio (bidirectional)
-┌──────────────▼───────── solo-agent (Bun) ───────────────────┐
-│ SessionHost: Map<sessionId, Session>                        │
-│ Session = one long-lived query() with a streaming prompt    │
-│ Normalizer: SDKMessage → compact events                     │
-│ In-process MCP server (orchestrator tools → RPC to Go)      │
-└──────────────┬──────────────────────────────────────────────┘
-               │ one `claude` child process per session (SDK-managed)
+               │ stream-json + control protocol over stdio
+               │ one `claude` child process per session, in its own process group
 ```
 
-- A single sidecar hosts every session. If it crashes, Go restarts it with backoff and sessions
-  reopen lazily with `resume`.
-- Go is the source of truth for threads and state. The sidecar holds no durable state.
+- Each session is one `claude` process. If it exits, the session's next message starts it again with
+  `resume`; the context survives.
+- Go is the source of truth for threads and state. Claude's own transcripts are used only for `resume`.
 
-## Sidecar protocol (sketch)
+## Sessions (`agent.Direct`, `claudesdk`)
 
-Go → sidecar (requests): `session.open {sessionId, resume?, role, cwd, model, effort, systemAppend,
-additionalDirectories, permissionMode, tools}`, `session.send {sessionId, uuid, text, images}`,
-`session.interrupt`, `session.close`, `session.setModel`, `probe` (models, account, version).
+Core calls `agent.Direct`: `Open {sessionId, resume?, cwd, model, effort, systemAppend,
+additionalDirectories, permissionMode, tools, mcpTools, …}`, `SendUUID {uuid, text, images, steer}`,
+`Interrupt`, `StopTask`, `SetModel`, `Close`, plus `Probe` (models, account) and `Complete` (one-shot
+small-model calls). Sessions report through callbacks: `OnEvent` with `init`, `turn_start`,
+`text_delta`, `thinking_delta`, `assistant`, `tool_result`, `task`, `background`, `compact`, `state`,
+`api_retry`, `rate_limit`, `turn_end {status, reason, usage, costUsd, steered}` and `exited`;
+`OnToolCall` for the app's in-process MCP tools (Solo's, the secret tools, a card's tools); `OnAsk` for
+AskUserQuestion; and `OnGuard`, the secrets guard's PreToolUse hook. `agent/normalize.go` turns the
+CLI's raw messages into those events.
 
-Sidecar → Go (notifications): `event {sessionId, seq, kind, ...}` where kind is one of `init`,
-`text_delta`, `thinking_delta`, `message_done`, `tool_start`, `tool_input`, `tool_result`,
-`subagent_start|progress|end`, `compact`, `usage`, `rate_limit`, `turn_end {status, reason, usage,
-costUsd}`, `question`, `error`, `exited`.
-
-Sidecar → Go (requests): `tool.call {sessionId, name, args}` for orchestrator MCP tools, and
-`question.ask` for AskUserQuestion. Go answers both.
-
-Raw `SDKMessage`s are also appended to a per-session JSONL file for debugging and replay tests.
+With `SOLO_DEBUG`, every session's raw messages are appended to `logs/<session>.jsonl` in the data
+folder, with a `$exit` marker when its process ends, for debugging and replay tests.
 
 ## Claude SDK correctness rules (ported from t3code `ClaudeAdapterV2`)
 
-1. **Streaming input, one query per session.** `prompt` is an AsyncIterable fed from an unbounded
-   queue. Follow-up turns are `offer`ed into the same live query, not a new `query()`.
+1. **Streaming input, one process per session.** Follow-up turns are sent into the same live process
+   (`claudesdk.Client.Send`), not a new one.
 2. **Identity.** New session: pre-allocate a uuid and pass `sessionId`. Existing session: `resume`.
    Never reuse a fresh id with `sessionId` (a metadata-only transcript may already exist).
-3. **Turn gating by prompt uuid.** Each `SDKUserMessage` carries a uuid. Frames are attributed to a
+3. **Turn gating by prompt uuid.** Each user message carries a uuid. Frames are attributed to a
    turn only after the uuid echoes back; earlier root frames are held, which prevents background
    wakes from bleeding into the wrong turn. `result` closes the turn.
 4. **Result interpretation.** `subtype: "success"` can still be a failure (`is_error`,
    `api_error_status` 429/529, `terminal_reason` such as `prompt_too_long` or `blocking_limit`).
    `terminal_reason: aborted_tools|aborted_streaming` means interrupted. Map these to explicit
    statuses.
-5. **Options.** `systemPrompt: {type:"preset", preset:"claude_code", append}`,
-   `includePartialMessages: true`, `thinking: {type:"adaptive", display:"summarized"}`,
-   `settingSources: ["user","project","local"]`, `cwd` + `additionalDirectories`, and
-   `pathToClaudeCodeExecutable` when the user overrides the binary.
-6. **Process hygiene.** Spawn `claude` in its own process group on POSIX
-   (`spawnClaudeCodeProcess`) so the whole tree can be killed. On a failed open: shut the prompt
-   queue, SIGKILL, await exit (10 s cap), then `asyncDispose`. Capture a stderr tail **only before the
-   first message** (startup errors) and keep later stderr out of the UI.
+5. **Options.** Claude Code's system prompt with Solo's appended (`--append-system-prompt`),
+   partial messages, adaptive thinking with summarized display, setting sources user, project and
+   local, `cwd` + `--add-dir`, and the claude Settings names.
+6. **Process hygiene.** `claude` runs in its own process group on POSIX, so the whole tree (its MCP
+   servers, shells) is killed with it when it exits or is closed (stdin closed, then SIGKILL after a few
+   seconds). A stderr tail is kept **only before the first message** (startup errors), and later stderr
+   stays out of the UI.
 7. **Interrupt.** `interrupt()`, then wait for the turn's `result`. To restart a wedged session:
    `close()`, and the next turn reopens with `resume`.
-   **Steer** (t3code's `steerTurn`): move the turn's foreground subagents to the background
-   (`backgroundTasks(toolUseId)`, 5 s cap), then offer the message at `priority: "now"`. Claude ends the
-   running segment with an `aborted_*` result and carries on in a new segment that answers the steer;
-   the sidecar marks that result `steered`, so the app keeps the turn going. Only a message to a
+   **Steer** (t3code's `steerTurn`): move the turn's foreground subagents to the background (the
+   `background_tasks` control request, `claudesdk.Client.BackgroundTasks`, 5 s cap), then send the
+   message at `priority: "now"`. Claude ends the running segment with an `aborted_*` result and carries
+   on in a new segment that answers the steer; Direct marks that result `steered`, so the app keeps the
+   turn going. Only a message to a
    working **worker** steers. The user's message to Solo while it works never reaches Claude mid-turn:
    Go queues it (see Orchestrator › Queued messages), because a message offered without `priority` can
    still be folded into the running turn, which ran two separate requests together.
-8. **MCP registration** can time out. Retry once, and only for resumed opens.
-9. **Probe** capabilities (models, account) with a query whose prompt never yields, then read
-   `initializationResult()`, instead of hard-coding the model list.
-10. **Process environment** (t3code's `mergeClaudeProcessEnvironment`, in `sidecar/src/launch.ts`).
+8. **In-process MCP tools** are served by Solo over the control protocol (`mcp_message`), declared to
+   the CLI as `{"type":"sdk"}` servers in `--mcp-config`, and marked `anthropic/alwaysLoad`.
+9. **Probe** capabilities (models, account) by starting the CLI and reading its answer to
+   `initialize`, instead of hard-coding the model list.
+10. **Process environment** (t3code's `mergeClaudeProcessEnvironment`, `agent/entrypoint.go`).
    Every `claude` gets `CLAUDE_CODE_ENTRYPOINT=solo`, unless the user's or managed Claude settings
    set one in `env`, and none of the variables a parent Claude Code session exports (`CLAUDECODE`,
-   `CLAUDE_CODE_SESSION_ID`, its messaging socket and token, …). Left unset, the SDK reports `sdk-ts`,
-   and Claude Code then leaves out tools it keeps off in Agent SDK sessions, the Artifact tools among
+   `CLAUDE_CODE_SESSION_ID`, its messaging socket and token, …). Left unset, claudesdk reports `sdk-go`,
+   and Claude Code then leaves out tools it keeps off in SDK sessions, the Artifact tools among
    them. That is undocumented, so a session meant to have Artifact that starts without it logs a
    warning.
 
-### Verified in phase 1 (live, claude 2.1.319, SDK 0.3.319)
+### Verified live (claude 2.1.319 with the TypeScript SDK, again on 2.1.332 with claudesdk)
 
 - Turns bind by uuid: `result.user_message_uuids` and the first stamped frame carry the send's uuid.
 - Interrupt ends the turn with `terminal_reason: aborted_streaming` → `interrupted`.
-- A SIGKILLed CLI mid-turn: the stream just ends with no result. The sidecar closes the turn as
+- A SIGKILLed CLI mid-turn: the stream just ends with no result. Direct closes the turn as
   `failed/process_exited`, emits `exited`, and the next send reopens with `resume`; context survives.
   The raw log gets a `{"type":"$exit"}` marker so replays can reproduce this.
-- Under `bypassPermissions` the SDK warns that `canUseTool` is shadowed, but **AskUserQuestion is
-  still routed to it**, so worker questions reach the app.
+- Under `bypassPermissions`, **AskUserQuestion is still routed to the permission callback**
+  (`can_use_tool`), so worker questions reach the app.
+- A steer while a foreground subagent runs: the subagent moves to the background, the turn ends
+  steered, and Claude answers the steer (`TestLiveSteerBackgroundsSubagent`).
 - In-process MCP tools are marked `alwaysLoad`; otherwise Claude spends a ToolSearch round trip first.
 - The CLI also emits `command_lifecycle` (queued/started/completed per send uuid). Solo's queued
   messages don't use it: Go holds them itself until Solo's turn ends (Orchestrator › Queued messages).
 - Claude binary: Solo runs the user's own Claude Code, as t3code does, so it shares their install,
   sign-in and updates. `agent.FindClaude` tries the Settings path, then `claude` on PATH, then the
-  installers' default locations (a desktop launcher's PATH often lacks `~/.local/bin`). A compiled
-  sidecar can't fall back to the SDK's bundled CLI, so it refuses to open without a path. Settings
-  shows the version and account found (`core.CheckClaude`: `--version`, then a probe).
+  installers' default locations (a desktop launcher's PATH often lacks `~/.local/bin`). Solo bundles
+  no CLI, so it refuses to open a session without one. Settings shows the version and account found
+  (`core.CheckClaude`: `--version`, then a probe).
 
 ## Orchestrator
 
@@ -213,7 +212,7 @@ Raw `SDKMessage`s are also appended to a per-session JSONL file for debugging an
 - **Background work** (verified live, claude 2.1.321, SDK 0.3.319): a turn can end while a command run
   with `run_in_background` or a background subagent still runs. The CLI sends
   `background_tasks_changed` with every live background task (replace semantics; ambient tasks are
-  left out), which the sidecar forwards as a `background` event. A turn that completes with any left
+  left out), which Direct reports as a `background` event. A turn that completes with any left
   ends `background`, not `idle`: shown at work (rail's Working group, an hourglass, the pinned line
   says what and for how long), landing disabled in the header and the
   merge card alike, `propose_merge` refused, and the orchestrator told it isn't finished. When a task
@@ -258,7 +257,7 @@ Raw `SDKMessage`s are also appended to a per-session JSONL file for debugging an
   description from the commits, changed files and summary, following Settings › Pull requests' title
   and description rules (one call); the description can be turned off. Settings › Pull requests also
   picks Claude Code skills (`prSkills`). With one chosen, the text comes instead from a one-off Claude
-  Code session (`Core.runJob`: the sidecar's `session.open` with `ephemeral`, no transcript) in the
+  Code session (`Core.runJob`: a session opened with `Ephemeral`, no transcript) in the
   branch's worktree, with the PR text model, the chosen skills only (`skills`), and the tools Skill,
   Bash, Read, Glob and Grep, so skills load natively and run their bundled scripts. It answers in the
   same TITLE:/DESCRIPTION: format within 5 minutes. Empty title/description rules add no defaults, so
@@ -349,9 +348,9 @@ environment of one command that Solo, not the agent, runs.
   binary file, as many `*`, so nothing in it moves. No other folder is looked through or changed: Solo's
   own commands may run in the user's checkout, and a file they write there keeps what they wrote. A folder
   too large to read in 5 seconds is reported as not fully checked.
-- **Guard:** an agent's own Bash, PowerShell, Read, Grep and Glob calls go through a PreToolUse hook in the
-  sidecar (`sidecar/src/guard.ts`, which runs under `bypassPermissions` too), which asks core
-  (`tool.guard`, `secrets.Guard`); commands for `run_with_secrets` are checked the same way. It refuses
+- **Guard:** an agent's own Bash, PowerShell, Read, Grep and Glob calls go through a PreToolUse hook on
+  every session (`agent/direct.go`; hooks run under `bypassPermissions` too), which asks core
+  (`Callbacks.OnGuard`, `secrets.Guard`); commands for `run_with_secrets` are checked the same way. It refuses
   only what reads Solo's secrets: a keyring reader (`secret-tool lookup`, the Secret Service over D-Bus,
   `security find-generic-password`, `cmdkey`, Python's `keyring`, …) in a command that names
   `solo-secrets`, and `/proc/<pid>/environ` or `mem` of a process in the group of a command running with
@@ -370,6 +369,76 @@ environment of one command that Solo, not the agent, runs.
   writes can read the keyring, or the command's environment while it runs, without matching the guard,
   and a Bash call started alongside `run_with_secrets` is checked before that command exists. Redaction
   is a safeguard for honest agents, not a sandbox.
+
+## Go SDK (`claudesdk/`)
+
+A minimal, unofficial Go client for Claude Code, ported from the open-source Python Agent SDK. It runs
+the user's `claude` in stream-json mode and speaks its control protocol: initialize, interrupt,
+set_model, set_permission_mode, stop_task, permission requests (can_use_tool), hooks (hook_callback) and
+in-process MCP tool servers (mcp_message). `Complete` makes one-shot small-model calls (no tools, MCP
+servers or settings: about 2k tokens of prompt). It imports nothing of Solo's, so it can move to a module
+of its own. `go test -tags live ./claudesdk` runs it against the real CLI.
+
+`agent.Direct` runs every Solo session on it (see Sessions). Its normalizer was ported from the
+TypeScript one of the sidecar Solo had before, and checked against that one's output for a recorded
+session (`agent/testdata`, `TestNormalizerMatchesRecordedEvents`). Tests run a fake claude
+(`agent/agenttest`): the test binary, started with the CLI's flags, speaks the same protocol with
+scripted behavior.
+
+## Briefs (`core/brief.go`)
+
+A small model (Settings › `summaryModel`, Haiku by default; `noSummaries` turns it off) writes each
+worker's brief, which the board's cards show: while a turn runs, what it has done so far and what it
+is doing now (`ThreadView.Now`); when it ends, what it did, where the whole task stands, and what it
+needs (`input`, `review` or `blocked`). It reads a digest of the turn's items built in Go (the user's
+messages, tool calls in a few words, the agent's messages, errors), never the thinking, and the card
+shows only what it writes. The first brief comes a few seconds into a turn, then at most every 20 s
+while there is new activity, then one at the turn's end; two run at once at most, and a failed call
+backs off for two minutes. It is saved with the thread (`threads.brief`). A card added without a title
+is named by the same model.
+
+## Board (`gui/board.go`, `gui/cardview.go`, `core/card.go`)
+
+Settings › `board` (the title bar's switch) shows the workers as cards in place of the rail and Solo's
+chat: To do (the new-task box, which takes pasted or dropped images and files, and cards starting),
+Working, Your turn (the chip says why: needs input, blocked, ready to merge, answered, failed checks),
+Landing (merging, resolving conflicts, a pull request waiting on checks or auto-merge) and Done
+(finished in the last three days). The column comes from the thread's state, so the agents move the
+cards.
+
+A card the user adds (`api.Backend.CreateWorker` with `FromUser`, over remote access too; its
+attachments must be ones already saved) is a builder, a worker on the threads' model, and two leads
+(`store.KindLead`) that never edit, each a Claude session of its own on its own model and effort
+(Settings › Models › Board cards; Solo's by default, `Settings.CardModel`):
+
+- the briefer reads the code and briefs the builder (`brief_builder`), or asks the user first
+  (`report` with need `input`). It runs once, so its context, often the largest, is never read again.
+- the reviewer is made at the builder's first finished turn and told the user's ask, the brief and the
+  builder's report. It reviews the diff and runs the project's tests, builds and linters itself, then
+  sends the builder back (`send_back`, twice at most, `cardMaxRounds`) or writes the user a few lines
+  (`report`). From then on it takes the user's replies (turning them into a `brief_builder`) and the
+  builder's questions (`answer_builder`).
+
+Each lead ends its turn with one call to its card tools (`cardTools`, an in-process MCP server named
+`card`). A call is checked and only queued (`leadTool`: one per turn, no `send_back` past the limit, no
+`answer_builder` without a question, each refusal telling the lead what to do instead), and `cardSettled`
+acts on it when the lead's turn ends, so the builder never works while a lead still runs things in the
+same worktree. A turn that calls no tool becomes a review that needs the user, its text. The leads run
+on `claudesdk` in this process, as every session does.
+
+Separate sessions keep each one's prompt cache on one model: measured on Claude Code, a session that
+switches model writes its whole context again at the new model's price (2x input, as Claude Code caches
+for an hour), while effort changes and restarts with resume keep the cache. `CardState` (`threads.card`)
+links the three threads and holds the phase, the user's last ask, the last brief and the review. The
+leads run in the builder's worktree with Read, Grep, Glob, Bash, the web and their card tools, and no
+tools that edit: their prompts ask them to leave the worktree as they found it. Their prompts are
+Settings › Models › Board card prompts (`Settings.CardPrompt`; empty keeps the defaults in
+`core/cardprompts.go`). Solo's own conversation hears nothing about cards, and the user is notified when
+a review is ready, not when the builder stops.
+
+A card opens over the board (`cardOverlay`): what the user last asked, the lead's review or what the
+agents are doing, a reply box to the lead, and tabs for the history (the builder's transcript, or the
+lead's notes) and the changes. A thread that isn't a card opens beside the board, as the rail's do.
 
 ## UI (jamb)
 
@@ -576,25 +645,22 @@ internal/core/       orchestrator, threads, notifications
 internal/secrets/    agents' secrets: the keyring, running a command with them, redaction
 internal/store/      SQLite schema + queries
 internal/git/        repo scan, worktrees, diff, merge
-internal/agent/      sidecar supervisor + JSON-RPC client + event types
+internal/agent/      sessions on claudesdk (Direct), the normalizer, event types; agenttest: a fake claude
 internal/gui/        jamb views; builds for the desktop and for a web page
-sidecar/             TypeScript (Bun): rpc, session, normalize, tools; fixture tests
+claudesdk/           the Go client for Claude Code (ported from the Python Agent SDK)
 docs/
 ```
 
 ## Build phases
 
-1. **SDK layer:** sidecar + protocol + a headless Go harness running one worker end to end.
-   Replay-fixture tests for turn gating, result mapping, interrupt, crash/resume.
+1. **SDK layer:** sessions on Claude Code + a headless Go harness running one worker end to end
+   (`cmd/solo-harness`). Replay-fixture tests for turn gating, result mapping, interrupt, crash/resume.
+   (First a Bun sidecar around the TypeScript Agent SDK; since replaced by `claudesdk`.)
 2. **Core:** store, repo index, worktrees, ThreadManager.
 3. **Orchestrator:** session, MCP tools, proactive updates.
 4. **UI:** jamb views.
 5. **Packaging:** `scripts/appimage.sh` (Linux) and `scripts/windows.sh` (Windows, built from Linux in
-   CI). The compiled sidecar ships beside the app; Claude Code is the user's own. On Windows the
-   sidecar, `solo-agent.exe`, carries Solo's icon and the version info "Solo Agent" (product Solo):
-   Bun's `--windows-*` options work only when compiling on Windows, so the script stamps Bun's Windows
-   runtime with go-winres first and then compiles the sidecar into it with `--compile-executable-path`,
-   which leaves the appended code untouched.
+   CI). The app is one program; Claude Code is the user's own.
 
 ## Open defaults (change if you disagree)
 

@@ -6,6 +6,9 @@ import "time"
 const (
 	KindOrchestrator = "orchestrator"
 	KindWorker       = "worker"
+	// KindLead is the lead of a board card: a read-only session that briefs the card's builder (a worker)
+	// and reviews its work (core/card.go).
+	KindLead = "lead"
 )
 
 // Thread is one row of threads.
@@ -33,6 +36,12 @@ type Thread struct {
 	// Scratch: the user started it only to try or test something and doesn't mean to land it, so
 	// nothing about landing it asks for their attention (see core.Core.SetScratch).
 	Scratch bool
+	// Brief is the small model's overview of the thread for its card, as JSON (see core.Brief); "" when
+	// none was written yet.
+	Brief string
+	// Card is the board card the thread is part of, as JSON (see core.CardState); "" for a thread that
+	// isn't on one.
+	Card    string
 	CostUSD float64
 	// CostBase is what earlier Claude sessions cost; CostUSD adds the current session's running total.
 	CostBase      float64

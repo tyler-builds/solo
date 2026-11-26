@@ -19,7 +19,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tyler-builds/solo/internal/agent"
 	"github.com/tyler-builds/solo/internal/agent/agenttest"
 	"github.com/tyler-builds/solo/internal/git"
 	"github.com/tyler-builds/solo/internal/secrets"
@@ -47,6 +46,8 @@ type env struct {
 	root    string
 	repo    string
 	secrets *secrets.Mem // the keyring, kept across e.open
+	// summarize is Config.Summarize for the cores e.open makes; nil turns briefs off.
+	summarize func(context.Context, SummarizeRequest) (string, error)
 }
 
 func newEnv(t *testing.T) *env {
@@ -70,9 +71,8 @@ func newEnv(t *testing.T) *env {
 
 func (e *env) open(t *testing.T) *Core {
 	t.Helper()
-	exe, vars := agenttest.Command()
-	c, err := New(Config{DataDir: e.dataDir, Agent: agent.Command{Path: exe, Env: vars},
-		Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Secrets: e.secrets})
+	c, err := New(Config{DataDir: e.dataDir, ClaudePath: agenttest.ClaudePath(),
+		Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Secrets: e.secrets, Summarize: e.summarize})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,14 +240,18 @@ func waitStatusAllowTurn(t *testing.T, c *Core, id, status string) ThreadView {
 	return v
 }
 
-func TestToolHandler(t *testing.T) {
+// A session can call only the tools it was given: a worker has the secret tools, not Solo's, so a call
+// to one of Solo's never reaches the handler. (Solo's own calls are in package orchestrator's tests.)
+func TestToolHandlerOnlyGivenTools(t *testing.T) {
 	e := newEnv(t)
+	called := false
 	e.c.SetToolHandler(func(ctx context.Context, threadID, name string, args []byte) (string, bool) {
-		return "handled " + name + " " + string(args), false
+		called = true
+		return "handled " + name, false
 	})
 	v, _ := e.c.CreateWorker(context.Background(), WorkerSpec{Repo: "proj", Prompt: `tool list_threads {"repo":"proj"}`})
-	if v := waitStatus(t, e.c, v.ID, StatusIdle); v.Summary != `handled list_threads {"repo":"proj"}` {
-		t.Fatalf("summary %q", v.Summary)
+	if v := waitStatus(t, e.c, v.ID, StatusIdle); called || v.Summary != "Tool 'list_threads' not found" {
+		t.Fatalf("handler called %v, summary %q", called, v.Summary)
 	}
 }
 

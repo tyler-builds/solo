@@ -44,10 +44,11 @@ type fakeBackend struct {
 	merged      []string
 	mergedRepos []string // "id repo" for each MergeRepo, repo "" for all
 	opened      []string
-	drafts      []string // "id repo" for each pull request opened as a draft, repo "" for all
-	openedFor   []string // "id repo" for each OpenPRFor, repo "" for all
-	readied     []string // MarkReady
-	interrupted []string // the threads Interrupt was asked to stop, in order
+	drafts      []string          // "id repo" for each pull request opened as a draft, repo "" for all
+	openedFor   []string          // "id repo" for each OpenPRFor, repo "" for all
+	readied     []string          // MarkReady
+	interrupted []string          // the threads Interrupt was asked to stop, in order
+	created     []core.WorkerSpec // CreateWorker, in order
 	nextID      int64
 	todos       []core.Todo
 	skills      []core.Skill   // for "/" and Settings; fakeSkills when nil
@@ -265,6 +266,17 @@ func (f *fakeBackend) SetThreadModel(_ context.Context, id, model, effort string
 	}
 	return nil
 }
+func (f *fakeBackend) CreateWorker(_ context.Context, spec core.WorkerSpec) (core.ThreadView, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.created = append(f.created, spec)
+	f.nextID++
+	v := core.ThreadView{IsWorker: true}
+	v.ID, v.Kind, v.Title, v.Prompt, v.RepoPath, v.Status = fmt.Sprintf("new%d", f.nextID), "worker", firstLine(spec.Prompt), spec.Prompt, spec.Repo, core.StatusQueued
+	f.threads = append(f.threads, v)
+	return v, nil
+}
+
 func (f *fakeBackend) SetScratch(_ context.Context, id string, on bool) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

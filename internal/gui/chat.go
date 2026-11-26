@@ -1603,11 +1603,13 @@ func (a *App) composer(ctx *ui.Context, v core.ThreadView, key, scope, placehold
 		actions := ui.Div().Row().Align(ui.Center).Gap(space1).Shrink(0)
 		// A compact window gives the text the box's width, and puts the thread's model under it, at the
 		// start of the buttons' row.
-		under := isCompact(ctx) && v.IsWorker && !core.Finished(v.Status)
+		// A card's reply goes to its lead, so the builder's model isn't offered there.
+		picker := v.IsWorker && !core.Finished(v.Status) && !strings.HasPrefix(key, "card-draft-")
+		under := isCompact(ctx) && picker
 		if under {
 			actions = ui.Div().Row().Align(ui.Center).Gap(space1).
 				Child(a.modelPicker(ctx, v)).Child(ui.Div().Grow(1))
-		} else if v.IsWorker && !core.Finished(v.Status) {
+		} else if picker {
 			actions = actions.Child(a.modelPicker(ctx, v))
 		}
 		actions = actions.
@@ -1633,7 +1635,10 @@ func (a *App) composer(ctx *ui.Context, v core.ThreadView, key, scope, placehold
 		// The "/" and "@" lists open over the box, by the caret. Their place is worked out from about how
 		// wide the box and its text are.
 		boxW := min(a.chatWidth(ctx)-2*gutter(ctx), chatMaxWidth)
-		if key != "orch-draft" {
+		if strings.HasPrefix(key, "card-draft-") {
+			winW, _ := ctx.WindowSize()
+			boxW = min(920, winW-2*space4) - 40
+		} else if key != "orch-draft" {
 			boxW = a.panelWidth(ctx) - 2*space4
 		}
 		areaW, below := boxW-composerPadL-composerPadR-2, float32(composerPadY+space1+1)
@@ -1641,7 +1646,7 @@ func (a *App) composer(ctx *ui.Context, v core.ThreadView, key, scope, placehold
 			below += 26 + space1 // the buttons' row, under the text
 		} else {
 			areaW -= space2 + 2*28 + space1 // the attach and send buttons
-			if v.IsWorker && !core.Finished(v.Status) {
+			if picker {
 				areaW -= 150 // the model picker
 			}
 		}

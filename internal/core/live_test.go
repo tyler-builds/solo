@@ -2,7 +2,7 @@
 
 package core
 
-// Live tests run real Claude (cheap model) through the real sidecar:
+// Live tests run real Claude (cheap model), the user's own Claude Code:
 //
 //	go test -tags live -run Live ./internal/core/ -v
 
@@ -25,10 +25,6 @@ import (
 )
 
 func TestLiveWorkerCommitsAndMerges(t *testing.T) {
-	cmd, err := agent.FindCommand()
-	if err != nil {
-		t.Skip(err)
-	}
 	root := t.TempDir()
 	repo := filepath.Join(root, "calc")
 	os.MkdirAll(repo, 0o755)
@@ -39,7 +35,7 @@ func TestLiveWorkerCommitsAndMerges(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	c, err := New(Config{DataDir: t.TempDir(), Agent: cmd, Log: slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))})
+	c, err := New(Config{DataDir: t.TempDir(), Log: slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,10 +75,6 @@ func TestLiveWorkerCommitsAndMerges(t *testing.T) {
 }
 
 func TestLiveWorkerSeesImage(t *testing.T) {
-	cmd, err := agent.FindCommand()
-	if err != nil {
-		t.Skip(err)
-	}
 	root := t.TempDir()
 	repo := filepath.Join(root, "pic")
 	os.MkdirAll(repo, 0o755)
@@ -92,7 +84,7 @@ func TestLiveWorkerSeesImage(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	c, err := New(Config{DataDir: t.TempDir(), Agent: cmd, Log: slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))})
+	c, err := New(Config{DataDir: t.TempDir(), Log: slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,11 +120,7 @@ func TestLiveWorkerSeesImage(t *testing.T) {
 }
 
 func TestLiveBranchNaming(t *testing.T) {
-	cmd, err := agent.FindCommand()
-	if err != nil {
-		t.Skip(err)
-	}
-	c, err := New(Config{DataDir: t.TempDir(), Agent: cmd, Log: slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))})
+	c, err := New(Config{DataDir: t.TempDir(), Log: slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,11 +139,7 @@ func TestLiveBranchNaming(t *testing.T) {
 }
 
 func TestLivePRText(t *testing.T) {
-	cmd, err := agent.FindCommand()
-	if err != nil {
-		t.Skip(err)
-	}
-	c, err := New(Config{DataDir: t.TempDir(), Agent: cmd, Log: slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))})
+	c, err := New(Config{DataDir: t.TempDir(), Log: slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,10 +161,6 @@ func TestLivePRText(t *testing.T) {
 // nothing to land) until the command finishes and Claude's own turn reads it. A second, stopped by
 // the user while it waits, is stopped at once.
 func TestLiveBackgroundWork(t *testing.T) {
-	cmd, err := agent.FindCommand()
-	if err != nil {
-		t.Skip(err)
-	}
 	root := t.TempDir()
 	repo := filepath.Join(root, "notes")
 	os.MkdirAll(repo, 0o755)
@@ -190,7 +170,7 @@ func TestLiveBackgroundWork(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	c, err := New(Config{DataDir: t.TempDir(), Agent: cmd, Log: slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))})
+	c, err := New(Config{DataDir: t.TempDir(), Log: slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -255,10 +235,6 @@ func TestLiveBackgroundWork(t *testing.T) {
 // A real PR text agent loads a project skill and runs its bundled script: the description has the
 // script's output, and the worktree is left as it was.
 func TestLivePRSkillRunsScript(t *testing.T) {
-	cmd, err := agent.FindCommand()
-	if err != nil {
-		t.Skip(err)
-	}
 	ctx := context.Background()
 	repo := t.TempDir()
 	skill := filepath.Join(repo, ".claude", "skills", "describe-pr")
@@ -275,7 +251,7 @@ func TestLivePRSkillRunsScript(t *testing.T) {
 		}
 	}
 	base, _ := git.Run(ctx, repo, "rev-parse", "main")
-	c, err := New(Config{DataDir: t.TempDir(), Agent: cmd, Log: slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))})
+	c, err := New(Config{DataDir: t.TempDir(), Log: slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))})
 	if err != nil {
 		t.Fatal(err)
 	}

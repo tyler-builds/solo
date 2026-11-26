@@ -88,6 +88,12 @@ type (
 		Model  string `json:"model"`
 		Effort string `json:"effort"`
 	}
+	createParams struct {
+		Repo        string   `json:"repo"`
+		Prompt      string   `json:"prompt"`
+		Attachments []string `json:"attachments,omitempty"`
+		Scratch     bool     `json:"scratch,omitempty"`
+	}
 	scratchParams struct {
 		Thread string `json:"thread"`
 		On     bool   `json:"on"`
@@ -256,6 +262,37 @@ func init() {
 				return nil, nil, "", err
 			}
 			return nil, nil, a.Thread, c.h.b.Send(ctx, a.Thread, a.Text, a.Images...)
+		}},
+		"createWorker": {write: true, run: func(ctx context.Context, c *conn, p json.RawMessage, _ []byte) (any, []byte, string, error) {
+			a, err := decode[createParams](p)
+			if err == nil {
+				err = checkPath("repository", a.Repo)
+			}
+			if err != nil {
+				return nil, nil, "", err
+			}
+			if len(a.Prompt) > maxText || !utf8.ValidString(a.Prompt) {
+				return nil, nil, "", invalid("the task is too long")
+			}
+			spec := core.WorkerSpec{Repo: a.Repo, Prompt: a.Prompt, Scratch: a.Scratch, FromUser: true}
+			for _, ref := range a.Attachments {
+				if len(ref) == 0 || len(ref) > 4096 {
+					return nil, nil, "", invalid("that isn't an attachment")
+				}
+				if core.IsFileAttachment(ref) {
+					spec.Files = append(spec.Files, ref)
+				} else {
+					spec.Images = append(spec.Images, ref)
+				}
+			}
+			if len(spec.Images) > maxImages || len(spec.Files) > maxFiles {
+				return nil, nil, "", invalid("too many attachments")
+			}
+			v, err := c.h.b.CreateWorker(ctx, spec)
+			if err != nil {
+				return nil, nil, "", err
+			}
+			return v, nil, v.ID, nil
 		}},
 		"saveImage": {write: true, blob: api.MaxImageUpload, run: func(ctx context.Context, c *conn, _ json.RawMessage, blob []byte) (any, []byte, string, error) {
 			if len(blob) == 0 || len(blob) > api.MaxImageUpload {

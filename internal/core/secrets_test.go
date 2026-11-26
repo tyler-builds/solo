@@ -394,7 +394,7 @@ func TestTranscriptRedactionSkipsShortValues(t *testing.T) {
 	}
 }
 
-// The sidecar's hook asks core about an agent's own tool calls (tool.guard).
+// A session's PreToolUse hook asks core about an agent's own tool calls (Callbacks.OnGuard).
 func TestGuardRoute(t *testing.T) {
 	e := newEnv(t)
 	ask := func(tool, input string) string {

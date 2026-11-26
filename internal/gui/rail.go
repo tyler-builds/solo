@@ -195,6 +195,9 @@ func (a *App) repoMenu(ctx *ui.Context) ui.Element {
 // needsUser reports whether a thread waits on the user: a question, a failure, or work to review. A
 // scratch thread (store.Thread.Scratch) has no work to review: only a question or a failure.
 func needsUser(th core.ThreadView) bool {
+	if th.Card.CardWorking() {
+		return false // its lead answers the builder first
+	}
 	if th.Scratch {
 		return th.Status == core.StatusWaiting || th.Status == core.StatusFailed
 	}

@@ -8,6 +8,7 @@ import (
 
 	"github.com/tyler-builds/solo/internal/core"
 	"github.com/tyler-builds/solo/internal/forge"
+	"github.com/tyler-builds/solo/internal/store"
 )
 
 // Notification is a desktop notification about a thread. Thread is the thread a click opens ("" for
@@ -23,7 +24,7 @@ func (a *App) notifyChange(ch core.Change) {
 	if a.Notify == nil || ch.Kind != core.ChangeThread {
 		return
 	}
-	if ch.PrevStatus == ch.Status && ch.PREvent == "" {
+	if ch.PrevStatus == ch.Status && ch.PREvent == "" && !ch.CardReady {
 		return
 	}
 	v, ok := a.b.Thread(ch.ThreadID)
@@ -31,7 +32,17 @@ func (a *App) notifyChange(ch core.Change) {
 		return
 	}
 	var n *Notification
+	if v.Kind == store.KindLead {
+		return // its card says what it did
+	}
+	card := v.Card != nil && v.Card.Lead != ""
 	switch {
+	case card && ch.CardReady:
+		body := firstLine(stripMarkdown(v.Card.Review))
+		n = &Notification{Title: fmt.Sprintf("“%s” is ready for you.", v.Title), Body: body, Thread: v.ID}
+	case card && ch.PREvent == "":
+		// The lead answers the builder's questions and reviews its work first; the user hears when
+		// there is a review.
 	case !v.IsWorker:
 		if ch.PrevStatus == core.StatusRunning && ch.Status == core.StatusIdle {
 			if body := a.lastReply(); body != "" && !core.IsNoted(body) { // not its nod to a thread update

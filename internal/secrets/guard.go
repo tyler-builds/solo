@@ -16,8 +16,8 @@ import (
 // unrelated process's environment, goes through. It closes the obvious ways, not every way: a program
 // the agent writes can still do either (see docs/ARCHITECTURE.md, Secrets).
 //
-// Agents' own Bash, PowerShell, Read, Grep and Glob calls are checked through the sidecar's PreToolUse
-// hook (sidecar/src/session.ts, the tool.guard request), and commands run with secrets by Forbidden.
+// Agents' own Bash, PowerShell, Read, Grep and Glob calls are checked through a PreToolUse hook on every
+// session (agent/direct.go, Callbacks.OnGuard), and commands run with secrets by Forbidden.
 
 // keyringReaders match a program or call that reads a keyring item. A command is refused only when it
 // also names Solo's service (go-keyring files every item under it: an attribute on Linux, the target

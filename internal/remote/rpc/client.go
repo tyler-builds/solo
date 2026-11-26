@@ -1003,6 +1003,15 @@ func (c *Client) SetThreadModel(ctx context.Context, threadID, model, effort str
 	return c.do(ctx, "setModel", modelParams{Thread: threadID, Model: model, Effort: effort}, nil)
 }
 
+// CreateWorker starts a thread from a card the user wrote (spec.FromUser): only its repository, prompt,
+// attachments and scratch mode go to the machine.
+func (c *Client) CreateWorker(ctx context.Context, spec core.WorkerSpec) (core.ThreadView, error) {
+	var out core.ThreadView
+	err := c.do(ctx, "createWorker", createParams{Repo: spec.Repo, Prompt: spec.Prompt,
+		Attachments: append(slices.Clone(spec.Images), spec.Files...), Scratch: spec.Scratch}, &out)
+	return out, err
+}
+
 func (c *Client) SetScratch(ctx context.Context, threadID string, on bool) error {
 	return c.do(ctx, "setScratch", scratchParams{Thread: threadID, On: on}, nil)
 }

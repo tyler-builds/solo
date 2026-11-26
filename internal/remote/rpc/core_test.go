@@ -15,7 +15,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tyler-builds/solo/internal/agent"
 	"github.com/tyler-builds/solo/internal/agent/agenttest"
 	"github.com/tyler-builds/solo/internal/core"
 	"github.com/tyler-builds/solo/internal/git"
@@ -116,8 +115,7 @@ func TestMirrorOfTheRealEngine(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	exe, vars := agenttest.Command()
-	c, err := core.New(core.Config{DataDir: t.TempDir(), Agent: agent.Command{Path: exe, Env: vars},
+	c, err := core.New(core.Config{DataDir: t.TempDir(), ClaudePath: agenttest.ClaudePath(),
 		Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
 	if err != nil {
 		t.Fatal(err)
@@ -255,8 +253,7 @@ func TestMirrorOfTheRealEngine(t *testing.T) {
 // The thread a device has open reaches the engine with its watch (api.Viewers), and is forgotten when
 // the device closes it, when its watch lapses unrenewed, and when its session ends.
 func TestDeviceOpenThreadReachesTheEngine(t *testing.T) {
-	exe, vars := agenttest.Command()
-	c, err := core.New(core.Config{DataDir: t.TempDir(), Agent: agent.Command{Path: exe, Env: vars},
+	c, err := core.New(core.Config{DataDir: t.TempDir(), ClaudePath: agenttest.ClaudePath(),
 		Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
 	if err != nil {
 		t.Fatal(err)

@@ -49,9 +49,8 @@ func setup(t *testing.T) (*core.Core, *Orchestrator) {
 			t.Fatal(err)
 		}
 	}
-	exe, vars := agenttest.Command()
 	dataDir := t.TempDir()
-	c, err := core.New(core.Config{DataDir: dataDir, Agent: agent.Command{Path: exe, Env: vars},
+	c, err := core.New(core.Config{DataDir: dataDir, ClaudePath: agenttest.ClaudePath(),
 		Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
 	if err != nil {
 		t.Fatal(err)
@@ -538,7 +537,7 @@ func TestFreshSessionCarriesARecap(t *testing.T) {
 	}
 }
 
-// Solo's own session runs any Bash command: the sidecar's allow policy approves every request, with no
+// Solo's own session runs any Bash command: the allow policy approves every request, with no
 // read-only allowlist. Code changes still go to workers by process, so Edit and Write aren't offered.
 func TestOrchestratorRunsAnyBash(t *testing.T) {
 	_, o := setup(t)

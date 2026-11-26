@@ -39,6 +39,7 @@ func (c *Core) onEvent(e agent.Event) {
 		return
 	}
 	id := t.row.ID
+	onCard := t.row.Card != ""
 	var changes []Change
 	itemsChanged, streamChanged, threadChanged := false, false, false
 	settledBg := false // background work ended after the turn, so the thread settled
@@ -55,6 +56,7 @@ func (c *Core) onEvent(e agent.Event) {
 		if !t.inTurn { // after a steer the turn carries on, and keeps its start
 			t.turnStart = now()
 			t.thought = ""
+			c.briefTurnStartLocked(t)
 		}
 		t.inTurn = true
 		t.retry = ""
@@ -126,6 +128,7 @@ func (c *Core) onEvent(e agent.Event) {
 		}
 		t.live = kept
 		itemsChanged, streamChanged = true, true
+		c.briefActivityLocked(t)
 
 	case agent.EventToolResult:
 		if !e.IsRoot() {
@@ -137,6 +140,7 @@ func (c *Core) onEvent(e agent.Event) {
 				t.notePRHintsLocked(*d) // a pull request it opened itself, linked when the turn ends
 			})
 			delete(t.tools, e.ToolUseID)
+			c.briefActivityLocked(t)
 			if t.step != nil && t.step.ID == e.ToolUseID {
 				t.step = nil
 				threadChanged = true
@@ -166,6 +170,7 @@ func (c *Core) onEvent(e agent.Event) {
 				TaskID: e.TaskID, Description: e.Description, TaskType: e.TaskType, Status: "running",
 				ToolUseID: e.ToolUseID, Background: e.Background,
 			})
+			c.briefActivityLocked(t)
 			itemsChanged = true
 			break
 		}
@@ -257,6 +262,7 @@ func (c *Core) onEvent(e agent.Event) {
 		}
 		c.addItemTurnLocked(t, turnUUID, TurnData{Status: e.Status, Reason: e.Reason, Error: e.Error,
 			DurationMs: e.DurationMs, CostUSD: e.TotalCostUSD})
+		c.briefTurnEndLocked(t)
 		if e.TotalCostUSD > 0 {
 			t.row.CostUSD = t.row.CostBase + e.TotalCostUSD
 		}
@@ -291,6 +297,7 @@ func (c *Core) onEvent(e agent.Event) {
 
 	case agent.EventExited:
 		t.inTurn = false
+		c.briefStopLocked(t)
 		t.step = nil
 		t.live, t.liveTxt = nil, nil
 		if e.Error != "" {
@@ -325,6 +332,9 @@ func (c *Core) onEvent(e agent.Event) {
 		changes = append(changes, Change{Kind: ChangeThread, ThreadID: id, PrevStatus: v.Status, Status: v.Status})
 	}
 	c.notify(changes...)
+	if onCard && ((e.Kind == agent.EventTurnEnd && !e.Steered && e.QueuedTurns == 0) || settledBg) {
+		go c.cardSettled(id)
+	}
 	if e.Kind == agent.EventTurnEnd || e.Kind == agent.EventExited || settledBg {
 		c.schedule()
 		if id == OrchestratorID {
@@ -491,6 +501,10 @@ func (c *Core) onToolCall(ctx context.Context, p agent.ToolCallParams) (agent.To
 	t := c.bySession[p.SessionID]
 	h := c.tools
 	c.mu.Unlock()
+	if t != nil && t.row.Kind == store.KindLead {
+		text, isErr := c.leadTool(t, p.Name, p.Args)
+		return agent.ToolCallResult{Text: text, IsError: isErr}, nil
+	}
 	if t != nil {
 		if text, isErr, ok := c.secretTool(ctx, t, p.Name, p.Args); ok {
 			return agent.ToolCallResult{Text: text, IsError: isErr}, nil
@@ -529,6 +543,9 @@ func (c *Core) onAsk(ctx context.Context, p agent.AskParams) (agent.AskResult, e
 	}
 	for i := range p.Questions {
 		p.Questions[i].Secret = nil // only request_secret asks for a secret
+	}
+	if cs := t.card(); cs != nil && cs.Lead != "" {
+		go c.cardBuilderAsked(id, p.Questions) // its lead answers it if it can; it runs once the question shows
 	}
 	res, _ := c.askLocked(ctx, t, key, p.Questions)
 	return res, nil

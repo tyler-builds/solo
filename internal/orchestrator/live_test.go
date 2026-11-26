@@ -15,16 +15,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tyler-builds/solo/internal/agent"
 	"github.com/tyler-builds/solo/internal/core"
 	"github.com/tyler-builds/solo/internal/git"
 )
 
 func TestLiveOrchestratorDelegatesAndProposesMerge(t *testing.T) {
-	cmd, err := agent.FindCommand()
-	if err != nil {
-		t.Skip(err)
-	}
 	root := t.TempDir()
 	repo := filepath.Join(root, "calc")
 	os.MkdirAll(repo, 0o755)
@@ -37,7 +32,7 @@ func TestLiveOrchestratorDelegatesAndProposesMerge(t *testing.T) {
 	}
 	dataDir := t.TempDir()
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	c, err := core.New(core.Config{DataDir: dataDir, Agent: cmd, Log: log})
+	c, err := core.New(core.Config{DataDir: dataDir, Log: log})
 	if err != nil {
 		t.Fatal(err)
 	}

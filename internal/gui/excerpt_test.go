@@ -39,7 +39,7 @@ func TestThoughtExcerpt(t *testing.T) {
 // Solo's working line shows a line of its newest thought from a recorded turn, after the finished
 // thinking block has taken its live block away, as Claude's summarized thinking does.
 func TestWorkingLabelShowsRecordedThought(t *testing.T) {
-	raw, err := os.ReadFile("../../sidecar/test/fixtures/orchestrator-thinking.events.jsonl")
+	raw, err := os.ReadFile("../agent/testdata/orchestrator-thinking.events.jsonl")
 	if err != nil {
 		t.Fatal(err)
 	}

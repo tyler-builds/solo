@@ -11,7 +11,6 @@ import (
 
 	"github.com/tyler-builds/jamb/app"
 
-	"github.com/tyler-builds/solo/internal/agent"
 	"github.com/tyler-builds/solo/internal/core"
 	"github.com/tyler-builds/solo/internal/gui"
 	"github.com/tyler-builds/solo/internal/orchestrator"
@@ -49,15 +48,12 @@ func run() error {
 	}
 	log := slog.New(slog.NewTextHandler(logFile, &slog.HandlerOptions{Level: level}))
 
-	cmd, err := agent.FindCommand()
-	if err != nil {
-		return err
-	}
+	cfg := core.Config{DataDir: dataDir, Log: log, Secrets: secrets.NewKeyring(), Summarize: core.SummarizeWithClaude}
 	if os.Getenv("SOLO_DEBUG") != "" {
-		cmd.Env = append(cmd.Env, "SOLO_AGENT_LOG_DIR="+filepath.Join(dataDir, "logs"))
+		cfg.AgentLogDir = filepath.Join(dataDir, "logs") // every session's raw messages
 	}
 	// Agents' secrets go to the OS keyring only (internal/secrets).
-	c, err := core.New(core.Config{DataDir: dataDir, Agent: cmd, Log: log, Secrets: secrets.NewKeyring()})
+	c, err := core.New(cfg)
 	if err != nil {
 		return err
 	}

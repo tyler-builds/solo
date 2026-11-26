@@ -1,5 +1,6 @@
-// Package agenttest provides a fake solo-agent sidecar for tests. It speaks the real protocol with
-// scripted behavior instead of running Claude.
+// Package agenttest provides a fake claude CLI for tests: the test binary, started as claude (with its
+// stream-json flags), speaks Claude Code's control protocol on stdin and stdout with scripted behavior
+// instead of running Claude. One process is one session, as with the real CLI.
 //
 // A test package enables it from TestMain:
 //
@@ -10,29 +11,34 @@
 //		os.Exit(m.Run())
 //	}
 //
-// and starts it with the command from Command. The message text picks the behavior:
+// and runs it as Solo's claude (core.Config.ClaudePath = ClaudePath()). The message text picks the
+// behavior:
 //
 //	write <path> <content...>  writes the file under the session's cwd, then completes
-//	tool <name> <json args>    calls tool.call; the turn's result is the tool's text
+//	bash <command...>          runs the command with sh in the session's cwd, then completes
+//	tool <name> <json args>    calls the app's tool (mcp__solo__<name>); the turn's result is its text
 //	mcp <name> <json args>     the same, shown in the transcript as Claude shows an MCP tool call
-//	                           (mcp__solo__<name>, its tool_use and its tool_result)
-//	ask                        calls question.ask; the result is the first answer
-//	cancel                     calls question.ask and cancels it with $/cancel
-//	slow                       runs until interrupted (status "interrupted")
+//	                           (its tool_use and its tool_result)
+//	ask                        asks AskUserQuestion; the result is the first answer
+//	cancel                     asks AskUserQuestion and withdraws it (control_cancel_request)
+//	slow                       runs until interrupted (status "interrupted"), or steered: it ends
+//	                           aborted and carries on with the steer, as Claude does
 //	crash                      starts a turn and exits the process
-//	fail                       ends the turn with status "failed"
+//	fail                       ends the turn failed
 //	lose                       fails as Claude does when a resumed conversation is missing
 //	bg <ms> <description...>   starts a background command and completes; after ms the command
 //	                           finishes and, as Claude does, a turn of its own ("wake") reads it.
-//	                           session.stopTask stops it first, with no turn after.
-//	                           A description that starts with "quiet" wakes to a turn with nothing
-//	                           new to say: its result is "(noted)".
+//	                           stop_task stops it first, with no turn after. A description that starts
+//	                           with "quiet" wakes to a turn with nothing new to say: "(noted)".
 //	kill                       stops every background command inside the turn, as Claude's TaskStop
-//	slowclose <ms>             completes; closing the session later takes ms (and holds up every other
-//	                           request meanwhile, as one busy sidecar would)
-//	Write the pull request …   in a session opened with skills: writes pull request text as Claude
+//	slowclose <ms>             completes; closing the session later takes ms
+//	Write the pull request …   in a session started with skills: writes pull request text as Claude
 //	                           would with them (see skillTurn)
+//	a board card lead's message (core/card.go): calls its card tool, as a lead would (leadAction)
 //	anything else              completes with result "echo: <text> resume=<bool>"
+//
+// Started for a one-shot call (claudesdk.Complete: --max-turns), it names a branch from the prompt's
+// "Task title:" line, or writes pull request text. With --version, it prints a version.
 //
 // It does not import package agent, so agent's own tests can use it.
 package agenttest
@@ -44,6 +50,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -52,11 +59,9 @@ import (
 	"github.com/tyler-builds/solo/internal/proc"
 )
 
-const envVar = "SOLO_FAKE_SIDECAR"
-
-// Main runs the fake sidecar if this process was started as one, and reports whether it did.
+// Main runs the fake claude if this process was started as one, and reports whether it did.
 func Main() bool {
-	if os.Getenv(envVar) != "1" {
+	if !isClaude() {
 		return false
 	}
 	run()
@@ -64,265 +69,321 @@ func Main() bool {
 	return true
 }
 
-// Command returns the executable and environment that start the fake: the current test binary with the
-// fake enabled.
-func Command() (path string, env []string) {
+// ClaudePath is the fake claude: the current test binary.
+func ClaudePath() string {
 	exe, err := os.Executable()
 	if err != nil {
 		panic(err)
 	}
-	return exe, []string{envVar + "=1"}
+	return exe
 }
 
-type fakeSession struct {
-	cwd       string
-	skills    []string // the skills the session may use (OpenParams.Skills)
-	resumed   bool
-	seq       int
-	interrupt chan struct{}
-	// steer reaches a "slow" turn waiting on it (unbuffered: a steer with no such turn is a plain send).
-	steer chan steerMsg
+func isClaude() bool {
+	return slices.Contains(os.Args[1:], "--input-format") || (len(os.Args) == 2 && os.Args[1] == "--version")
+}
 
-	bgMu   sync.Mutex
-	bg     []*fakeTask // running background commands, oldest first
-	closed bool
-	// closeDelay is how long session.close takes (slowclose).
+type fake struct {
+	cwd     string
+	resumed bool
+	oneShot bool     // started by claudesdk.Complete
+	mcpName string   // the app's in-process MCP server
+	skills  []string // from initialize
+
+	wmu sync.Mutex
+
+	mu         sync.Mutex
+	pending    map[string]chan json.RawMessage
+	nextID     int
+	stopped    map[string]chan struct{} // background commands, by task id
+	bg         []bgTask                 // running background commands, oldest first
 	closeDelay time.Duration
+
+	interrupt chan struct{}
+	steer     chan steerMsg // reaches a "slow" turn waiting on it
+	turns     chan turnMsg  // turns run one at a time, as Claude runs them
 }
 
-type fakeTask struct {
-	id, desc string
-	stop     chan struct{}
+type bgTask struct{ id, desc string }
+
+type steerMsg struct{ uuid, text string }
+
+type turnMsg struct{ uuid, text string }
+
+func run() {
+	if len(os.Args) == 2 && os.Args[1] == "--version" {
+		fmt.Println("0.0.0 (Claude Code)")
+		return
+	}
+	f := &fake{pending: map[string]chan json.RawMessage{}, stopped: map[string]chan struct{}{},
+		interrupt: make(chan struct{}, 1), steer: make(chan steerMsg), turns: make(chan turnMsg, 64), mcpName: "solo"}
+	f.cwd, _ = os.Getwd()
+	for i, a := range os.Args {
+		switch {
+		case strings.HasPrefix(a, "--resume="):
+			f.resumed = true
+		case a == "--max-turns":
+			f.oneShot = true
+		case a == "--mcp-config" && i+1 < len(os.Args):
+			var cfg struct {
+				Servers map[string]struct {
+					Type string `json:"type"`
+				} `json:"mcpServers"`
+			}
+			if json.Unmarshal([]byte(os.Args[i+1]), &cfg) == nil {
+				for name, s := range cfg.Servers {
+					if s.Type == "sdk" {
+						f.mcpName = name
+					}
+				}
+			}
+		}
+	}
+	go f.runTurns()
+	sc := bufio.NewScanner(os.Stdin)
+	sc.Buffer(make([]byte, 0, 64*1024), 64*1024*1024)
+	for sc.Scan() {
+		var m map[string]any
+		if json.Unmarshal(sc.Bytes(), &m) != nil {
+			continue
+		}
+		switch m["type"] {
+		case "control_request":
+			f.control(m)
+		case "control_response":
+			r, _ := m["response"].(map[string]any)
+			id, _ := r["request_id"].(string)
+			b, _ := json.Marshal(r["response"])
+			f.mu.Lock()
+			ch := f.pending[id]
+			delete(f.pending, id)
+			f.mu.Unlock()
+			if ch != nil {
+				ch <- b
+			}
+		case "user":
+			uuid, _ := m["uuid"].(string)
+			text := userText(m)
+			if m["priority"] == "now" {
+				select {
+				case f.steer <- steerMsg{uuid, text}:
+					continue
+				default:
+				}
+			}
+			f.turns <- turnMsg{uuid, text}
+		}
+	}
+	// stdin closed: the session is closing; its background commands die with it, silently.
+	f.mu.Lock()
+	delay := f.closeDelay
+	f.mu.Unlock()
+	time.Sleep(delay)
 }
 
-// startBg adds a background command; tasks lists those still running, as a background event does.
-func (s *fakeSession) startBg(id, desc string) *fakeTask {
-	s.bgMu.Lock()
-	defer s.bgMu.Unlock()
-	t := &fakeTask{id: id, desc: desc, stop: make(chan struct{})}
-	s.bg = append(s.bg, t)
-	return t
+// userText is a user message's text; the echo reports the images it got.
+func userText(m map[string]any) string {
+	msg, _ := m["message"].(map[string]any)
+	if s, ok := msg["content"].(string); ok {
+		return s
+	}
+	text, imgs := "", ""
+	blocks, _ := msg["content"].([]any)
+	for _, b := range blocks {
+		bm, _ := b.(map[string]any)
+		switch bm["type"] {
+		case "text":
+			text, _ = bm["text"].(string)
+		case "image":
+			src, _ := bm["source"].(map[string]any)
+			mt, _ := src["media_type"].(string)
+			imgs += " +" + mt
+		}
+	}
+	return text + imgs
 }
 
-// endBg removes a background command, and reports whether it was still running and the session open.
-func (s *fakeSession) endBg(id string) bool {
-	s.bgMu.Lock()
-	defer s.bgMu.Unlock()
-	for i, t := range s.bg {
+func (f *fake) write(v any) {
+	b, _ := json.Marshal(v)
+	f.wmu.Lock()
+	os.Stdout.Write(append(b, '\n'))
+	f.wmu.Unlock()
+}
+
+func (f *fake) control(m map[string]any) {
+	req, _ := m["request"].(map[string]any)
+	resp := map[string]any{}
+	initialized := false
+	switch req["subtype"] {
+	case "initialize":
+		if list, ok := req["skills"].([]any); ok {
+			for _, s := range list {
+				if name, ok := s.(string); ok {
+					f.skills = append(f.skills, name)
+				}
+			}
+		}
+		resp = map[string]any{"models": []any{}, "account": map[string]any{}}
+		initialized = true
+	case "interrupt":
+		select {
+		case f.interrupt <- struct{}{}:
+		default:
+		}
+		resp = map[string]any{"still_queued": []string{}}
+	case "stop_task":
+		id, _ := req["task_id"].(string)
+		f.mu.Lock()
+		if ch := f.stopped[id]; ch != nil {
+			select {
+			case <-ch:
+			default:
+				close(ch)
+			}
+		}
+		f.mu.Unlock()
+	case "background_tasks":
+		resp = map[string]any{"backgrounded": true}
+	}
+	f.write(map[string]any{"type": "control_response", "response": map[string]any{
+		"subtype": "success", "request_id": m["request_id"], "response": resp}})
+	if initialized && !f.oneShot {
+		f.system("init", map[string]any{"model": "fake-model", "cwd": f.cwd, "claude_code_version": "0.0.0", "permissionMode": "fake"})
+	}
+}
+
+// request sends the app a control request and returns its id and a channel for the answer.
+func (f *fake) request(req map[string]any) (string, chan json.RawMessage) {
+	f.mu.Lock()
+	f.nextID++
+	id := fmt.Sprintf("cli_%d", f.nextID)
+	ch := make(chan json.RawMessage, 1)
+	f.pending[id] = ch
+	f.mu.Unlock()
+	f.write(map[string]any{"type": "control_request", "request_id": id, "request": req})
+	return id, ch
+}
+
+// callTool calls one of the app's in-process MCP tools.
+func (f *fake) callTool(server, name string, args json.RawMessage) (string, bool) {
+	f.mu.Lock()
+	f.nextID++
+	n := f.nextID
+	f.mu.Unlock()
+	_, ch := f.request(map[string]any{"subtype": "mcp_message", "server_name": server,
+		"message": map[string]any{"jsonrpc": "2.0", "id": n, "method": "tools/call", "params": map[string]any{"name": name, "arguments": args}}})
+	var r struct {
+		MCP struct {
+			Result struct {
+				Content []struct {
+					Text string `json:"text"`
+				} `json:"content"`
+				IsError bool `json:"isError"`
+			} `json:"result"`
+			Error *struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		} `json:"mcp_response"`
+	}
+	_ = json.Unmarshal(<-ch, &r)
+	if r.MCP.Error != nil {
+		return r.MCP.Error.Message, true
+	}
+	text := ""
+	if len(r.MCP.Result.Content) > 0 {
+		text = r.MCP.Result.Content[0].Text
+	}
+	return text, r.MCP.Result.IsError
+}
+
+// ask asks AskUserQuestion, as the CLI does: a permission request. It returns the request's id and a
+// channel for the answer.
+func (f *fake) ask(toolUseID string, questions []any) (string, chan json.RawMessage) {
+	return f.request(map[string]any{"subtype": "can_use_tool", "tool_name": "AskUserQuestion", "tool_use_id": toolUseID,
+		"input": map[string]any{"questions": questions}})
+}
+
+func toolID() string { return fmt.Sprintf("toolu_%d", time.Now().UnixNano()) }
+
+func (f *fake) toolUse(id, name string, input any) {
+	f.write(map[string]any{"type": "assistant", "parent_tool_use_id": nil, "message": map[string]any{"id": "m-" + id,
+		"content": []any{map[string]any{"type": "tool_use", "id": id, "name": name, "input": input}}}})
+}
+
+func (f *fake) toolResult(id, text string, isErr bool) {
+	f.write(map[string]any{"type": "user", "parent_tool_use_id": nil, "message": map[string]any{"role": "user",
+		"content": []any{map[string]any{"type": "tool_result", "tool_use_id": id, "content": text, "is_error": isErr}}}})
+}
+
+func (f *fake) system(subtype string, fields map[string]any) {
+	fields["type"], fields["subtype"] = "system", subtype
+	f.write(fields)
+}
+
+func (f *fake) tasksChanged() {
+	f.mu.Lock()
+	tasks := []any{}
+	for _, t := range f.bg {
+		tasks = append(tasks, map[string]any{"task_id": t.id, "task_type": "local_bash", "description": t.desc})
+	}
+	f.mu.Unlock()
+	f.system("background_tasks_changed", map[string]any{"tasks": tasks})
+}
+
+// endBg removes a background command, reporting whether it was still running.
+func (f *fake) endBg(id string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i, t := range f.bg {
 		if t.id == id {
-			s.bg = append(s.bg[:i], s.bg[i+1:]...)
-			return !s.closed
+			f.bg = append(f.bg[:i], f.bg[i+1:]...)
+			delete(f.stopped, id)
+			return true
 		}
 	}
 	return false
 }
 
-func (s *fakeSession) tasks() []any {
-	s.bgMu.Lock()
-	defer s.bgMu.Unlock()
-	out := []any{}
-	for _, t := range s.bg {
-		out = append(out, map[string]any{"taskId": t.id, "taskType": "local_bash", "description": t.desc})
-	}
-	return out
-}
-
-type steerMsg struct{ uuid, text string }
-
-func run() {
-	var wm sync.Mutex
-	write := func(v any) {
-		b, _ := json.Marshal(v)
-		wm.Lock()
-		os.Stdout.Write(append(b, '\n'))
-		wm.Unlock()
-	}
-	var mu sync.Mutex
-	sessions := map[string]*fakeSession{}
-	pending := map[int64]chan json.RawMessage{}
-	nextID := int64(1000)
-
-	event := func(sid string, body map[string]any) {
-		mu.Lock()
-		s := sessions[sid]
-		if s == nil {
-			mu.Unlock()
-			return
-		}
-		s.seq++
-		body["sessionId"], body["seq"] = sid, s.seq
-		mu.Unlock()
-		write(map[string]any{"method": "event", "params": body})
-	}
-	request := func(method string, params any) (int64, chan json.RawMessage) {
-		mu.Lock()
-		nextID++
-		id := nextID
-		ch := make(chan json.RawMessage, 1)
-		pending[id] = ch
-		mu.Unlock()
-		write(map[string]any{"id": id, "method": method, "params": params})
-		return id, ch
-	}
-
-	sc := bufio.NewScanner(os.Stdin)
-	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
-	for sc.Scan() {
-		var m struct {
-			ID     *int64          `json:"id"`
-			Method string          `json:"method"`
-			Params json.RawMessage `json:"params"`
-			Result json.RawMessage `json:"result"`
-		}
-		if json.Unmarshal(sc.Bytes(), &m) != nil {
-			continue
-		}
-		if m.Method == "" && m.ID != nil {
-			mu.Lock()
-			ch := pending[*m.ID]
-			delete(pending, *m.ID)
-			mu.Unlock()
-			if ch != nil {
-				ch <- m.Result
-			}
-			continue
-		}
-		if m.ID == nil {
-			continue
-		}
-		id := *m.ID
-		reply := func(v any) { write(map[string]any{"id": id, "result": v}) }
-		var p struct {
-			SessionID string   `json:"sessionId"`
-			Resume    bool     `json:"resume"`
-			Cwd       string   `json:"cwd"`
-			UUID      string   `json:"uuid"`
-			Text      string   `json:"text"`
-			Model     string   `json:"model"`
-			Prompt    string   `json:"prompt"`
-			Steer     bool     `json:"steer"`
-			Skills    []string `json:"skills"`
-			Images    []struct {
-				MediaType string `json:"mediaType"`
-			} `json:"images"`
-		}
-		json.Unmarshal(m.Params, &p)
-		switch m.Method {
-		case "hello":
-			reply(map[string]any{"protocol": 1, "runtime": "fake"})
-		case "session.open":
-			mu.Lock()
-			sessions[p.SessionID] = &fakeSession{cwd: p.Cwd, skills: p.Skills, resumed: p.Resume, interrupt: make(chan struct{}, 1), steer: make(chan steerMsg)}
-			mu.Unlock()
-			reply(struct{}{})
-			event(p.SessionID, map[string]any{"kind": "init", "model": "fake-model", "cwd": p.Cwd, "claudeVersion": "0.0.0", "permissionMode": "fake"})
-		case "session.send":
-			mu.Lock()
-			s := sessions[p.SessionID]
-			mu.Unlock()
-			if s == nil {
-				write(map[string]any{"id": id, "error": map[string]any{"code": -32001, "message": "no session"}})
-				continue
-			}
-			reply(struct{}{})
-			text := p.Text
-			for _, im := range p.Images { // the echo reports the images it got
-				text += " +" + im.MediaType
-			}
-			if p.Steer {
-				select {
-				case s.steer <- steerMsg{p.UUID, text}:
-					continue
-				default:
-				}
-			}
-			go turn(s, p.SessionID, p.UUID, text, event, request, write)
-		case "session.interrupt":
-			mu.Lock()
-			s := sessions[p.SessionID]
-			mu.Unlock()
-			if s != nil {
-				select {
-				case s.interrupt <- struct{}{}:
-				default:
-				}
-			}
-			reply(map[string]any{"stillQueued": []string{}})
-		case "session.stopTask":
-			var q struct {
-				TaskID string `json:"taskId"`
-			}
-			json.Unmarshal(m.Params, &q)
-			mu.Lock()
-			s := sessions[p.SessionID]
-			mu.Unlock()
-			if s != nil {
-				s.bgMu.Lock()
-				for _, t := range s.bg {
-					if t.id == q.TaskID {
-						select {
-						case <-t.stop:
-						default:
-							close(t.stop)
-						}
-					}
-				}
-				s.bgMu.Unlock()
-			}
-			reply(struct{}{})
-		case "session.close":
-			mu.Lock()
-			s := sessions[p.SessionID]
-			mu.Unlock()
-			if s != nil {
-				s.bgMu.Lock()
-				s.closed = true // its background commands die with it, silently
-				delay := s.closeDelay
-				s.bgMu.Unlock()
-				time.Sleep(delay)
-			}
-			event(p.SessionID, map[string]any{"kind": "exited"})
-			mu.Lock()
-			delete(sessions, p.SessionID)
-			mu.Unlock()
-			reply(struct{}{})
-		case "session.setModel":
-			reply(struct{}{})
-		case "complete":
-			// Names a branch from the "Task title:" line, or answers badly when asked to.
-			title := ""
-			for _, l := range strings.Split(p.Prompt, "\n") {
-				if v, ok := strings.CutPrefix(l, "Task title: "); ok {
-					title = v
-				}
-			}
-			if strings.HasPrefix(p.Prompt, "Write the pull request") {
-				reply(map[string]any{"text": "TITLE: " + title + "\nDESCRIPTION:\nDid it."})
-				continue
-			}
-			if strings.Contains(p.Prompt, "BADNAME") {
-				reply(map[string]any{"text": "`Here you go: feat/Odd Name~^:`"})
-				continue
-			}
-			reply(map[string]any{"text": "feat/" + strings.ReplaceAll(strings.ToLower(title), " ", "-")})
-		case "probe":
-			reply(map[string]any{"claudeVersion": "0.0.0", "models": []any{}, "account": map[string]any{}})
-		case "shutdown":
-			reply(struct{}{})
-			return
-		default:
-			write(map[string]any{"id": id, "error": map[string]any{"code": -32601, "message": "unknown method"}})
-		}
+func (f *fake) runTurns() {
+	for t := range f.turns {
+		f.turn(t.uuid, t.text)
 	}
 }
 
-func turn(s *fakeSession, sid, uuid, text string, event func(string, map[string]any),
-	request func(string, any) (int64, chan json.RawMessage), write func(any)) {
-	uuids := []string{uuid}
-	if uuid == "" {
-		uuids = []string{} // a turn Claude starts itself
+// end finishes a turn: its text (a message as Claude streams it), then its result.
+func (f *fake) end(uuid, status, result, errText string) {
+	uuids := []string{}
+	if uuid != "" {
+		uuids = []string{uuid}
 	}
-	event(sid, map[string]any{"kind": "turn_start", "uuids": uuids})
+	if status == "completed" {
+		id := "m2-" + toolID()
+		f.write(map[string]any{"type": "stream_event", "parent_tool_use_id": nil,
+			"event": map[string]any{"type": "message_start", "message": map[string]any{"id": id, "usage": map[string]any{"input_tokens": 1000}}}})
+		f.write(map[string]any{"type": "stream_event", "parent_tool_use_id": nil,
+			"event": map[string]any{"type": "content_block_delta", "index": 0, "delta": map[string]any{"type": "text_delta", "text": result}}})
+		f.write(map[string]any{"type": "assistant", "parent_tool_use_id": nil, "message": map[string]any{"id": id,
+			"content": []any{map[string]any{"type": "text", "text": result}}}})
+	}
+	r := map[string]any{"type": "result", "subtype": "success", "result": result, "user_message_uuids": uuids,
+		"total_cost_usd": 0.01, "num_turns": 1, "usage": map[string]any{}}
+	switch status {
+	case "failed":
+		r["subtype"], r["errors"], r["result"] = "error_during_execution", []string{errText}, ""
+	case "interrupted":
+		r["terminal_reason"], r["result"] = "aborted_streaming", ""
+	}
+	f.write(r)
+}
+
+func (f *fake) turn(uuid, text string) {
+	if uuid != "" {
+		// The CLI echoes the message it takes; its uuid opens the turn.
+		f.write(map[string]any{"type": "user", "uuid": uuid, "parent_tool_use_id": nil, "message": map[string]any{"role": "user", "content": text}})
+	}
+	if f.oneShot {
+		f.end(uuid, "completed", completeAnswer(text), "")
+		return
+	}
 	status, result, errText := "completed", "", ""
 	cmd, rest, _ := strings.Cut(text, " ")
 	switch cmd {
@@ -330,79 +391,59 @@ func turn(s *fakeSession, sid, uuid, text string, event func(string, map[string]
 		os.Exit(3)
 	case "write":
 		path, content, _ := strings.Cut(rest, " ")
-		full := filepath.Join(s.cwd, path)
+		full := filepath.Join(f.cwd, path)
 		os.MkdirAll(filepath.Dir(full), 0o755)
 		if err := os.WriteFile(full, []byte(content+"\n"), 0o644); err != nil {
 			status, errText = "failed", err.Error()
 		}
-		toolID := fmt.Sprintf("toolu_%d", time.Now().UnixNano())
-		event(sid, map[string]any{"kind": "assistant", "messageId": "m-" + uuid, "blocks": []any{
-			map[string]any{"type": "tool_use", "id": toolID, "name": "Write", "input": map[string]any{"file_path": full}},
-		}})
-		event(sid, map[string]any{"kind": "tool_result", "toolUseId": toolID, "text": "File created"})
+		id := toolID()
+		f.toolUse(id, "Write", map[string]any{"file_path": full})
+		f.toolResult(id, "File created", false)
 		result = "wrote " + path
 	case "bash":
-		// Runs rest with sh in the session's folder, as Claude's Bash tool does.
-		toolID := fmt.Sprintf("toolu_%d", time.Now().UnixNano())
-		event(sid, map[string]any{"kind": "assistant", "messageId": "m-" + uuid, "blocks": []any{
-			map[string]any{"type": "tool_use", "id": toolID, "name": "Bash", "input": map[string]any{"command": rest}},
-		}})
-		cmd := proc.Command("sh", "-c", rest)
-		cmd.Dir = s.cwd
-		out, err := cmd.CombinedOutput()
-		event(sid, map[string]any{"kind": "tool_result", "toolUseId": toolID, "text": string(out), "isError": err != nil})
+		runCommand(f, f.cwd, rest, nil)
 		result = "ran it"
 	case "tool", "mcp":
 		name, args, _ := strings.Cut(rest, " ")
 		if args == "" {
 			args = "{}"
 		}
-		toolID := fmt.Sprintf("toolu_%d", time.Now().UnixNano())
+		id := toolID()
 		if cmd == "mcp" {
-			event(sid, map[string]any{"kind": "assistant", "messageId": "m-" + uuid, "blocks": []any{
-				map[string]any{"type": "tool_use", "id": toolID, "name": "mcp__solo__" + name, "input": json.RawMessage(args)},
-			}})
+			f.toolUse(id, "mcp__"+f.mcpName+"__"+name, json.RawMessage(args))
 		}
-		_, ch := request("tool.call", map[string]any{"sessionId": sid, "name": name, "args": json.RawMessage(args)})
-		var r struct {
-			Text    string `json:"text"`
-			IsError bool   `json:"isError"`
-		}
-		json.Unmarshal(<-ch, &r)
+		text, isErr := f.callTool(f.mcpName, name, json.RawMessage(args))
 		if cmd == "mcp" {
-			event(sid, map[string]any{"kind": "tool_result", "toolUseId": toolID, "text": r.Text, "isError": r.IsError})
+			f.toolResult(id, text, isErr)
 		}
-		result = r.Text
+		result = text
 	case "ask":
-		_, ch := request("question.ask", map[string]any{"sessionId": sid, "toolUseId": "toolu_ask", "questions": []any{
-			map[string]any{"question": "Tabs or spaces?", "header": "Indent", "multiSelect": false,
-				"options": []any{map[string]any{"label": "Tabs", "description": "t"}, map[string]any{"label": "Spaces", "description": "s"}}},
-		}})
+		_, ch := f.ask("toolu_ask", []any{map[string]any{"question": "Tabs or spaces?", "header": "Indent", "multiSelect": false,
+			"options": []any{map[string]any{"label": "Tabs", "description": "t"}, map[string]any{"label": "Spaces", "description": "s"}}}})
 		var r struct {
-			Answers   map[string]string `json:"answers"`
-			Cancelled bool              `json:"cancelled"`
+			Behavior     string `json:"behavior"`
+			UpdatedInput struct {
+				Answers map[string]string `json:"answers"`
+			} `json:"updatedInput"`
 		}
-		json.Unmarshal(<-ch, &r)
-		result = r.Answers["Tabs or spaces?"]
-		if r.Cancelled {
+		_ = json.Unmarshal(<-ch, &r)
+		result = r.UpdatedInput.Answers["Tabs or spaces?"]
+		if r.Behavior != "allow" {
 			result = "cancelled"
 		}
 	case "cancel":
-		id, _ := request("question.ask", map[string]any{"sessionId": sid, "toolUseId": "toolu_c", "questions": []any{
-			map[string]any{"question": "Q?", "header": "Q", "multiSelect": false, "options": []any{}},
-		}})
+		id, _ := f.ask("toolu_c", []any{map[string]any{"question": "Q?", "header": "Q", "multiSelect": false, "options": []any{}}})
 		time.Sleep(50 * time.Millisecond)
-		write(map[string]any{"method": "$/cancel", "params": map[string]any{"id": id}})
+		f.write(map[string]any{"type": "control_cancel_request", "request_id": id})
 		result = "cancelled"
 	case "slow":
 		select {
-		case <-s.interrupt:
+		case <-f.interrupt:
 			status = "interrupted"
-		case m := <-s.steer:
-			// As Claude does: the turn ends aborted, marked steered, and carries on with the steer.
-			event(sid, map[string]any{"kind": "turn_end", "uuids": []string{uuid}, "status": "interrupted",
-				"reason": "aborted_streaming", "steered": true, "usage": map[string]any{}})
-			turn(s, sid, m.uuid, m.text, event, request, write)
+		case m := <-f.steer:
+			// As Claude does: the turn ends aborted, and carries on with the steer.
+			f.end(uuid, "interrupted", "", "")
+			f.turn(m.uuid, m.text)
 			return
 		case <-time.After(30 * time.Second):
 		}
@@ -410,95 +451,139 @@ func turn(s *fakeSession, sid, uuid, text string, event func(string, map[string]
 		msText, desc, _ := strings.Cut(rest, " ")
 		ms, _ := strconv.Atoi(msText)
 		id := fmt.Sprintf("b%d", time.Now().UnixNano())
-		toolID := "toolu_" + id
-		event(sid, map[string]any{"kind": "assistant", "messageId": "m-" + uuid, "blocks": []any{
-			map[string]any{"type": "tool_use", "id": toolID, "name": "Bash",
-				"input": map[string]any{"command": "sleep", "description": desc, "run_in_background": true}},
-		}})
-		t := s.startBg(id, desc)
-		event(sid, map[string]any{"kind": "background", "tasks": s.tasks()})
-		event(sid, map[string]any{"kind": "task", "phase": "started", "taskId": id, "toolUseId": toolID,
-			"taskType": "local_bash", "description": desc, "background": true})
-		event(sid, map[string]any{"kind": "tool_result", "toolUseId": toolID, "text": "Command running in background with ID: " + id})
+		tu := "toolu_" + id
+		f.toolUse(tu, "Bash", map[string]any{"command": "sleep", "description": desc, "run_in_background": true})
+		stop := make(chan struct{})
+		f.mu.Lock()
+		f.bg = append(f.bg, bgTask{id, desc})
+		f.stopped[id] = stop
+		f.mu.Unlock()
+		f.tasksChanged()
+		f.system("task_started", map[string]any{"task_id": id, "tool_use_id": tu, "task_type": "local_bash", "description": desc, "is_backgrounded": true})
+		f.toolResult(tu, "Command running in background with ID: "+id, false)
 		go func() {
 			ended := "completed"
 			select {
-			case <-t.stop:
+			case <-stop:
 				ended = "stopped"
 			case <-time.After(time.Duration(ms) * time.Millisecond):
 			}
-			if !s.endBg(id) {
+			if !f.endBg(id) {
 				return
 			}
-			event(sid, map[string]any{"kind": "task", "phase": "ended", "taskId": id, "toolUseId": toolID, "status": ended})
-			event(sid, map[string]any{"kind": "background", "tasks": s.tasks()})
+			f.system("task_notification", map[string]any{"task_id": id, "tool_use_id": tu, "status": ended})
+			f.tasksChanged()
 			if ended == "completed" {
-				turn(s, sid, "", "wake "+desc, event, request, write)
+				f.turns <- turnMsg{"", "wake " + desc} // as Claude does: a turn of its own reads the result
 			}
 		}()
 		result = "started " + desc
 	case "kill":
-		s.bgMu.Lock()
-		running := append([]*fakeTask(nil), s.bg...)
-		s.bgMu.Unlock()
+		f.mu.Lock()
+		running := append([]bgTask(nil), f.bg...)
+		f.mu.Unlock()
 		for _, t := range running {
-			if s.endBg(t.id) {
-				event(sid, map[string]any{"kind": "task", "phase": "ended", "taskId": t.id, "status": "stopped"})
-				event(sid, map[string]any{"kind": "background", "tasks": s.tasks()})
+			if f.endBg(t.id) {
+				f.system("task_notification", map[string]any{"task_id": t.id, "status": "stopped"})
+				f.tasksChanged()
 			}
 		}
 		result = fmt.Sprintf("stopped %d", len(running))
 	case "slowclose":
 		ms, _ := strconv.Atoi(rest)
-		s.bgMu.Lock()
-		s.closeDelay = time.Duration(ms) * time.Millisecond
-		s.bgMu.Unlock()
+		f.mu.Lock()
+		f.closeDelay = time.Duration(ms) * time.Millisecond
+		f.mu.Unlock()
 		result = "slow to close"
 	case "Write":
-		if len(s.skills) > 0 && strings.HasPrefix(text, "Write the pull request") {
-			result = skillTurn(s, sid, uuid, text, event)
+		if len(f.skills) > 0 && strings.HasPrefix(text, "Write the pull request") {
+			result = skillTurn(f, text)
 		} else {
-			result = fmt.Sprintf("echo: %s resume=%v", text, s.resumed)
+			result = fmt.Sprintf("echo: %s resume=%v", text, f.resumed)
 		}
 	case "wake":
-		result = fmt.Sprintf("echo: %s resume=%v", text, s.resumed)
+		result = fmt.Sprintf("echo: %s resume=%v", text, f.resumed)
 		if strings.HasPrefix(rest, "quiet") {
 			result = "(noted)"
 		}
 	case "fail":
 		status, errText = "failed", "scripted failure"
 	case "lose":
-		status, errText = "failed", "No conversation found with session ID: "+sid
+		status, errText = "failed", "No conversation found with session ID: fake"
 	default:
-		result = fmt.Sprintf("echo: %s resume=%v", text, s.resumed)
+		result = fmt.Sprintf("echo: %s resume=%v", text, f.resumed)
+		if tool, args := leadAction(text); tool != "" {
+			id := toolID()
+			f.toolUse(id, "mcp__card__"+tool, args)
+			b, _ := json.Marshal(args)
+			res, isErr := f.callTool("card", tool, b)
+			f.toolResult(id, res, isErr)
+			result = "Done."
+		}
 	}
-	if status == "completed" {
-		event(sid, map[string]any{"kind": "text_delta", "messageId": "m2-" + uuid, "index": 0, "text": result})
-		event(sid, map[string]any{"kind": "assistant", "messageId": "m2-" + uuid, "blocks": []any{map[string]any{"type": "text", "text": result}}})
-	}
-	end := map[string]any{"kind": "turn_end", "uuids": []string{uuid}, "status": status, "totalCostUsd": 0.01,
-		"usage": map[string]any{}, "contextTokens": 1000}
-	if status == "completed" {
-		end["result"] = result
-	}
-	if errText != "" {
-		end["error"] = errText
-	}
-	event(sid, end)
+	f.end(uuid, status, result, errText)
 }
 
-// runCommand runs a command with sh in dir, as Claude's Bash tool does, with its tool use and result
-// events, and returns its output.
-func runCommand(sid, dir, command string, env []string, event func(string, map[string]any)) string {
-	toolID := fmt.Sprintf("toolu_%d", time.Now().UnixNano())
-	event(sid, map[string]any{"kind": "assistant", "messageId": "m-" + toolID, "blocks": []any{
-		map[string]any{"type": "tool_use", "id": toolID, "name": "Bash", "input": map[string]any{"command": command}},
-	}})
+// completeAnswer answers a one-shot call: pull request text, or a branch named from the "Task title:"
+// line (badly, when asked to).
+func completeAnswer(prompt string) string {
+	title := ""
+	for _, l := range strings.Split(prompt, "\n") {
+		if v, ok := strings.CutPrefix(l, "Task title: "); ok {
+			title = v
+		}
+	}
+	switch {
+	case strings.HasPrefix(prompt, "Write the pull request"):
+		return "TITLE: " + title + "\nDESCRIPTION:\nDid it."
+	case strings.Contains(prompt, "BADNAME"):
+		return "`Here you go: feat/Odd Name~^:`"
+	}
+	return "feat/" + strings.ReplaceAll(strings.ToLower(title), " ", "-")
+}
+
+// leadAction is the card tool a board card's lead calls for a message from Solo, or "" for a message
+// that isn't to a lead: it briefs the builder with the user's words, answers its questions with
+// "Tabs", and reviews its work by quoting its report.
+func leadAction(text string) (string, map[string]any) {
+	para := func(prefix string) string {
+		rest := strings.TrimLeft(strings.TrimPrefix(text, prefix), "\n")
+		if i := strings.Index(rest, "\n\n"); i >= 0 {
+			rest = rest[:i]
+		}
+		return strings.TrimSpace(rest)
+	}
+	switch {
+	case strings.HasPrefix(text, "New card from the user:"):
+		ask := para("New card from the user:")
+		if strings.HasPrefix(ask, "unclear") {
+			return "report", map[string]any{"message": "Needs you: which page?", "need": "input"}
+		}
+		return "brief_builder", map[string]any{"instructions": ask}
+	case strings.HasPrefix(text, "The user replied:"):
+		return "brief_builder", map[string]any{"instructions": para("The user replied:")}
+	case strings.HasPrefix(text, "The builder asks:"):
+		return "answer_builder", map[string]any{"answer": "Tabs"}
+	}
+	for _, marker := range []string{"The builder finished. Its report:", "The builder failed. Its report:"} {
+		if i := strings.Index(text, marker); i >= 0 {
+			text = text[i:]
+			return "report", map[string]any{"message": "✓ Reviewed: " + para(marker), "need": "review"}
+		}
+	}
+	return "", nil
+}
+
+// runCommand runs a command with sh in dir, as Claude's Bash tool does, with its tool use and result,
+// and returns its output.
+func runCommand(f *fake, dir, command string, env []string) string {
+	id := toolID()
+	f.toolUse(id, "Bash", map[string]any{"command": command})
 	cmd := proc.Command("sh", "-c", command)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), env...)
 	out, err := cmd.CombinedOutput()
-	event(sid, map[string]any{"kind": "tool_result", "toolUseId": toolID, "text": string(out), "isError": err != nil})
+	f.toolResult(id, string(out), err != nil)
 	return string(out)
 }
 
@@ -510,7 +595,7 @@ var runLine = regexp.MustCompile("Run `([^`]+)`")
 // session's folder), runs the commands its SKILL.md gives as "Run `command`" in the session's folder
 // with CLAUDE_SKILL_DIR set to the skill's folder, and answers, after a line about what it did, with
 // the prompt's task title and the commands' output as the description.
-func skillTurn(s *fakeSession, sid, uuid, text string, event func(string, map[string]any)) string {
+func skillTurn(f *fake, text string) string {
 	title := ""
 	for _, l := range strings.Split(text, "\n") {
 		if v, ok := strings.CutPrefix(l, "Task title: "); ok {
@@ -523,19 +608,17 @@ func skillTurn(s *fakeSession, sid, uuid, text string, event func(string, map[st
 		claude = filepath.Join(home, ".claude")
 	}
 	var outs []string
-	for _, name := range s.skills {
-		for _, dir := range []string{filepath.Join(claude, "skills", name), filepath.Join(s.cwd, ".claude", "skills", name)} {
+	for _, name := range f.skills {
+		for _, dir := range []string{filepath.Join(claude, "skills", name), filepath.Join(f.cwd, ".claude", "skills", name)} {
 			body, err := os.ReadFile(filepath.Join(dir, "SKILL.md"))
 			if err != nil {
 				continue
 			}
-			toolID := fmt.Sprintf("toolu_%d", time.Now().UnixNano())
-			event(sid, map[string]any{"kind": "assistant", "messageId": "m-" + toolID, "blocks": []any{
-				map[string]any{"type": "tool_use", "id": toolID, "name": "Skill", "input": map[string]any{"skill": name}},
-			}})
-			event(sid, map[string]any{"kind": "tool_result", "toolUseId": toolID, "text": "Launching skill: " + name})
+			id := toolID()
+			f.toolUse(id, "Skill", map[string]any{"skill": name})
+			f.toolResult(id, "Launching skill: "+name, false)
 			for _, m := range runLine.FindAllStringSubmatch(string(body), -1) {
-				outs = append(outs, strings.TrimSpace(runCommand(sid, s.cwd, m[1], []string{"CLAUDE_SKILL_DIR=" + dir}, event)))
+				outs = append(outs, strings.TrimSpace(runCommand(f, f.cwd, m[1], []string{"CLAUDE_SKILL_DIR=" + dir})))
 			}
 			break
 		}

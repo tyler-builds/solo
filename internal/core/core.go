@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -32,13 +33,19 @@ import (
 // Config configures a Core.
 type Config struct {
 	DataDir string
-	Agent   agent.Command
-	Log     *slog.Logger
+	// ClaudePath is the claude to run when Settings names none, before looking for it (tests point it
+	// at a fake).
+	ClaudePath string
+	// AgentLogDir, when set, gets every session's raw messages (agent.Direct.LogDir).
+	AgentLogDir string
+	Log         *slog.Logger
 	// PRPoll is how often open pull requests are checked; 0 means every 30 seconds.
 	PRPoll time.Duration
 	// Secrets keeps the secrets agents ask the user for (secrets.go): the OS keyring in the app. Nil
 	// keeps none, and request_secret says so.
 	Secrets secrets.Store
+	// Summarize asks a small model for one answer (the cards' briefs, brief.go). Nil turns briefs off.
+	Summarize func(ctx context.Context, req SummarizeRequest) (string, error)
 }
 
 // ToolHandler serves the app tools a session calls (the orchestrator's). It returns the text the model
@@ -50,7 +57,7 @@ type Core struct {
 	cfg   Config
 	log   *slog.Logger
 	db    *store.Store
-	agent *agent.Manager
+	agent *agent.Direct // runs every Claude session
 
 	mu        sync.Mutex
 	settings  Settings
@@ -188,12 +195,14 @@ func New(cfg Config) (*Core, error) {
 		c.threads[t.row.ID] = t
 		c.bySession[t.row.SessionID] = t
 	}
-	c.agent = agent.NewManager(cfg.Agent, agent.Callbacks{
+	callbacks := agent.Callbacks{
 		OnEvent:    c.onEvent,
 		OnToolCall: c.onToolCall,
 		OnAsk:      c.onAsk,
 		OnGuard:    c.onGuard,
-	}, cfg.Log)
+	}
+	c.agent = agent.NewDirect(callbacks, cfg.Log)
+	c.agent.LogDir = cfg.AgentLogDir
 	c.repos, c.plain = git.ScanAll(c.settings.Folders, c.settings.ScanDepth, c.worktreesDir())
 	for id, t := range c.threads {
 		if t.row.Kind == store.KindWorker && t.row.WorktreePath != "" && !Finished(t.row.Status) {
@@ -226,7 +235,7 @@ func (c *Core) Close() {
 }
 
 // Agent returns the session manager, for probing Claude.
-func (c *Core) Agent() *agent.Manager { return c.agent }
+func (c *Core) Agent() *agent.Direct { return c.agent }
 
 // Subscribe calls f on every change, on the goroutine that made it; f must not block. It returns a
 // function that unsubscribes.
@@ -408,3 +417,15 @@ func (c *Core) worktreePath(repo, slug string) string {
 var errClosed = errors.New("core: closed")
 
 func now() time.Time { return time.Now() }
+
+// claudePath is the claude to run with settings s: the one Settings names, else Config.ClaudePath, else
+// the one found on the machine.
+func (c *Core) claudePath(s Settings) string {
+	if strings.TrimSpace(s.ClaudePath) == "" && c.cfg.ClaudePath != "" {
+		return c.cfg.ClaudePath
+	}
+	return agent.FindClaude(s.ClaudePath).Path
+}
+
+// ClaudePath is the claude Solo runs, with the current settings.
+func (c *Core) ClaudePath() string { return c.claudePath(c.Settings()) }

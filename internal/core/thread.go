@@ -81,6 +81,14 @@ type thread struct {
 	// (saved under queueKey). queueHidden is the hidden context given with each (SendWithContext).
 	queue       []QueuedMessage
 	queueHidden []string
+	// bs is its brief, the small model's overview for its card, and the state of writing it (brief.go).
+	bs briefState
+	// fromUser: the user wrote its prompt (WorkerSpec.FromUser). Not saved: it matters only until the
+	// prompt is sent.
+	fromUser bool
+	// leadAction is what a card lead's card tool call queued this turn, acted on when the turn ends
+	// (card.go).
+	leadAction *leadReply
 }
 
 // DescribeBackground names background work in a line: `command "Run benchmarks", running 4m`; several
@@ -131,6 +139,9 @@ func (t *thread) view() ThreadView {
 		Queued:      slices.Clone(t.queue),
 		Resolving:   t.resolving,
 		IsWorker:    t.row.Kind == store.KindWorker,
+		Brief:       t.briefOf(),
+		Now:         t.bs.now,
+		Card:        t.card(),
 	}
 	for _, k := range t.live {
 		v.Live = append(v.Live, *t.liveTxt[k])
@@ -238,21 +249,6 @@ func (c *Core) Items(ctx context.Context, threadID string, limit int) ([]Item, e
 	return out, nil
 }
 
-// WorkerSpec describes a new worker thread.
-type WorkerSpec struct {
-	Repo   string   // path or name of a known repository
-	Repos  []string // more repositories, for a task that spans them (Repo, if set, comes first)
-	Title  string
-	Prompt string
-	Model  string   // empty: Settings.WorkerModel
-	Effort string   // empty: Settings.WorkerEffort
-	Base   string   // branch to start from; empty: the repository's current branch
-	Images []string // image files to send with the prompt
-	Files  []string // other files to send with it (ImportFile): the thread is told their paths
-	// Scratch: the user started it only to try or test something, not to land it (SetScratch).
-	Scratch bool
-}
-
 // CreateWorker creates a worker thread and starts it.
 func (c *Core) CreateWorker(ctx context.Context, spec WorkerSpec) (ThreadView, error) {
 	var repos []string
@@ -281,6 +277,15 @@ func (c *Core) CreateWorker(ctx context.Context, spec WorkerSpec) (ThreadView, e
 	}
 	if strings.TrimSpace(spec.Prompt) == "" {
 		return ThreadView{}, errors.New("a worker needs a prompt")
+	}
+	if spec.FromUser {
+		// A card's attachments were saved as the user attached them (and may come from another device):
+		// only those, never another file on this machine.
+		for _, p := range append(slices.Clone(spec.Images), spec.Files...) {
+			if !c.isAttachment(p) {
+				return ThreadView{}, errors.New("that isn't an attachment")
+			}
+		}
 	}
 	images, err := c.ImportImages(spec.Images)
 	if err != nil {
@@ -311,7 +316,7 @@ func (c *Core) CreateWorker(ctx context.Context, spec WorkerSpec) (ThreadView, e
 		Scratch:      spec.Scratch,
 		CreatedAt:    ts,
 		UpdatedAt:    ts,
-	}}
+	}, fromUser: spec.FromUser}
 	for _, r := range repos {
 		p := Part{Repo: r, Branch: "solo/" + slug, BaseBranch: spec.Base}
 		if r == inPlace {
@@ -327,6 +332,17 @@ func (c *Core) CreateWorker(ctx context.Context, spec WorkerSpec) (ThreadView, e
 	if t.row.Model == "" {
 		t.row.Model = c.settings.WorkerModel
 	}
+	var lead *thread
+	if spec.FromUser && inPlace == "" {
+		// A card on the board: a lead briefs this worker and reviews its work (card.go).
+		lead = c.newLeadLocked(t, spec.Prompt, images)
+		if err := c.saveLocked(lead); err != nil {
+			c.mu.Unlock()
+			return ThreadView{}, err
+		}
+		c.threads[lead.row.ID] = lead
+		c.bySession[lead.row.SessionID] = lead
+	}
 	if err := c.saveLocked(t); err != nil {
 		c.mu.Unlock()
 		return ThreadView{}, err
@@ -337,6 +353,9 @@ func (c *Core) CreateWorker(ctx context.Context, spec WorkerSpec) (ThreadView, e
 	c.mu.Unlock()
 	c.notify(Change{Kind: ChangeThread, ThreadID: id, Status: StatusQueued})
 	c.schedule()
+	if strings.TrimSpace(spec.Title) == "" && spec.FromUser {
+		go c.nameTitle(id, title)
+	}
 	if v2, ok := c.Thread(id); ok {
 		v = v2
 	}
@@ -389,6 +408,10 @@ func (c *Core) startWorker(id string) {
 		return
 	}
 	row := t.row
+	from := FromOrchestrator
+	if t.fromUser {
+		from = FromUser
+	}
 	repos := t.repos()
 	started := len(t.parts) > 0 && t.parts[0].Worktree != ""
 	inPlace := t.inPlace()
@@ -448,8 +471,18 @@ func (c *Core) startWorker(id string) {
 			return
 		}
 	}
+	c.mu.Lock()
+	if cs := t.card(); cs != nil && cs.Lead != "" && !t.row.HasTranscript {
+		// A card: its lead briefs it first. It waits, idle, for the brief.
+		ch := c.setStatusLocked(t, StatusIdle, "")
+		c.mu.Unlock()
+		c.notify(ch)
+		go c.cardPlan(id)
+		return
+	}
+	c.mu.Unlock()
 	// Workers are started by the orchestrator, which wrote the prompt.
-	if err := c.send(ctx, id, row.Prompt, row.PromptImages, false, FromOrchestrator, ""); err != nil {
+	if err := c.send(ctx, id, row.Prompt, row.PromptImages, false, from, ""); err != nil {
 		fail(err)
 	}
 }
@@ -458,8 +491,11 @@ func (c *Core) startWorker(id string) {
 // spec reads core state.
 func (c *Core) openParams(row store.Thread) agent.OpenParams {
 	c.mu.Lock()
-	spec, claudePath, effort, commitRules := c.orchSpec, c.settings.ClaudePath, c.settings.WorkerEffort, c.settings.CommitRules
+	spec, settings, effort, commitRules := c.orchSpec, c.settings, c.settings.WorkerEffort, c.settings.CommitRules
 	c.mu.Unlock()
+	if row.Kind == store.KindLead {
+		return c.leadParams(row)
+	}
 	if row.Kind == store.KindOrchestrator && spec != nil {
 		p := spec()
 		p.SessionID, p.Resume = row.SessionID, row.HasTranscript
@@ -478,7 +514,7 @@ func (c *Core) openParams(row store.Thread) agent.OpenParams {
 		SystemAppend:   workerInstructions(row, commitRules),
 		PermissionMode: agent.PermissionBypass,
 		ToolPolicy:     agent.ToolPolicyAllow,
-		ClaudePath:     agent.FindClaude(claudePath).Path,
+		ClaudePath:     c.claudePath(settings),
 		// A thread's only app tools are the secret ones (secrets.go), as mcp__solo__<name>.
 		MCPServerName: "solo",
 		MCPTools:      SecretToolSpecs,
@@ -679,6 +715,16 @@ func (c *Core) send(ctx context.Context, threadID, text string, attachments []st
 	}
 	// A secret the user pasted into a message anyway never reaches Claude or the transcript.
 	text = c.Scrub(text)
+	if from == FromUser && !synthetic {
+		// On a board card, the user talks to its lead, never to the builder (card.go).
+		c.mu.Lock()
+		b, lead, _ := c.cardOfLocked(threadID)
+		isBuilder := b != nil && lead != nil && b.row.ID == threadID
+		c.mu.Unlock()
+		if isBuilder {
+			return c.cardReply(threadID, text, attachments)
+		}
+	}
 	images, files, err := c.splitAttachments(attachments)
 	if err != nil {
 		return err
@@ -1588,7 +1634,7 @@ func (c *Core) nameBranch(ctx context.Context, row store.Thread, repos []string)
 	nctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
 	text, err := c.agent.Complete(nctx, agent.CompleteParams{Model: s.NamingModel, Effort: s.NamingEffort,
-		System: namingSystem, Prompt: prompt, ClaudePath: agent.FindClaude(s.ClaudePath).Path, TimeoutMs: 40_000})
+		System: namingSystem, Prompt: prompt, ClaudePath: c.claudePath(s), TimeoutMs: 40_000})
 	if err != nil {
 		c.addNotice(row.ID, "warning", "Couldn't name the branch by your rules ("+err.Error()+"), so it's "+fallback+".")
 		return fallback

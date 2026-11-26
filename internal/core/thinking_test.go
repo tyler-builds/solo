@@ -10,7 +10,7 @@ import (
 	"github.com/tyler-builds/solo/internal/agent"
 )
 
-// replayEvents reads events the sidecar emitted, one JSON object per line, as the agent package parses them.
+// replayEvents reads recorded session events, one JSON object per line, as the agent package parses them.
 func replayEvents(t *testing.T, path string) []agent.Event {
 	t.Helper()
 	f, err := os.Open(path)
@@ -43,7 +43,7 @@ func TestOrchestratorThoughtOutlastsItsLiveBlock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	events := replayEvents(t, "../../sidecar/test/fixtures/orchestrator-thinking.events.jsonl")
+	events := replayEvents(t, "../agent/testdata/orchestrator-thinking.events.jsonl")
 
 	var thought string
 	for _, ev := range events {

@@ -17,6 +17,7 @@ import (
 var allowed = map[string]string{
 	"internal/proc/proc.go":     "it is the helper",
 	"internal/launch/launch.go": "it starts what the user asked to see (an editor, a terminal, a file's app) with flags of its own (detach_windows.go)",
+	"claudesdk/":                "a standalone library that imports nothing of Solo's; it starts claude without a console window itself (proc_windows.go)",
 }
 
 // TestProgramsStartHidden fails when code outside allowed starts a program with os/exec,

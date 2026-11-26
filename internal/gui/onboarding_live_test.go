@@ -19,18 +19,13 @@ import (
 
 	"github.com/tyler-builds/jamb/ui/uitest"
 
-	"github.com/tyler-builds/solo/internal/agent"
 	"github.com/tyler-builds/solo/internal/core"
 )
 
 func TestLiveSetup(t *testing.T) {
-	cmd, err := agent.FindCommand()
-	if err != nil {
-		t.Skip(err)
-	}
 	data := t.TempDir()
 	open := func() *core.Core {
-		c, err := core.New(core.Config{DataDir: data, Agent: cmd, Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
+		c, err := core.New(core.Config{DataDir: data, Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
 		if err != nil {
 			t.Fatal(err)
 		}

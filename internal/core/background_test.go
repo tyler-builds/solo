@@ -241,7 +241,7 @@ func TestRestartResumesBackgroundWork(t *testing.T) {
 	}
 }
 
-// feed delivers scripted session events to a thread, as the sidecar would.
+// feed delivers scripted session events to a thread, as a session would.
 func feed(c *Core, sid string, events ...agent.Event) {
 	for _, e := range events {
 		e.SessionID = sid
