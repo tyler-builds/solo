@@ -18,7 +18,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tyler-builds/solo/internal/agent"
 	"github.com/tyler-builds/solo/internal/agent/agenttest"
 	"github.com/tyler-builds/solo/internal/api"
 	"github.com/tyler-builds/solo/internal/core"
@@ -28,8 +27,7 @@ import (
 func filesRig(t *testing.T, dev Device, host ...func(*Options)) (*rig, string) {
 	t.Helper()
 	dataDir := t.TempDir()
-	exe, vars := agenttest.Command()
-	c, err := core.New(core.Config{DataDir: dataDir, Agent: agent.Command{Path: exe, Env: vars},
+	c, err := core.New(core.Config{DataDir: dataDir, ClaudePath: agenttest.ClaudePath(),
 		Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
 	if err != nil {
 		t.Fatal(err)

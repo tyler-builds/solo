@@ -1,11 +1,8 @@
-// Package agent runs the solo-agent sidecar (sidecar/) and talks to it: it opens Claude sessions, sends
-// turns, and receives their events. The wire types here mirror sidecar/src/protocol.ts; keep both in sync.
+// Package agent runs Solo's Claude sessions (Direct, on the claudesdk package): it opens them, sends
+// turns, and reports their events. The types here are what the app gives and gets.
 package agent
 
 import "encoding/json"
-
-// ProtocolVersion must match PROTOCOL_VERSION in sidecar/src/protocol.ts.
-const ProtocolVersion = 1
 
 // Permission modes.
 const (
@@ -13,7 +10,7 @@ const (
 	PermissionBypass  = "bypassPermissions"
 )
 
-// Tool policies: how the sidecar answers tool requests the CLI forwards.
+// Tool policies: how a session answers the tool requests the CLI forwards.
 const (
 	ToolPolicyAllow    = "allow"
 	ToolPolicyReadOnly = "readonly"
@@ -87,7 +84,7 @@ type Question struct {
 	Options     []QuestionOption `json:"options"`
 	// Secret makes this a request for a secret (the request_secret tool): the user types its value in
 	// a masked field, and it goes to the keyring, never into an answer. Only the app sets it; a
-	// question from the sidecar (AskUserQuestion) never has it.
+	// question from Claude (AskUserQuestion) never has it.
 	Secret *SecretRequest `json:"secret,omitempty"`
 }
 
@@ -98,14 +95,14 @@ type SecretRequest struct {
 	Replace bool   `json:"replace,omitempty"` // one by this name is kept already, and is to be replaced
 }
 
-// AskParams is the sidecar's question.ask request.
+// AskParams is a session's AskUserQuestion, for the app to show.
 type AskParams struct {
 	SessionID string     `json:"sessionId"`
 	ToolUseID string     `json:"toolUseId"`
 	Questions []Question `json:"questions"`
 }
 
-// AskResult answers question.ask, keyed by question text. Set Cancelled to dismiss.
+// AskResult answers an AskParams, keyed by question text. Set Cancelled to dismiss.
 type AskResult struct {
 	Answers   map[string]string `json:"answers,omitempty"`
 	Cancelled bool              `json:"cancelled,omitempty"`
@@ -113,7 +110,7 @@ type AskResult struct {
 	Message string `json:"message,omitempty"`
 }
 
-// ToolCallParams is the sidecar's tool.call request.
+// ToolCallParams is a session's call to one of the app's tools.
 type ToolCallParams struct {
 	SessionID string          `json:"sessionId"`
 	ToolUseID string          `json:"toolUseId,omitempty"`
@@ -121,21 +118,21 @@ type ToolCallParams struct {
 	Args      json.RawMessage `json:"args"`
 }
 
-// ToolCallResult answers tool.call.
+// ToolCallResult answers a ToolCallParams.
 type ToolCallResult struct {
 	Text    string `json:"text"`
 	IsError bool   `json:"isError,omitempty"`
 }
 
-// GuardParams is the sidecar's tool.guard request: a tool call an agent is about to make (its own
-// Bash, PowerShell, Read, Grep or Glob), from the PreToolUse hook.
+// GuardParams is a tool call an agent is about to make (its own Bash, PowerShell, Read, Grep or Glob),
+// from the PreToolUse hook.
 type GuardParams struct {
 	SessionID string          `json:"sessionId"`
 	ToolName  string          `json:"toolName"`
 	Input     json.RawMessage `json:"input"`
 }
 
-// GuardResult answers tool.guard: Deny, when set, is why the call may not run.
+// GuardResult answers a GuardParams: Deny, when set, is why the call may not run.
 type GuardResult struct {
 	Deny string `json:"deny,omitempty"`
 }

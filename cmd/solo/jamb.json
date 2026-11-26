@@ -6,8 +6,5 @@
   "publisher": "Tyler Carr",
   "publisherSubject": "CN=Tyler Carr",
   "identityName": "Solo.TylerBuilds",
-  "icon": "icon.png",
-  "files": [
-    "solo-agent.exe"
-  ]
+  "icon": "icon.png"
 }

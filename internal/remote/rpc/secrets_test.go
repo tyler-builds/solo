@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tyler-builds/solo/internal/agent"
 	"github.com/tyler-builds/solo/internal/agent/agenttest"
 	"github.com/tyler-builds/solo/internal/api"
 	"github.com/tyler-builds/solo/internal/core"
@@ -34,9 +33,8 @@ func TestSecretRequestFromADevice(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	exe, vars := agenttest.Command()
 	store := &secrets.Mem{}
-	c, err := core.New(core.Config{DataDir: t.TempDir(), Agent: agent.Command{Path: exe, Env: vars},
+	c, err := core.New(core.Config{DataDir: t.TempDir(), ClaudePath: agenttest.ClaudePath(),
 		Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Secrets: store})
 	if err != nil {
 		t.Fatal(err)

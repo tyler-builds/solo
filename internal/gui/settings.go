@@ -455,6 +455,12 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 		soloSession := ui.Local(ctx, "solo-session", fmt.Sprint(initial.SoloSessionTokens))
 		workerEffort := ui.Local(ctx, "worker-effort", initial.WorkerEffort)
 		namingEffort := ui.Local(ctx, "naming-effort", initial.NamingEffort)
+		briefModel := ui.Local(ctx, "card-brief-model", initial.CardBriefModel)
+		briefEffort := ui.Local(ctx, "card-brief-effort", initial.CardBriefEffort)
+		reviewModel := ui.Local(ctx, "card-review-model", initial.CardReviewModel)
+		reviewEffort := ui.Local(ctx, "card-review-effort", initial.CardReviewEffort)
+		briefPrompt := ui.Local(ctx, "card-brief-prompt", cmp.Or(initial.CardBriefPrompt, core.DefaultCardBrieferPrompt))
+		reviewPrompt := ui.Local(ctx, "card-review-prompt", cmp.Or(initial.CardReviewPrompt, core.DefaultCardReviewerPrompt))
 		branchRules := ui.Local(ctx, "branch-rules", initial.BranchRules)
 		repoRules := ui.Local(ctx, "repo-rules", maps.Clone(initial.RepoBranchRules))
 		autoMerge := ui.Local(ctx, "auto-merge", initial.AutoMerge)
@@ -487,6 +493,10 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 			s.OrchestratorModel, s.WorkerModel, s.NamingModel = orchModel.Get(), workerModel.Get(), namingModel.Get()
 			s.OrchestratorEffort, s.WorkerEffort, s.NamingEffort = orchEffort.Get(), workerEffort.Get(), namingEffort.Get()
 			s.SoloSessionTokens, _ = strconv.Atoi(soloSession.Get())
+			s.CardBriefModel, s.CardBriefEffort = briefModel.Get(), briefEffort.Get()
+			s.CardReviewModel, s.CardReviewEffort = reviewModel.Get(), reviewEffort.Get()
+			s.CardBriefPrompt = customPrompt(briefPrompt.Get(), core.DefaultCardBrieferPrompt)
+			s.CardReviewPrompt = customPrompt(reviewPrompt.Get(), core.DefaultCardReviewerPrompt)
 			s.BranchRules, s.RepoBranchRules = strings.TrimSpace(branchRules.Get()), repoRules.Get()
 			s.CommitRules = strings.TrimSpace(commitRules.Get())
 			s.AutoMerge, s.MergeMethod, s.OnChecksFail = autoMerge.Get(), mergeMethod.Get(), onFail.Get()
@@ -531,6 +541,9 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 				s.OrchestratorModel, s.WorkerModel, s.NamingModel = snap.OrchestratorModel, snap.WorkerModel, snap.NamingModel
 				s.OrchestratorEffort, s.WorkerEffort, s.NamingEffort = snap.OrchestratorEffort, snap.WorkerEffort, snap.NamingEffort
 				s.SoloSessionTokens = snap.SoloSessionTokens
+				s.CardBriefModel, s.CardBriefEffort = snap.CardBriefModel, snap.CardBriefEffort
+				s.CardReviewModel, s.CardReviewEffort = snap.CardReviewModel, snap.CardReviewEffort
+				s.CardBriefPrompt, s.CardReviewPrompt = snap.CardBriefPrompt, snap.CardReviewPrompt
 				s.BranchRules, s.RepoBranchRules = snap.BranchRules, snap.RepoBranchRules
 				s.CommitRules = snap.CommitRules
 				s.AutoMerge, s.MergeMethod, s.OnChecksFail = snap.AutoMerge, snap.MergeMethod, snap.OnChecksFail
@@ -697,10 +710,31 @@ func (a *App) settingsDialog(ctx *ui.Context) ui.Element {
 				Child(ui.Select(model, modelChoices(models, model.Get())...).Width(ui.Px(modelPickW)).Label(name + " model")).
 				Child(ui.Select(effort, efforts...).Width(ui.Px(effortPickW + 30)).Label(name + " effort"))
 		}
+		// A card lead's model may be Solo's, whatever Solo's is at the time.
+		cardPickers := func(name string, model, effort *ui.Signal[string]) ui.Element {
+			choices := append([]ui.Option[string]{{Value: "", Label: "Same as Solo"}}, modelChoices(models, model.Get())...)
+			efforts := effortChoices(models, cmp.Or(model.Get(), orchModel.Get()), effort.Get())
+			if model.Get() == "" {
+				for i := range efforts {
+					if efforts[i].Value == "" {
+						efforts[i].Label = "Solo's"
+					}
+				}
+			}
+			return ui.Div().Row().Gap(space2).
+				Child(ui.Select(model, choices...).Width(ui.Px(modelPickW)).Label(name + " model")).
+				Child(ui.Select(effort, efforts...).Width(ui.Px(effortPickW)).Label(name + " effort"))
+		}
 		modelsTab := settingsPage(ctx, "Models", "Effort is how long a model thinks before it acts; Default leaves it to Claude. Changes apply to new sessions.",
 			settingsSection(ctx, "Agents", "", pickerHeads(ctx),
 				settingRow(ctx, "Solo", "The lead agent you talk to. It plans, follows the threads and reviews their work.", pickers("Solo", orchModel, orchEffort)),
 				settingRow(ctx, "Threads", "The agents that do the work, one per task. Solo can pick another model when a task calls for it.", pickers("Threads", workerModel, workerEffort))),
+			settingsSection(ctx, "Board cards", "", pickerHeads(ctx),
+				settingRow(ctx, "Briefer", "Reads the code once and writes the thread's brief from your card. Medium effort is usually enough.", cardPickers("Briefer", briefModel, briefEffort)),
+				settingRow(ctx, "Reviewer", "Reviews the thread's work and writes what you read; takes your replies after that. Its own session, so a different model costs no re-reading.", cardPickers("Reviewer", reviewModel, reviewEffort))),
+			settingsSection(ctx, "Board card prompts", "", nil,
+				promptBlock(ctx, "Briefer prompt", "briefer", briefPrompt, core.DefaultCardBrieferPrompt),
+				promptBlock(ctx, "Reviewer prompt", "reviewer", reviewPrompt, core.DefaultCardReviewerPrompt)),
 			settingsSection(ctx, "Long conversations", "", nil,
 				settingRow(ctx, "Fresh session for Solo after", "Solo moves to a new Claude session at this much context, with a recap and its memory; your chat stays whole. Longer keeps more detail, but every message uses more of your plan.",
 					ui.Select(soloSession,
@@ -983,4 +1017,28 @@ func prSkillMinuteChoices(current string) []ui.Option[string] {
 func minutesOf(v string) int {
 	m, _ := strconv.Atoi(v)
 	return cmp.Or(m, core.PRSkillMinutesDefault)
+}
+
+// customPrompt is what a prompt setting saves: "" for the default (or nothing), so the default can
+// improve later, else the user's text.
+func customPrompt(text, def string) string {
+	text = strings.TrimSpace(text)
+	if text == "" || text == strings.TrimSpace(def) {
+		return ""
+	}
+	return text
+}
+
+// promptBlock edits a board card lead's prompt, starting from the default, with a way back to it.
+func promptBlock(ctx *ui.Context, title, role string, text *ui.Signal[string], def string) ui.Element {
+	help := "What the " + role + " is told. Whatever it says, the " + role + " has the tools that move the card (brief_builder, send_back, answer_builder, report). Changes apply when a card's session next starts."
+	area := ui.TextArea(text).Label(title).MinRows(6).MaxHeight(ui.Px(320)).Width(ui.Full).Key("card-" + role + "-prompt")
+	control := ui.Div().Column().Gap(space2).Child(area)
+	if customPrompt(text.Get(), def) != "" {
+		control = control.Child(ui.Div().Row().Align(ui.Center).Gap(space2).
+			Child(caption(ctx, "Edited")).
+			Child(ui.Button("Reset to default").Icon(icons.RotateCcw).Ghost().Small().Key("card-" + role + "-prompt-reset").
+				OnClick(func() { text.Set(def) })))
+	}
+	return settingBlock(ctx, title, help, control)
 }

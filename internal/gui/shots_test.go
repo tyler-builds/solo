@@ -37,8 +37,9 @@ func TestShots(t *testing.T) {
 	typing := map[string]string{"search": "token"} // typed once the window is up
 	// The transcript scrolled up from its end, once the window is up.
 	scrollUp := map[string]string{
-		"scrolled-up":        "orch-transcript",
-		"scrolled-up-thread": "thread-c3d4e5f6-forms-transcript",
+		"tall-settings-models-prompts": "card-briefer-prompt",
+		"scrolled-up":                  "orch-transcript",
+		"scrolled-up-thread":           "thread-c3d4e5f6-forms-transcript",
 	}
 	// Text selected once the window is up, by its start: the Quote button floats by it.
 	selecting := map[string]string{"quote-select": "The settings migration is done"}
@@ -371,6 +372,7 @@ func TestShots(t *testing.T) {
 		{"tall-settings-general", func(a *App, f *fakeBackend) { a.settings.Set(true) }},
 		{"tall-settings-repos", func(a *App, f *fakeBackend) { a.settingsTab = "repos"; a.settings.Set(true) }},
 		{"tall-settings-models", func(a *App, f *fakeBackend) { a.settingsTab = "models"; a.settings.Set(true) }},
+		{"tall-settings-models-prompts", func(a *App, f *fakeBackend) { a.settingsTab = "models"; a.settings.Set(true) }},
 		{"tall-settings-branches", func(a *App, f *fakeBackend) {
 			f.settings.BranchRules = "feature/<ticket>-<short-summary>, lowercase, under 50 characters. fix/ for bug fixes."
 			f.settings.RepoBranchRules = map[string]string{"/home/dev/code/api": "api-<ticket>-<summary>"}
@@ -433,6 +435,17 @@ func TestShots(t *testing.T) {
 			a.setThreads(f.Threads())
 		}},
 		{"phone-code", codeChat},
+		// The board: cards with briefs in every column; beside an open card; in a narrow window; on a phone.
+		{"board", boardDemo},
+		{"board-thread", func(a *App, f *fakeBackend) { boardDemo(a, f); a.openThread("a1f3c9d2-oauth", "conversation") }},
+		{"board-narrow", boardDemo},
+		{"board-card", func(a *App, f *fakeBackend) { boardDemo(a, f); a.openCard("c3d4e5f6-forms") }},
+		{"board-card-input", func(a *App, f *fakeBackend) { boardDemo(a, f); a.openCard("d9a8b7c6-flaky") }},
+		{"board-card-working", func(a *App, f *fakeBackend) { boardDemo(a, f); a.openCard("a1f3c9d2-oauth") }},
+		{"board-card-history", func(a *App, f *fakeBackend) { boardDemo(a, f); a.openCard("c3d4e5f6-forms"); a.cardTab.Set("history") }},
+		{"phone-board-card", func(a *App, f *fakeBackend) { boardDemo(a, f); a.openCard("c3d4e5f6-forms") }},
+		{"busy-board", boardDemo},
+		{"phone-board", boardDemo},
 		{"phone-thinking", func(a *App, f *fakeBackend) {
 			soloWorking(f, nil)
 			a.setThreads(f.Threads())
@@ -450,7 +463,7 @@ func TestShots(t *testing.T) {
 			}
 			if theme.name == "light" && sh.name != "main" && sh.name != "changes" && sh.name != "land-cards" &&
 				sh.name != "scrolled-up" && sh.name != "usage" && sh.name != "phone-main" && !busy &&
-				sh.name != "merge-pill-three" && sh.name != "merge-pill-three-open" &&
+				sh.name != "merge-pill-three" && sh.name != "merge-pill-three-open" && sh.name != "board" &&
 				!strings.HasPrefix(sh.name, "code") && !strings.HasPrefix(sh.name, "lightbox") {
 				continue
 			}

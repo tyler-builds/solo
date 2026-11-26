@@ -47,7 +47,7 @@ var remote = map[string]bool{
 
 	"folders": true, "scanDepth": true, "orchestratorModel": true, "workerModel": true, "showCosts": true,
 	"noNotifications": true, "noResumeAfterRestart": true, "soloSessionTokens": true, "orchestratorEffort": true,
-	"workerEffort": true, "namingModel": true, "namingEffort": true, "branchRules": true, "repoBranchRules": true,
+	"workerEffort": true, "summaryModel": true, "noSummaries": true, "board": true, "cardBriefModel": true, "cardBriefEffort": true, "cardReviewModel": true, "cardReviewEffort": true, "cardBriefPrompt": true, "cardReviewPrompt": true, "namingModel": true, "namingEffort": true, "branchRules": true, "repoBranchRules": true,
 	"prModel": true, "prEffort": true, "prRules": true, "skipPRDescription": true, "autoMerge": true,
 	"mergeMethod": true, "onChecksFail": true,
 	"setup": false, "hints": false, // the first-run setup and its hints run at the machine
@@ -185,6 +185,7 @@ func (p SettingsPatch) CheckRemote(isDir func(path string) bool) error {
 	for name, v := range map[string]string{
 		"branchRules": s.BranchRules, "commitRules": s.CommitRules, "prTitleRules": s.PRTitleRules,
 		"prDescriptionRules": s.PRDescriptionRules, "prRules": s.PRRules,
+		"cardBriefPrompt": s.CardBriefPrompt, "cardReviewPrompt": s.CardReviewPrompt,
 	} {
 		if len(v) > maxSettingText {
 			return fmt.Errorf("%q is too long", name)
@@ -201,7 +202,8 @@ func (p SettingsPatch) CheckRemote(isDir func(path string) bool) error {
 	for name, v := range map[string]string{
 		"orchestratorModel": s.OrchestratorModel, "workerModel": s.WorkerModel, "namingModel": s.NamingModel,
 		"prModel": s.PRModel, "orchestratorEffort": s.OrchestratorEffort, "workerEffort": s.WorkerEffort,
-		"namingEffort": s.NamingEffort, "prEffort": s.PREffort,
+		"namingEffort": s.NamingEffort, "prEffort": s.PREffort, "summaryModel": s.SummaryModel,
+		"cardBriefModel": s.CardBriefModel, "cardBriefEffort": s.CardBriefEffort, "cardReviewModel": s.CardReviewModel, "cardReviewEffort": s.CardReviewEffort,
 	} {
 		if len(v) > maxSettingName || strings.ContainsAny(v, "\x00\r\n") {
 			return fmt.Errorf("%q isn't a valid value", name)

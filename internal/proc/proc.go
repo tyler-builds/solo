@@ -1,4 +1,4 @@
-// Package proc starts Solo's background programs (git, gh, glab, claude, the agent sidecar) without
+// Package proc starts Solo's background programs (git, gh, glab) without
 // console windows.
 //
 // Solo is a GUI program on Windows, so it has no console. Each console program it starts with plain

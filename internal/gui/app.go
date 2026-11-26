@@ -64,6 +64,8 @@ type App struct {
 	drawer   *ui.Signal[bool]                              // a compact window's drawer of threads is open
 	compact  bool                                          // the window is compact, as of its last render (UI thread only)
 	openID   *ui.Signal[string]                            // the thread in the side panel
+	cardOpen *ui.Signal[string]                            // the board card open over the board (cardview.go)
+	cardTab  *ui.Signal[string]                            // the open card's tab: outcome, history or changes
 	openTab  *ui.Signal[string]
 	cfg      *ui.Signal[core.Settings]
 	// The thread panel's share of the center, which the user can drag, and its open/close animation.
@@ -109,6 +111,9 @@ type App struct {
 	remoteTicking bool // the countdown's timer is running (UI thread only)
 	// needsUser counts the open threads that wait on the user.
 	needsUser *ui.Computed[int]
+	// briefSeen is the brief each board card showed when the user last had its thread open (board.go).
+	// UI thread only.
+	briefSeen map[string]time.Time
 
 	// Quotes waiting for each conversation's next message, and the threads' composers, for focusing
 	// them when a quote is added (quote.go). UI thread only.
@@ -197,6 +202,8 @@ func New(b Backend) *App {
 		navSel:          ui.NewSignal("orchestrator"),
 		drawer:          ui.NewSignal(false),
 		openID:          ui.NewSignal(""),
+		cardOpen:        ui.NewSignal(""),
+		cardTab:         ui.NewSignal("outcome"),
 		openTab:         ui.NewSignal("conversation"),
 		cfg:             ui.NewSignal(b.Settings()),
 		panelSize:       ui.NewSignal(ui.Percent(50)),
@@ -729,6 +736,7 @@ func (a *App) Root(ctx *ui.Context) ui.Element {
 		Child(ui.Div().Column().Grow(1).MinHeight(ui.Px(0)).ClipContent().
 			Child(ui.Component(a.center))).
 		Child(ui.Component(a.settingsDialog)).
+		Child(ui.Component(a.cardOverlay)).
 		Child(ui.Component(a.confirmDialog)).
 		Child(ui.Component(a.lightboxDialog)).
 		Child(ui.Component(a.focusWatch)).
@@ -760,6 +768,7 @@ func (a *App) titleBar(ctx *ui.Context) ui.Element {
 		}
 		trailing = append(trailing, ui.Div().Tooltip("Spent across threads").Child(subtle(ctx, fmt.Sprintf("$%.2f", cost))))
 	}
+	trailing = append(trailing, a.viewToggle(ctx))
 	trailing = append(trailing, ui.IconButton(icons.Settings).Ghost().Small().Label("Settings").Tooltip("Settings").
 		Key("open-settings").OnClick(func() { a.settings.Set(true) }))
 	return ui.TitleBar().Height(ui.Px(40)).
@@ -799,11 +808,17 @@ func (a *App) compactBar(ctx *ui.Context) ui.Element {
 				Child(ui.Text(th.Title).FontSize(14).Semibold().Truncate()))
 		trailing = append(trailing, ui.IconButton(icons.X).Ghost().Label("Close thread").Key("thread-close").
 			OnClick(a.closeThread))
+	} else if a.cfg.Get().Board {
+		title = title.
+			Child(brandMark(20)).
+			Child(ui.Text("Board").FontSize(14).Semibold().NoWrap())
+		trailing = append(trailing, a.viewToggle(ctx))
 	} else {
 		title = title.
 			Child(brandMark(20)).
 			Child(ui.Text("Solo").FontSize(14).Semibold().NoWrap()).
 			Child(ui.Component(a.orchBarState))
+		trailing = append(trailing, a.viewToggle(ctx))
 	}
 	return ui.TitleBar().Height(ui.Px(48)).
 		Child(ui.Div().Row().Align(ui.Center).Gap(space2).PaddingLeft(space1).Shrink(1).MinWidth(ui.Px(0)).
@@ -872,8 +887,13 @@ func (a *App) center(ctx *ui.Context) ui.Element {
 	if isCompact(ctx) {
 		return a.compactCenter(ctx)
 	}
+	onBoard := a.cfg.Get().Board
+	view := ui.Component(a.orchestratorView)
+	if onBoard {
+		view = ui.Component(a.boardView)
+	}
 	orch := ui.Div().Column().Size(ui.Full, ui.Full).PaddingBottom(space2).
-		Child(inset(ctx, ui.Component(a.orchestratorView)))
+		Child(inset(ctx, view))
 	anim := a.panelAnim.Get()
 	var main ui.Element = orch
 	if anim > 0 && a.openID.Get() != "" {
@@ -899,8 +919,12 @@ func (a *App) center(ctx *ui.Context) ui.Element {
 		}
 		pane = pane.Key("thread").Label("Thread")
 		thin := ui.Style{Width: ui.Px(space2), Background: t.Panel}
+		mainLabel := "Solo"
+		if onBoard {
+			mainLabel = "Board"
+		}
 		main = ui.Split(
-			ui.Pane(orch).Min(ui.Px(340)).Key("orch").Label("Solo"),
+			ui.Pane(orch).Min(ui.Px(340)).Key("orch").Label(mainLabel),
 			pane,
 		).Grip(map[bool]ui.SplitGrip{true: ui.SplitGripOnHover, false: ui.SplitGripHidden}[anim >= 1]).
 			Styles(ui.SplitStyle{
@@ -916,6 +940,11 @@ func (a *App) center(ctx *ui.Context) ui.Element {
 	} else {
 		main = ui.Div().Column().Size(ui.Full, ui.Full).PaddingRight(space2).Child(orch)
 	}
+	if onBoard {
+		// The cards are the threads: no rail beside them.
+		return ui.Div().Row().Size(ui.Full, ui.Full).PaddingLeft(space2).
+			Child(ui.Div().Column().Grow(1).Basis(ui.Px(0)).MinWidth(ui.Px(0)).Height(ui.Full).Child(main))
+	}
 	return ui.Div().Row().Size(ui.Full, ui.Full).
 		Child(ui.Div().Width(ui.Px(railW(ctx))).Height(ui.Full).Shrink(0).PaddingX(space2).PaddingBottom(space2).
 			Child(inset(ctx, ui.Component(a.rail)))).
@@ -927,6 +956,9 @@ func (a *App) center(ctx *ui.Context) ui.Element {
 func (a *App) compactCenter(ctx *ui.Context) ui.Element {
 	t := ctx.Theme()
 	var pane ui.Element = ui.Component(a.orchestratorView)
+	if a.cfg.Get().Board {
+		pane = ui.Component(a.boardView)
+	}
 	if a.openID.Get() != "" {
 		pane = ui.Div().Column().Size(ui.Full, ui.Full).Background(t.Background).
 			OnKeyDown(func(e *ui.KeyEvent) {

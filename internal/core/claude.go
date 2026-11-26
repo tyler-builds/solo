@@ -14,6 +14,9 @@ import (
 // version, and starts it once to read the signed-in account.
 func (c *Core) CheckClaude(ctx context.Context, override string) ClaudeStatus {
 	found := agent.FindClaude(override)
+	if strings.TrimSpace(override) == "" && c.cfg.ClaudePath != "" {
+		found = agent.Claude{Path: c.cfg.ClaudePath, Source: "setting"}
+	}
 	st := ClaudeStatus{Path: found.Path, Source: found.Source}
 	if found.Path == "" {
 		st.Err = "Claude Code isn't installed, or isn't where Solo looks. Install it, or set its path."

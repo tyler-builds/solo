@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Builds dist/Solo-x86_64.AppImage: the Go app and the compiled sidecar (which carries the Bun runtime).
-# Claude Code isn't bundled: Solo runs the user's own (see agent.FindClaude).
-# Needs go, bun and mksquashfs. The AppImage runtime is downloaded once into
+# Builds dist/Solo-x86_64.AppImage: the Go app. Claude Code isn't bundled: Solo runs the user's own (see
+# agent.FindClaude).
+# Needs go and mksquashfs. The AppImage runtime is downloaded once into
 # ~/.cache/solo-build, or taken from $APPIMAGE_RUNTIME.
 set -euo pipefail
 
@@ -12,10 +12,6 @@ dist=$root/dist
 appdir=$dist/Solo.AppDir
 out=$dist/Solo${VERSION:+-$VERSION}-x86_64.AppImage
 
-bun=$(command -v bun || echo "$HOME/.bun/bin/bun")
-[ -x "$bun" ] || { echo "bun not found: install it from https://bun.sh" >&2; exit 1; }
-export PATH="$(dirname "$bun"):$PATH" # package scripts call bun by name
-
 runtime=${APPIMAGE_RUNTIME:-$HOME/.cache/solo-build/runtime-x86_64}
 if [ ! -f "$runtime" ]; then
 	mkdir -p "$(dirname "$runtime")"
@@ -23,9 +19,6 @@ if [ ! -f "$runtime" ]; then
 		https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-x86_64
 	mv "$runtime.part" "$runtime"
 fi
-
-echo "building sidecar"
-(cd sidecar && "$bun" install --frozen-lockfile >/dev/null && "$bun" run build >/dev/null)
 
 if [ ! -f internal/remote/bundle/files/worker.js ]; then
 	echo "note: building without the relay and the web client (scripts/bundle.sh makes them):" >&2
@@ -38,7 +31,6 @@ mkdir -p "$appdir/usr/bin" "$appdir/usr/share/applications" "$appdir/usr/share/i
 CGO_ENABLED=0 go build -trimpath \
 	-ldflags "-s -w -X github.com/tyler-builds/solo/internal/version.Version=$(scripts/version.sh)" \
 	-o "$appdir/usr/bin/solo" ./cmd/solo
-cp bin/solo-agent "$appdir/usr/bin/solo-agent"
 
 cp cmd/solo/icon.png "$appdir/usr/share/icons/hicolor/256x256/apps/$app_id.png"
 cp "$appdir/usr/share/icons/hicolor/256x256/apps/$app_id.png" "$appdir/$app_id.png"

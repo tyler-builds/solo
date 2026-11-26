@@ -300,12 +300,12 @@ func (o *Orchestrator) openParams() agent.OpenParams {
 		// Bash may run anything (compound commands, cd, builds, git writes); Edit and Write aren't offered,
 		// as code changes go to workers. The user's to-do list (add_todo) takes the place of TodoWrite.
 		// The Artifact tools read and publish claude.ai artifacts; listing them here doesn't turn them
-		// on, Claude Code does that for Solo's entrypoint (sidecar/src/launch.ts).
+		// on, Claude Code does that for Solo's entrypoint (agent/direct.go).
 		ToolPolicy:    agent.ToolPolicyAllow,
 		Tools:         []string{"Read", "Grep", "Glob", "Bash", "WebFetch", "WebSearch", "AskUserQuestion", "Artifact", "ArtifactComments", "ArtifactData"},
 		MCPServerName: "solo",
 		MCPTools:      toolSpecs,
-		ClaudePath:    agent.FindClaude(s.ClaudePath).Path,
+		ClaudePath:    o.c.ClaudePath(),
 	}
 }
 
@@ -337,7 +337,7 @@ func (o *Orchestrator) onChange(ch core.Change) {
 		return
 	}
 	v, ok := o.c.Thread(ch.ThreadID)
-	if !ok || v.Kind != store.KindWorker {
+	if !ok || v.Kind != store.KindWorker || v.Card != nil { // a board card's lead follows it, not Solo
 		return
 	}
 	var line string
@@ -521,7 +521,7 @@ func (o *Orchestrator) onScratch(ch core.Change) {
 		return
 	}
 	v, ok := o.c.Thread(ch.ThreadID)
-	if !ok || v.Kind != store.KindWorker {
+	if !ok || v.Kind != store.KindWorker || v.Card != nil { // a board card's lead follows it, not Solo
 		return
 	}
 	n := fmt.Sprintf("[Solo: the user made %s a scratch thread: they don't mean to land it, and its merge card, if it had one, is gone. Report what it finds; don't propose a merge.]", label(v))
@@ -544,7 +544,7 @@ func (o *Orchestrator) onAnswer(ch core.Change) {
 		return // Solo answered it (answer_question), so it knows
 	}
 	v, ok := o.c.Thread(ch.ThreadID)
-	if !ok || v.Kind != store.KindWorker {
+	if !ok || v.Kind != store.KindWorker || v.Card != nil { // a board card's lead follows it, not Solo
 		return
 	}
 	if s := core.SecretOf(a.Questions); s != nil {

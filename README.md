@@ -6,15 +6,15 @@ their questions, and proposes merges. You review and merge.
 
 ![Solo](docs/screenshots/dark-main.png)
 
-Built with Go and [jamb](https://github.com/tyler-builds/jamb). Claude runs through the official Claude
-Agent SDK in a small Bun sidecar. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+Built with Go and [jamb](https://github.com/tyler-builds/jamb). Solo runs your own Claude Code through
+`claudesdk`, a small Go port of the Claude Agent SDK for Python, in the same process. See
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Run
 
-Needs Go 1.27, [Bun](https://bun.sh), git, and a Claude login (Claude Code's, or `ANTHROPIC_API_KEY`).
+Needs Go 1.27, git, Claude Code, and a Claude login (Claude Code's, or `ANTHROPIC_API_KEY`).
 
 ```
-cd sidecar && bun install && cd ..
 go run ./cmd/solo
 ```
 
@@ -39,14 +39,10 @@ Settings › General shows the build's version: `VERSION` when it is set, as a r
 git's description of the commit, such as `0.6.0-3-gcb015ff` for three commits after 0.6.0
 (`scripts/version.sh`). The web client shows its own and the machine's.
 
-Both need Go and Bun; the AppImage also needs `mksquashfs`, and the Windows installer NSIS
-(`makensis`; without it only the zip is built). The Windows build also fetches Bun's Windows runtime
-from npm and gives it Solo's icon and version info (with go-winres) before compiling the sidecar into
-it, since Bun can set those only when compiling on Windows: Task Manager names the sidecar "Solo
-Agent", not "Bun". The app needs
-only Claude Code installed and signed in: the sidecar is a compiled binary with Bun inside, and Solo
-finds `claude` on PATH or where its installer puts it (Settings shows what it found and takes a path
-to use instead).
+Both need Go; the AppImage also needs `mksquashfs`, and the Windows installer NSIS (`makensis`;
+without it only the zip is built). The app is one program: it needs only Claude Code installed and
+signed in, and finds `claude` on PATH or where its installer puts it (Settings shows what it found and
+takes a path to use instead).
 
 Releases: push a tag such as `v0.2.0` and `.github/workflows/release.yml` tests, builds both and
 publishes them as a GitHub release (a tag with a suffix, such as `v0.2.0-beta.1`, is a pre-release).
@@ -55,9 +51,8 @@ Running the workflow by hand builds them as an artifact without releasing.
 ## Develop
 
 ```
-go test ./...                                   # unit tests, with a fake sidecar
-cd sidecar && bun test                          # sidecar tests, with recorded SDK sessions
-go test -tags live -run Live ./internal/...     # real Claude, small cost
+go test ./...                                   # unit tests, with a fake claude (internal/agent/agenttest)
+go test -tags live -run Live ./claudesdk ./internal/...   # real Claude, small cost
 SOLO_SHOTS=/tmp/shots go test ./internal/gui -run 'TestShots|TestSetupShots'   # screenshots for review
 go run ./cmd/solo-harness -cwd <repo> "<task>"  # one session in the terminal
 ```
@@ -65,6 +60,6 @@ go run ./cmd/solo-harness -cwd <repo> "<task>"  # one session in the terminal
 ## License
 
 Solo is licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
-Its release builds also contain third-party software under its own licenses, listed in NOTICE,
-including the Claude Agent SDK, which is not open-source software: Anthropic provides it under its
-own terms, not Solo's license.
+Its release builds also contain third-party software under its own licenses, listed in NOTICE.
+`claudesdk` is ported from the Claude Agent SDK for Python (MIT License; see
+[claudesdk/LICENSE-claude-agent-sdk-python](claudesdk/LICENSE-claude-agent-sdk-python)).

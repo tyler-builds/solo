@@ -122,6 +122,95 @@ type ThreadView struct {
 	// sum them up: Changed adds them, the Can flags hold when any part can, and Forge and PR are the
 	// first part's, set only when there is one part.
 	Parts []PartView
+	// Brief is the small model's overview of the thread, for its card (brief.go); nil until one is
+	// written. Now is what it is doing at the moment, in a few words, while a turn runs.
+	Brief *Brief
+	Now   string
+	// Card is the board card the thread is part of: on a builder, its lead and where the card stands;
+	// on a lead, its builder. nil for a thread that isn't on one (card.go).
+	Card *CardState
+}
+
+// CardState is a board card: the user's task, a lead (Solo's model, read-only) that briefs a builder (a
+// worker, on the threads' model) and reviews its work, and the review the user reads. It is kept on
+// the builder; the lead keeps only Builder.
+type CardState struct {
+	Lead     string `json:"lead,omitempty"`     // on the builder: its briefer's thread
+	Reviewer string `json:"reviewer,omitempty"` // on the builder: its reviewer's thread, once it has one
+	Builder  string `json:"builder,omitempty"`  // on a lead: its builder's thread
+	Role     string `json:"role,omitempty"`     // on a lead: CardBriefer or CardReviewer
+	// Brief is the last brief or fix the builder was given, for the reviewer.
+	Brief string `json:"brief,omitempty"`
+	Phase string `json:"phase,omitempty"` // CardPlanning, CardBuilding, …
+	// Rounds is how many times the lead sent the builder back to fix its work since the user last spoke.
+	Rounds int `json:"rounds,omitempty"`
+	// Ask is what the user last asked (the card's text, or their latest reply), with its attachments.
+	Ask      string    `json:"ask,omitempty"`
+	AskFiles []string  `json:"askFiles,omitempty"`
+	AskAt    time.Time `json:"askAt"`
+	Review   string    `json:"review,omitempty"` // the lead's latest review, for the user
+	Need     string    `json:"need,omitempty"`   // what the review needs from the user: BriefNeedReview, …
+	ReviewAt time.Time `json:"reviewAt"`
+}
+
+// The two leads of a card (CardState.Role): the briefer turns the user's first words into the builder's
+// brief; the reviewer reviews the builder's work, and from its first review on, takes the user's
+// replies and the builder's questions too.
+const (
+	CardBriefer  = "briefer"
+	CardReviewer = "reviewer"
+)
+
+// Card phases (CardState.Phase).
+const (
+	CardPlanning  = "planning"  // the lead reads the code and writes the builder's brief
+	CardBuilding  = "building"  // the builder works
+	CardReviewing = "reviewing" // the lead reviews the builder's work
+	CardAnswering = "answering" // the lead answers a question the builder asked
+	CardReplying  = "replying"  // the lead reads the user's reply
+	CardReview    = "review"    // the lead's review waits for the user
+)
+
+// CardWorking reports whether a card's agents are at work, its review not yet written.
+func (c *CardState) CardWorking() bool { return c != nil && c.Phase != "" && c.Phase != CardReview }
+
+// Brief is a high-level overview of a worker thread that a small model writes from its activity, never
+// the agent's own words: what its current or last turn did, where the whole task stands, and, once a
+// turn is over, what the thread needs.
+type Brief struct {
+	// Turn is what the running turn has done so far, or what the last one did: a few short lines.
+	Turn string `json:"turn,omitempty"`
+	// Overall is where the whole task stands, in a sentence or two; written when a turn ends.
+	Overall string `json:"overall,omitempty"`
+	// Need is what the thread needs once its turn is over: BriefNeedInput, BriefNeedReview or
+	// BriefNeedBlocked. "" while a turn runs, or before the first turn ends.
+	Need string    `json:"need,omitempty"`
+	At   time.Time `json:"at"`
+}
+
+// What a thread whose turn is over needs (Brief.Need).
+const (
+	BriefNeedInput   = "input"   // it asked the user something, or waits on a decision
+	BriefNeedReview  = "review"  // it did what was asked; its work waits to be looked at
+	BriefNeedBlocked = "blocked" // it couldn't go on: an error, missing access, a failing step
+)
+
+// WorkerSpec describes a new worker thread.
+type WorkerSpec struct {
+	Repo   string   // path or name of a known repository
+	Repos  []string // more repositories, for a task that spans them (Repo, if set, comes first)
+	Title  string
+	Prompt string
+	Model  string   // empty: Settings.WorkerModel
+	Effort string   // empty: Settings.WorkerEffort
+	Base   string   // branch to start from; empty: the repository's current branch
+	Images []string // image files to send with the prompt
+	Files  []string // other files to send with it (ImportFile): the thread is told their paths
+	// Scratch: the user started it only to try or test something, not to land it (SetScratch).
+	Scratch bool
+	// FromUser: the user wrote the prompt (a card on the board), not the orchestrator. Without a Title,
+	// the summary model names the thread from it (when briefs are on).
+	FromUser bool
 }
 
 // QueuedMessage is a message to Solo waiting to be read (ThreadView.Queued). It joins the transcript as
@@ -258,6 +347,8 @@ type Change struct {
 	// (Core.SetScratch), by ScratchBy: FromUser or FromOrchestrator.
 	ScratchSet bool
 	ScratchBy  string
+	// CardReady: for ChangeThread, a board card's lead wrote a review for the user.
+	CardReady bool
 }
 
 // Answered is a question a thread asked and what became of it.
@@ -338,6 +429,23 @@ type Settings struct {
 	// Effort for each model; "" leaves it to Claude.
 	OrchestratorEffort string `json:"orchestratorEffort,omitempty"`
 	WorkerEffort       string `json:"workerEffort,omitempty"`
+	// Board shows the worker threads as a board of cards (To do, Working, Your turn, Landing, Done) in
+	// place of the rail and Solo's conversation.
+	Board bool `json:"board,omitempty"`
+	// A board card's leads (card.go): the briefer that reads the code and briefs the builder, and the
+	// reviewer that reviews its work. An empty model is Solo's (with Solo's effort when the effort is
+	// empty too).
+	CardBriefModel   string `json:"cardBriefModel,omitempty"`
+	CardBriefEffort  string `json:"cardBriefEffort,omitempty"`
+	CardReviewModel  string `json:"cardReviewModel,omitempty"`
+	CardReviewEffort string `json:"cardReviewEffort,omitempty"`
+	// CardBriefPrompt and CardReviewPrompt replace the leads' prompts (DefaultCardBrieferPrompt,
+	// DefaultCardReviewerPrompt); empty keeps the default. The blocks Solo acts on are always added.
+	CardBriefPrompt  string `json:"cardBriefPrompt,omitempty"`
+	CardReviewPrompt string `json:"cardReviewPrompt,omitempty"`
+	// SummaryModel writes the threads' briefs (Brief); NoSummaries turns them off.
+	SummaryModel string `json:"summaryModel,omitempty"`
+	NoSummaries  bool   `json:"noSummaries,omitempty"`
 	// NamingModel and NamingEffort name branches (see BranchRules).
 	NamingModel  string `json:"namingModel,omitempty"`
 	NamingEffort string `json:"namingEffort,omitempty"`
@@ -390,6 +498,25 @@ const (
 	ChecksNotify = "notify" // the thread shows the failure and waits for the user
 )
 
+// CardModel is the model and effort of a board card's lead in the role (CardBriefer or CardReviewer).
+func (s Settings) CardModel(role string) (model, effort string) {
+	model, effort = s.CardBriefModel, s.CardBriefEffort
+	if role == CardReviewer {
+		model, effort = s.CardReviewModel, s.CardReviewEffort
+	}
+	if model == "" {
+		return s.OrchestratorModel, cmpOr(effort, s.OrchestratorEffort)
+	}
+	return model, effort
+}
+
+func cmpOr(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
+}
+
 // DefaultSettings are used until the user changes them.
 func DefaultSettings() Settings {
 	s := Settings{ScanDepth: 3, OrchestratorModel: "opus", WorkerModel: "sonnet"}
@@ -404,6 +531,9 @@ func (s *Settings) normalize() {
 	}
 	if s.PRModel == "" {
 		s.PRModel = "haiku"
+	}
+	if s.SummaryModel == "" {
+		s.SummaryModel = "haiku"
 	}
 	if s.MergeMethod == "" {
 		s.MergeMethod = "squash"

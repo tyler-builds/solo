@@ -1,5 +1,5 @@
 // Command solo-harness runs one Claude session from the terminal through the same agent layer the app
-// uses: the sidecar, the session manager, its events, questions and tools. It is for testing that layer
+// uses: agent.Direct on claudesdk, its events, questions and tools. It is for testing that layer
 // without the UI.
 //
 //	go run ./cmd/solo-harness -cwd ~/code/some-repo -model sonnet "fix the failing test"
@@ -29,7 +29,7 @@ func main() {
 	model := flag.String("model", "", "model alias or ID (default: Claude's default)")
 	readonly := flag.Bool("readonly", false, "read-only session (read tools and a few git commands) instead of bypassPermissions")
 	resume := flag.String("resume", "", "resume this session ID")
-	verbose := flag.Bool("v", false, "log the sidecar's stderr")
+	verbose := flag.Bool("v", false, "log more")
 	probe := flag.Bool("probe", false, "print the models and account, then exit")
 	flag.Parse()
 
@@ -39,10 +39,6 @@ func main() {
 	}
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
 
-	cmd, err := agent.FindCommand()
-	if err != nil {
-		fatal(err)
-	}
 	lines := make(chan string)
 	go func() {
 		sc := bufio.NewScanner(os.Stdin)
@@ -56,7 +52,7 @@ func main() {
 	questions := make(chan struct{}, 1)
 	var answerCh = make(chan string)
 
-	m := agent.NewManager(cmd, agent.Callbacks{
+	m := agent.NewDirect(agent.Callbacks{
 		OnEvent: func(e agent.Event) { printEvent(e, turnDone) },
 		OnToolCall: func(ctx context.Context, p agent.ToolCallParams) (agent.ToolCallResult, error) {
 			return agent.ToolCallResult{Text: "solo-harness has no orchestrator tools."}, nil

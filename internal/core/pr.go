@@ -308,7 +308,7 @@ func (c *Core) prText(ctx context.Context, v ThreadView, p PartView) (string, st
 	} else {
 		pctx, cancel := context.WithTimeout(ctx, prModelTimeout)
 		text, err = c.agent.Complete(pctx, agent.CompleteParams{Model: s.PRModel, Effort: s.PREffort, System: pp.system,
-			Prompt: pp.prompt, ClaudePath: agent.FindClaude(s.ClaudePath).Path, TimeoutMs: 70_000})
+			Prompt: pp.prompt, ClaudePath: c.claudePath(s), TimeoutMs: 70_000})
 		cancel()
 		if errors.Is(err, context.DeadlineExceeded) {
 			err = fmt.Errorf("the PR text model took longer than %s", inWords(prModelTimeout))
@@ -351,7 +351,7 @@ func (c *Core) prAgentText(ctx context.Context, v ThreadView, p PartView, s Sett
 		Tools:          prAgentTools,
 		Skills:         names,
 		ToolPolicy:     agent.ToolPolicyAllow,
-		ClaudePath:     agent.FindClaude(s.ClaudePath).Path,
+		ClaudePath:     c.claudePath(s),
 		Ephemeral:      true,
 	}, pp.prompt, timeout)
 	c.keepTree(v, p, before)

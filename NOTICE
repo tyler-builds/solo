@@ -31,14 +31,7 @@ Go program (solo, solo.exe), and the relay and web client built into it
 - The web client is compiled with TinyGo, whose runtime it contains, Copyright
   2018-2026 The TinyGo Authors, BSD 3-Clause License.
 
-Sidecar (solo-agent, solo-agent.exe)
-
-- Bun (https://bun.sh), MIT License. Bun statically links JavaScriptCore and WebKit,
-  licensed under the LGPL 2, and other libraries under their own licenses; see
-  https://github.com/oven-sh/bun/blob/main/LICENSE.md. The sidecar's source is in
-  sidecar/ of this repository, so it can be rebuilt with a modified Bun.
-- zod, Copyright (c) 2025 Colin McDonnell, MIT License.
-- Claude Agent SDK (@anthropic-ai/claude-agent-sdk), (c) Anthropic PBC, all rights
-  reserved. It is not open-source software and is not covered by Solo's license; it
-  is included under Anthropic's terms:
-  https://code.claude.com/docs/en/legal-and-compliance
+The claudesdk package (in the Go program) is ported from the Claude Agent SDK for
+Python, Copyright (c) 2025 Anthropic, PBC, MIT License; see
+claudesdk/LICENSE-claude-agent-sdk-python. Solo runs the user's own Claude Code, which
+it doesn't contain.

@@ -40,6 +40,9 @@ type Backend interface {
 	// return (images, which Claude sees), and SaveFile and ImportFile (files, which it is told the paths
 	// of): core.IsFileAttachment tells them apart.
 	SendToOrchestrator(ctx context.Context, text string, attachments ...string) error
+	// CreateWorker starts a worker thread: a card the user adds to the board (spec.FromUser). Its
+	// Images and Files are attachment references, as for Send.
+	CreateWorker(ctx context.Context, spec core.WorkerSpec) (core.ThreadView, error)
 	Send(ctx context.Context, threadID, text string, attachments ...string) error
 	// SaveImage stores a decoded image, such as one pasted from the clipboard, as an attachment.
 	SaveImage(img image.Image) (string, error)
