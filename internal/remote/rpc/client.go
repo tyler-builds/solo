@@ -1022,6 +1022,12 @@ func (c *Client) SearchMessages(ctx context.Context, query string, limit int) ([
 	return out, err
 }
 
+func (c *Client) Usage(ctx context.Context) (core.UsageReport, error) {
+	var out core.UsageReport
+	err := c.do(ctx, "usage", struct{}{}, &out)
+	return out, err
+}
+
 func (c *Client) Skills(ctx context.Context, threadID string) ([]core.Skill, error) {
 	var out []core.Skill
 	err := c.do(ctx, "skills", threadParams{Thread: threadID}, &out)

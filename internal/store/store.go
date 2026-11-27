@@ -77,7 +77,7 @@ func Open(path string) (*Store, error) {
 	// One connection: writes are small and frequent, and this rules out SQLITE_BUSY between our own
 	// connections.
 	db.SetMaxOpenConns(1)
-	if _, err := db.Exec(schema); err != nil {
+	if _, err := db.Exec(schema + usageSchema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("store: schema: %w", err)
 	}

@@ -74,6 +74,7 @@ type App struct {
 	panelGoal   float32             // the size, in percent, the panel opens to
 	animStop    func()
 	settings    *ui.Signal[bool]
+	usageOpen   *ui.Signal[bool] // the Usage page is open (usagepage.go)
 	confirm     *ui.Signal[*confirmation]
 	palette     *ui.Signal[bool]
 	built       map[string]bool // transcript rows that are built, by scope/key (UI thread only)
@@ -210,6 +211,7 @@ func New(b Backend) *App {
 		panelAnim:       ui.NewSignal[float32](0),
 		panelGoal:       50,
 		settings:        ui.NewSignal(false),
+		usageOpen:       ui.NewSignal(false),
 		confirm:         ui.NewSignal[*confirmation](nil),
 		palette:         ui.NewSignal(false),
 		builtVer:        ui.NewSignal(0),
@@ -736,6 +738,7 @@ func (a *App) Root(ctx *ui.Context) ui.Element {
 		Child(ui.Div().Column().Grow(1).MinHeight(ui.Px(0)).ClipContent().
 			Child(ui.Component(a.center))).
 		Child(ui.Component(a.settingsDialog)).
+		Child(ui.Component(a.usageDialog)).
 		Child(ui.Component(a.cardOverlay)).
 		Child(ui.Component(a.confirmDialog)).
 		Child(ui.Component(a.lightboxDialog)).
@@ -1122,6 +1125,7 @@ func (a *App) paletteItems(query string) []ui.PaletteItem {
 		}
 	}
 	out = append(out, ui.PaletteItem{Key: "settings", Label: "Settings", Icon: icons.Settings, Run: func() { a.settings.Set(true) }})
+	out = append(out, ui.PaletteItem{Key: "usage", Label: "Usage", Icon: icons.ChartLine, Run: a.openUsage})
 	// Messages, once the query is long enough to mean something.
 	if len(strings.Join(words, "")) >= 3 {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)

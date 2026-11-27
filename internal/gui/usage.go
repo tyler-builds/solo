@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tyler-builds/jamb/access"
 	"github.com/tyler-builds/jamb/ui"
 
 	"github.com/tyler-builds/solo/internal/agent"
@@ -115,7 +116,7 @@ func (a *App) usagePanel(ctx *ui.Context) ui.Element {
 	limits := a.rate.Get()
 	now := a.now()
 	if isCompact(ctx) {
-		if mini := miniUsage(ctx, limits, now); mini != nil {
+		if mini := a.miniUsage(ctx, limits, now); mini != nil {
 			return mini
 		}
 	}
@@ -143,7 +144,7 @@ func (a *App) usagePanel(ctx *ui.Context) ui.Element {
 				Width(ui.Px(32)).Shrink(0).Align(ui.End)))
 	}
 	if rows > 0 {
-		return box
+		return a.opensUsage(ctx, box)
 	}
 	// Nothing says how much is used: say so only when a limit is near or reached.
 	var worst *agent.Event
@@ -159,7 +160,7 @@ func (a *App) usagePanel(ctx *ui.Context) ui.Element {
 	if worst.Status == "rejected" {
 		status, c = "Usage limit reached", t.Danger
 	}
-	return box.Child(ui.Div().Row().Align(ui.Center).Gap(6).PaddingX(space2).Height(ui.Px(24)).Radius(12).
+	return a.opensUsage(ctx, box).Child(ui.Div().Row().Align(ui.Center).Gap(6).PaddingX(space2).Height(ui.Px(24)).Radius(12).
 		Background(c.Alpha(0.12)).Key("usage-notice").Tooltip(usageTip(*worst, 0, false, now)).
 		Child(dot(c, 6)).
 		Child(ui.Text(status).FontSize(12).Medium().TextColor(c).Truncate().MinWidth(ui.Px(0))))
@@ -168,7 +169,7 @@ func (a *App) usagePanel(ctx *ui.Context) ui.Element {
 // miniUsage is the usage limits in one line, for a compact window: each its short label, a short bar
 // and the percent used, colored as in the full panel, with the same tooltip. It wraps to a second line
 // only when the limits don't fit. Nil when no limit says how much is used.
-func miniUsage(ctx *ui.Context, limits []agent.Event, now time.Time) ui.Element {
+func (a *App) miniUsage(ctx *ui.Context, limits []agent.Event, now time.Time) ui.Element {
 	t := ctx.Theme()
 	line := ui.Div().Row().Wrap().Align(ui.Center).Gap(space2 + 2).PaddingX(space4).PaddingY(space2).Shrink(0).
 		Key("usage-mini")
@@ -195,5 +196,11 @@ func miniUsage(ctx *ui.Context, limits []agent.Event, now time.Time) ui.Element 
 	if rows == 0 {
 		return nil
 	}
-	return line
+	return a.opensUsage(ctx, line)
+}
+
+// opensUsage makes the usage limits a button that opens the Usage page.
+func (a *App) opensUsage(ctx *ui.Context, el *ui.DivElement) *ui.DivElement {
+	return el.Cursor(ui.CursorPointer).Hover(ui.Style{Background: ctx.Theme().SurfaceHover}).
+		Role(access.RoleButton).Label("Usage").TabIndex(0).OnClick(a.openUsage)
 }

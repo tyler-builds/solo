@@ -657,3 +657,40 @@ func UsedFraction(e agent.Event) (float64, bool) {
 	}
 	return min(max(*e.Utilization, 0), 1), true
 }
+
+// UsageReport is the usage history the Usage page draws.
+type UsageReport struct {
+	// Readings are the readings of each usage limit over the last week, oldest first. Claude Code sends
+	// one when a turn's request is answered and the reading has changed, so there are none while Solo
+	// is idle.
+	Readings []UsageReading
+	// Since is when the weekly limit's window began, or a week ago when no reading has said.
+	Since time.Time
+	// Threads are what each thread's turns cost since then, at API prices, most first. A card's leads
+	// count toward its thread.
+	Threads []UsageThread
+}
+
+// UsageReading is one reading of a usage limit.
+type UsageReading struct {
+	At       time.Time
+	Kind     string  // five_hour, seven_day, …
+	Used     float64 // the fraction of the limit used, 0 to 1
+	ResetsAt time.Time
+}
+
+// UsageThread is what a thread's turns cost over a span.
+type UsageThread struct {
+	ThreadID string
+	Title    string
+	Kind     string // UsageKindSolo, UsageThread or UsageKindCard; "" for a thread since deleted
+	CostUSD  float64
+	Turns    int
+}
+
+// The kinds of thread that use Claude (UsageThread.Kind).
+const (
+	UsageKindSolo   = "solo"
+	UsageKindThread = "thread"
+	UsageKindCard   = "card"
+)

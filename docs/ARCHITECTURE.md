@@ -541,6 +541,15 @@ lead's notes) and the changes. A thread that isn't a card opens beside the board
   and the web client draws them with the same code. A block still open (streaming), nested in another,
   or whose spec is invalid, of an unknown kind or over the limits (64 KB, 12 series, 5,000 points,
   24 slices, 20 charts a message) shows as code. Excerpts (the rail, notifications) leave charts out.
+- **Usage** (`gui/usage.go`, `gui/usagepage.go`, `core/usage_history.go`): the rail's foot shows each
+  usage limit Claude reports (`rate_limit`), and a click on it (or "Usage" in Ctrl+K) opens the Usage
+  page: each limit larger, a line of what was left of one over the past day (5-hour) or week, and each
+  thread's share of what Solo's turns cost since the weekly window began. Solo keeps every reading that
+  changed and each turn's cost (the growth of its session's `costUsd`; a card's leads count toward its
+  thread) in SQLite for 35 days. Claude Code sends a reading only during a turn, rounded to 1%, so the
+  line is straight between Solo's turns, and use on other machines or claude.ai can't be told apart from
+  Solo's: the page counts Solo's own turns only. One-shot helper calls (titles, briefs, PR text) aren't
+  counted.
 - **Search:** the rail's filter matches thread titles and repositories. Ctrl+K (the title bar's
   Search) lists threads, including merged ones and History, and, from three letters, messages (yours,
   Solo's and the threads'), found with `core.SearchMessages`.

@@ -155,6 +155,9 @@ func New(cfg Config) (*Core, error) {
 		fetched:   map[string]time.Time{},
 	}
 	c.sweepUploads()
+	if err := db.PruneUsage(now().Add(-store.UsageKeep)); err != nil {
+		cfg.Log.Warn("core: pruning usage history", "err", err)
+	}
 	c.secretStore = cfg.Secrets
 	if c.secretStore == nil {
 		c.secretStore = secrets.Unavailable{}

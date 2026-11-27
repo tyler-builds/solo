@@ -417,6 +417,7 @@ func (b *Backend) RepoPaths() []string                              { return b.r
 func (b *Backend) PlainFolders() []string                           { return nil }
 func (b *Backend) InitRepo(context.Context, string) (string, error) { return "", errSample }
 func (b *Backend) RateLimits() []agent.Event                        { return nil }
+func (b *Backend) Usage(context.Context) (core.UsageReport, error)  { return core.UsageReport{}, nil }
 func (b *Backend) CheckClaude(context.Context, string) core.ClaudeStatus {
 	return core.ClaudeStatus{Path: "/home/dev/.local/bin/claude", Source: "PATH", Version: "2.1.319",
 		Models: []agent.ModelInfo{{Value: "opus", DisplayName: "Opus"}, {Value: "sonnet", DisplayName: "Sonnet"}}}

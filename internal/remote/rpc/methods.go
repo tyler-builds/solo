@@ -464,6 +464,10 @@ func init() {
 			}
 			return hits, nil, "", err
 		}},
+		"usage": {run: func(ctx context.Context, c *conn, _ json.RawMessage, _ []byte) (any, []byte, string, error) {
+			rep, err := c.h.b.Usage(ctx)
+			return rep, nil, "", err
+		}},
 		"skills": {run: func(ctx context.Context, c *conn, p json.RawMessage, _ []byte) (any, []byte, string, error) {
 			a, err := decode[threadParams](p)
 			if err == nil && a.Thread != "" {

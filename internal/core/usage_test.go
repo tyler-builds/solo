@@ -1,7 +1,10 @@
 package core
 
 import (
+	"fmt"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/tyler-builds/solo/internal/agent"
 )
@@ -123,5 +126,81 @@ func TestRateLimitQuarterUsedWeekly(t *testing.T) {
 	}
 	if u, ok := UsedFraction(got[1]); !ok || u != 0.25 {
 		t.Errorf("seven_day used = %v (%v), want 0.25", u, ok)
+	}
+}
+
+// Each window of a rate limit event is kept for the Usage page, and the weekly window's reset says
+// where the week the page counts began.
+func TestUsageReadingsKept(t *testing.T) {
+	e := newEnv(t)
+	ctx := t.Context()
+	reset := time.Now().Add(3 * 24 * time.Hour).Truncate(time.Second)
+	ev := rateEvent("five_hour", "allowed", used(0.2))
+	ev.Windows = []agent.RateLimitWindow{
+		{RateLimitType: "five_hour", Utilization: 0.2, ResetsAt: 1_800_000_000, Status: "allowed"},
+		{RateLimitType: "seven_day", Utilization: 0.4, ResetsAt: float64(reset.Unix()), Status: "allowed"},
+	}
+	e.c.onEvent(ev)
+	e.c.onEvent(ev) // the same again: nothing new to keep
+	ev.Windows[0].Utilization = 0.3
+	e.c.onEvent(ev)
+
+	rep, err := e.c.Usage(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, r := range rep.Readings {
+		got = append(got, fmt.Sprintf("%s %.1f", r.Kind, r.Used))
+	}
+	if want := "five_hour 0.2,seven_day 0.4,five_hour 0.3"; strings.Join(got, ",") != want {
+		t.Errorf("readings = %s, want %s", strings.Join(got, ","), want)
+	}
+	if want := reset.Add(-7 * 24 * time.Hour); !rep.Since.Equal(want) {
+		t.Errorf("since = %v, want %v", rep.Since, want)
+	}
+}
+
+// What a turn cost is how much its session's running total grew, kept against its thread; the threads
+// come most costly first.
+func TestUsageTurnCosts(t *testing.T) {
+	e := newEnv(t)
+	ctx := t.Context()
+	a := readyWorker(t, e)
+	before, err := e.c.Usage(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := 0.0
+	for _, ut := range before.Threads {
+		if ut.ThreadID == a.ID {
+			base = ut.CostUSD
+		}
+	}
+	cur, _ := e.c.Thread(a.ID)
+	for _, total := range []float64{0.5, 1.25} {
+		feed(e.c, a.SessionID, agent.Event{Kind: agent.EventTurnStart},
+			agent.Event{Kind: agent.EventTurnEnd, Status: agent.TurnCompleted, Result: "ok", TotalCostUSD: cur.CostUSD + total})
+	}
+	rep, err := e.c.Usage(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got *UsageThread
+	for i := range rep.Threads {
+		if rep.Threads[i].ThreadID == a.ID {
+			got = &rep.Threads[i]
+		}
+	}
+	if got == nil {
+		t.Fatalf("no usage for the thread: %+v", rep.Threads)
+	}
+	if d := got.CostUSD - base; d < 1.249 || d > 1.251 || got.Kind != UsageKindThread || got.Title != a.Title {
+		t.Errorf("thread usage = %+v (base %v), want 1.25 more", got, base)
+	}
+	for i := 1; i < len(rep.Threads); i++ {
+		if rep.Threads[i].CostUSD > rep.Threads[i-1].CostUSD {
+			t.Errorf("threads out of order: %+v", rep.Threads)
+		}
 	}
 }
