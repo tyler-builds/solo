@@ -18,11 +18,12 @@ type state struct {
 	shown    *ui.Signal[string] // the machine whose UI is up, by ID
 	machines *ui.Signal[[]device.Machine]
 	name     *ui.Signal[string] // what the user calls this device, on the pairing screen
+	pass     *ui.Signal[string] // the passphrase being typed
 }
 
 func newState() *state {
 	return &state{screen: ui.NewSignal(screen{}), link: ui.NewSignal(link{}), shown: ui.NewSignal(""),
-		machines: ui.NewSignal([]device.Machine(nil)), name: ui.NewSignal("")}
+		machines: ui.NewSignal([]device.Machine(nil)), name: ui.NewSignal(""), pass: ui.NewSignal("")}
 }
 
 // Root renders the page.
@@ -51,6 +52,10 @@ func (s *Shell) Root(ctx *ui.Context) ui.Element {
 		return s.machineList(ctx)
 	case screenConfirmPaired:
 		return s.confirmPairedScreen(ctx)
+	case screenPassphrase:
+		return s.passphrase(ctx, sc)
+	case screenJoining:
+		return s.joiningScreen(ctx, sc)
 	case screenMain:
 		if cur == nil {
 			return s.welcome(ctx, sc)
@@ -108,17 +113,24 @@ func (s *Shell) welcome(ctx *ui.Context, sc screen) ui.Element {
 				Child(ui.Text(n).FontSize(12).Medium().TextColor(t.TextMuted))).
 			Child(ui.Text(text).FontSize(14).TextColor(t.Text).Grow(1))
 	}
-	third := "Scan the code it shows with this device's camera. Or, with no camera at hand, choose its option for a computer's browser, then press the button below."
-	var open ui.Element = ui.Div().Row().Child(ui.Button("Pair this device").Primary().Key("pair-open").OnClick(s.startOpen))
+	third := "Scan its code with this device's camera, or choose its option for a computer's browser and press the button below."
+	var open ui.Element = ui.Div().Row().Child(ui.Button("Pair with a code").Secondary().Key("pair-open").OnClick(s.startOpen))
+	var join ui.Element = ui.Div().Column().Gap(10).
+		Child(para(ctx, "Type the passphrase set on your machines, then allow this device on one of them. It can then use all of them.")).
+		Child(ui.Div().Row().Child(ui.Button("Join with the passphrase").Primary().Key("join").
+			OnClick(func() { s.state.screen.Set(screen{kind: screenPassphrase}) })))
+	or := "Or pair with one machine by a code, which you approve there:"
 	if sc.scanAgain {
 		third = "Scan the code it shows with this device's camera."
-		open = nil
+		open, join = nil, nil
+		or = "Pairing is approved at the machine, so only someone who is there can add a device."
 	}
 	return page(ctx,
 		gui.BrandMark(40),
 		heading(ctx, "Use Solo from this device"),
 		problem(ctx, sc.err),
-		para(ctx, "This device isn't paired with a machine yet. Pairing is approved at the machine, so only someone who is there can add a device."),
+		join,
+		para(ctx, or),
 		ui.Div().Column().Gap(12).
 			Child(step("1", "On the computer that runs Solo, open Settings, then Remote.")).
 			Child(step("2", "Choose Add a device.")).
@@ -142,6 +154,51 @@ func (s *Shell) confirmPairedScreen(ctx *ui.Context) ui.Element {
 		ui.Div().Row().Gap(8).Wrap().
 			Child(ui.Button("Yes, it says paired").Primary().Key("paired-yes").OnClick(func() { s.confirmPaired(true) })).
 			Child(ui.Button("No").Secondary().Key("paired-no").OnClick(func() { s.confirmPaired(false) })))
+}
+
+// passphrase asks for the network's passphrase, and what to call this device.
+func (s *Shell) passphrase(ctx *ui.Context, sc screen) ui.Element {
+	join := func() {
+		if s.state.pass.Peek() == "" {
+			return
+		}
+		p := s.state.pass.Peek()
+		s.state.pass.Set("")
+		s.joinNetwork(p, s.state.name.Peek())
+	}
+	return page(ctx,
+		gui.BrandMark(40),
+		heading(ctx, "Join with the passphrase"),
+		problem(ctx, sc.err),
+		para(ctx, "The passphrase you set on your machines, under Settings, Remote, Network. It never leaves this device: it only proves that you know it."),
+		ui.TextInput(s.state.pass).Label("Passphrase").Placeholder("Passphrase").Masked().Width(ui.Full).
+			Key("passphrase").OnSubmit(func(string) { join() }),
+		ui.Div().Column().Gap(6).
+			Child(ui.Text("What your machines will call this device").FontSize(12).TextColor(ctx.Theme().TextMuted)).
+			Child(ui.TextInput(s.state.name).Label("This device's name").Placeholder("My phone").Width(ui.Full).
+				Key("device-name").OnSubmit(func(string) { join() })),
+		ui.Div().Row().Gap(8).
+			Child(ui.Button("Join").Primary().Key("join-go").Disabled(s.state.pass.Get() == "").OnClick(join)).
+			Child(ui.Button("Not now").Ghost().Key("join-cancel").OnClick(s.cancelJoin)))
+}
+
+// joiningScreen is the wait while the passphrase is checked, and then while the person allows this
+// device at one of their machines.
+func (s *Shell) joiningScreen(ctx *ui.Context, sc screen) ui.Element {
+	t := ctx.Theme()
+	title, note := "Checking the passphrase…", "This takes a moment."
+	if sc.digits != "" {
+		title = "Allow this device at one of your machines"
+		note = "Solo on each of your machines shows that a device wants to join, under Settings, Remote. Allowing it on one lets it into all of them."
+	}
+	return page(ctx,
+		gui.BrandMark(40),
+		heading(ctx, title),
+		para(ctx, note),
+		ui.Div().Row().Gap(10).Align(ui.Center).
+			Child(ui.ProgressRing().Size(16).Label("Working")).
+			Child(ui.Text("Waiting…").FontSize(13).TextColor(t.TextMuted)),
+		ui.Div().Row().Child(ui.Button("Cancel").Ghost().Key("join-cancel").OnClick(s.cancelJoin)))
 }
 
 // confirm asks before pairing: a link was opened, and the person should mean it.
@@ -295,8 +352,11 @@ func (s *Shell) machineList(ctx *ui.Context) ui.Element {
 		gui.BrandMark(40),
 		heading(ctx, "Machines"),
 		list,
-		para(ctx, "To add another, open Settings, then Remote, on that machine and choose Add a device. Then scan its code with this device, or pair from here."),
-		ui.Div().Row().Child(ui.Button("Pair with another machine").Secondary().Key("pair-open").OnClick(s.startOpen)),
+		para(ctx, "To add your other machines, join with the passphrase. Or open Settings, then Remote, on another machine and choose Add a device, then scan its code with this device, or pair from here."),
+		ui.Div().Row().Gap(8).Wrap().
+			Child(ui.Button("Join with the passphrase").Secondary().Key("join").
+				OnClick(func() { s.state.screen.Set(screen{kind: screenPassphrase}) })).
+			Child(ui.Button("Pair with another machine").Secondary().Key("pair-open").OnClick(s.startOpen)),
 		para(ctx, "Forgetting a machine deletes its keys from this device; remove this device at the machine too."))
 }
 
@@ -306,7 +366,8 @@ func (s *Shell) tell(sc screen, cur *session) {
 		return
 	}
 	name := [...]string{screenWelcome: "welcome", screenConfirm: "confirm", screenPairing: "pairing",
-		screenMachines: "machines", screenMain: "main", screenConfirmPaired: "confirm-paired"}[sc.kind]
+		screenMachines: "machines", screenMain: "main", screenConfirmPaired: "confirm-paired",
+		screenPassphrase: "passphrase", screenJoining: "joining"}[sc.kind]
 	l := ""
 	if cur != nil {
 		l = [...]string{linkConnecting: "connecting", linkReady: "ready", linkOffline: "offline", linkLost: "lost",

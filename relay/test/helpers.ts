@@ -4,7 +4,7 @@
 import { runInDurableObject } from "cloudflare:test";
 import { env, exports } from "cloudflare:workers";
 import { afterEach, expect } from "vitest";
-import { parseHostKeys, signedMessage, ticketHash } from "../src/auth";
+import { NETWORK_TOKEN, PASS_TOKEN, parseHostKeys, signedMessage, ticketHash, type Context } from "../src/auth";
 import { concat, fromBase64Url, fromHex, toBase64Url, toHex } from "../src/bytes";
 import { FRAME, SUBPROTOCOL, TICKET } from "../src/protocol";
 import type { Relay } from "../src/relay";
@@ -48,7 +48,7 @@ function uint64(value: number): Uint8Array {
 	return out;
 }
 
-async function sign(signer: Signer, context: "machine" | "voucher", origin: string, body: Uint8Array): Promise<Uint8Array> {
+async function sign(signer: Signer, context: Context, origin: string, body: Uint8Array): Promise<Uint8Array> {
 	const signature = await crypto.subtle.sign("Ed25519", signer.key, signedMessage(context, origin, body));
 	return concat(body, new Uint8Array(signature));
 }
@@ -73,6 +73,13 @@ export async function voucher(machineId: Uint8Array, deviceId: Uint8Array, optio
 	const issued = Math.floor((options.at ?? Date.now()) / 1000);
 	const body = concat(new Uint8Array([1]), signer.public, machineId, deviceId, uint64(issued));
 	return sign(signer, "voucher", options.origin ?? ORIGIN, body);
+}
+
+// peerAuth makes the token a machine connects to another machine with, as bytes.
+export async function peerAuth(machineId: Uint8Array, target: Uint8Array, options: TokenOptions = {}): Promise<Uint8Array> {
+	const signer = options.signer ?? listed;
+	const body = concat(new Uint8Array([1]), signer.public, machineId, uint64(options.at ?? Date.now()), random(16), target);
+	return sign(signer, "peer", options.origin ?? ORIGIN, body);
 }
 
 export function pairToken(machineId: Uint8Array, ticket: Uint8Array): Uint8Array {
@@ -104,7 +111,8 @@ export async function upgrade(path: string, token: Uint8Array | null, options: U
 		headers.set("Sec-WebSocket-Protocol", protocols);
 	}
 	const host = options.host ?? HOST;
-	const origin = options.origin !== undefined ? options.origin : path === "/v1/machine" ? null : `https://${host}`;
+	const native = path === "/v1/machine" || path === "/v1/peer";
+	const origin = options.origin !== undefined ? options.origin : native ? null : `https://${host}`;
 	if (origin !== null) {
 		headers.set("Origin", origin);
 	}
@@ -232,6 +240,11 @@ export async function connectPair(machineId: Uint8Array, ticket: Uint8Array): Pr
 	return accepted(await upgrade("/v1/pair", pairToken(machineId, ticket)));
 }
 
+// connectPeer connects a machine's socket to another machine.
+export async function connectPeer(from: Machine, target: Uint8Array): Promise<Socket> {
+	return accepted(await upgrade("/v1/peer", await peerAuth(from.id, target, { signer: from.signer })));
+}
+
 // Opened is an open frame, read.
 export interface Opened {
 	conn: Uint8Array;
@@ -245,6 +258,15 @@ export async function opened(machine: Machine): Promise<Opened> {
 	expect(frame[0]).toBe(FRAME.open);
 	expect(frame.length).toBe(26);
 	return { conn: frame.slice(1, 9), kind: frame[9]!, deviceId: frame.slice(10) };
+}
+
+// openedPeer reads the machine's next frame, which must be the open frame of another machine's
+// socket: its connection, its kind, the other machine's ID and the key it connected under.
+export async function openedPeer(machine: Machine): Promise<Opened & { key: Uint8Array }> {
+	const frame = await machine.socket.frame();
+	expect(frame[0]).toBe(FRAME.open);
+	expect(frame.length).toBe(58);
+	return { conn: frame.slice(1, 9), kind: frame[9]!, deviceId: frame.slice(10, 26), key: frame.slice(26) };
 }
 
 export function dataFrame(conn: Uint8Array, payload: Uint8Array): Uint8Array {
@@ -309,3 +331,35 @@ export async function closePairing(machine: Machine, expires = 0): Promise<void>
 
 // The token of a pairing socket that holds no code.
 export const openPairToken = new Uint8Array([2]);
+
+// joinNetwork has a machine take the network's passphrase, and leaveNetwork has it stop.
+export async function joinNetwork(machine: Machine): Promise<void> {
+	machine.socket.send(ticketFrame(TICKET.networkOn, new Uint8Array(32)));
+	await handled(machine);
+}
+
+export async function leaveNetwork(machine: Machine): Promise<void> {
+	machine.socket.send(ticketFrame(TICKET.networkOff, new Uint8Array(32)));
+	await handled(machine);
+}
+
+// The token of a socket that asks which machines take the passphrase, and of a pairing socket with it.
+export const networkToken = new Uint8Array([NETWORK_TOKEN]);
+
+export function passToken(machineId: Uint8Array): Uint8Array {
+	return concat(new Uint8Array([PASS_TOKEN]), machineId);
+}
+
+// listNetwork asks the relay which machines take the passphrase, and returns their IDs in hex, in the
+// order the relay sent them.
+export async function listNetwork(): Promise<string[]> {
+	const socket = await accepted(await upgrade("/v1/pair", networkToken));
+	const frame = await socket.frame();
+	expect(await socket.closed).toBe(1000);
+	expect(frame.length % 16).toBe(0);
+	const ids: string[] = [];
+	for (let at = 0; at < frame.length; at += 16) {
+		ids.push(toHex(frame.subarray(at, at + 16)));
+	}
+	return ids;
+}

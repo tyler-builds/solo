@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tyler-builds/solo/internal/api"
 	"github.com/tyler-builds/solo/internal/core"
 )
 
@@ -112,4 +113,35 @@ func usagePage(a *App, f *fakeBackend) {
 	f.usage = demoUsage(time.Now())
 	a.rate.Set(f.rate)
 	a.openUsage()
+}
+
+// networkRemote gives the app remote access in a network with a laptop and a build box, which was last
+// reached an hour ago, and a phone waiting to be let in.
+func networkRemote(a *App) {
+	now := time.Now()
+	laptop := demoUsage(now)
+	laptop.Readings = nil
+	laptop.Threads = []core.UsageThread{
+		{ThreadID: "l1", Title: "Port the CLI to Windows", Kind: core.UsageKindThread, CostUSD: 4.4, Turns: 15},
+		{ThreadID: core.OrchestratorID, Title: "Solo", Kind: core.UsageKindSolo, CostUSD: 1.9, Turns: 11},
+		{ThreadID: "l2", Title: "Profile the image cache", Kind: core.UsageKindCard, CostUSD: 1.1, Turns: 6},
+	}
+	st := api.RemoteState{Relay: "https://solo-desk.example.workers.dev", Enabled: true, Connection: api.RemoteOnline,
+		Name: "desk", MachineID: "aa",
+		Devices: []api.RemoteDevice{{ID: "d1", Name: "iPhone", Added: now.Add(-48 * time.Hour), LastSeen: now.Add(-time.Hour)}},
+		Network: api.RemoteNetwork{Passphrase: true, On: true, Wrong: 2,
+			Members: []api.RemoteMember{
+				{ID: "m2", Name: "laptop", Added: now.Add(-48 * time.Hour)},
+				{ID: "m3", Name: "build-box", Added: now.Add(-2 * time.Hour)},
+			},
+			Joins: []api.RemoteJoin{{ID: "j1", Name: "Pixel 9", At: now.Add(-20 * time.Second)}},
+		},
+	}
+	a.Remote = &fakeRemote{st: st, members: []api.MemberUsage{
+		{ID: "m2", Name: "laptop", Report: laptop, At: now.Add(-time.Minute)},
+		{ID: "m3", Name: "build-box", Report: core.UsageReport{Threads: []core.UsageThread{
+			{ThreadID: "b1", Title: "Nightly dependency bumps", Kind: core.UsageKindThread, CostUSD: 0.7, Turns: 4}}},
+			At: now.Add(-time.Hour), Err: "it's offline"},
+	}}
+	a.remoteState.Set(st)
 }

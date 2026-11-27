@@ -24,6 +24,9 @@ type Device struct {
 	Name string
 	// ReadOnly: it may look, and every request that changes something is refused.
 	ReadOnly bool
+	// Member: it is another machine of this machine's network (host/network.go). It is sent none of
+	// this machine's state, and may make only the requests a member needs (method.member).
+	Member bool
 }
 
 // Options configure a Host. The zero value works.
@@ -50,6 +53,12 @@ type Options struct {
 	// UploadIdle is how long a file a device is sending waits for its next part before what arrived
 	// is removed (default uploadIdle).
 	UploadIdle time.Duration
+	// Allow lets in the device with this Noise key, which a member of the network let in: the person
+	// allowed it there, and one allow is for the whole network. It must not block for long. Nil refuses.
+	Allow func(d Device, key []byte, readOnly bool) error
+	// Passphrase takes a new passphrase for the network, which the person set at a member. Nil
+	// refuses.
+	Passphrase func(d Device, passphrase string) error
 	Log        *slog.Logger
 }
 
@@ -308,6 +317,9 @@ func (c *conn) bye(code, msg string) {
 
 // note records a change for the device. It runs under Host.mu and must not block.
 func (c *conn) note(ch core.Change) {
+	if c.dev.Member {
+		return
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	switch ch.Kind {
@@ -409,16 +421,19 @@ func (c *conn) hello(e Envelope) error {
 	h.mu.Lock()
 	w.Resumed = hi.Epoch == h.epoch && hi.Rev > 0 && hi.Rev <= h.rev
 	c.mu.Lock()
-	if w.Resumed {
+	switch {
+	case c.dev.Member: // it is sent nothing
+	case w.Resumed:
 		for id, rev := range h.threads {
 			if rev > hi.Rev {
 				c.threads[id] = true
 			}
 		}
-	} else {
+		c.misc = true
+	default:
 		c.threads[allThreads] = true
+		c.misc = true
 	}
-	c.misc = true
 	c.greeted = true
 	c.mu.Unlock()
 	h.conns[c] = struct{}{}
@@ -467,6 +482,9 @@ func (c *conn) flusher() {
 
 // flush reads what changed and sends it. first marks the catch-up after hello.
 func (c *conn) flush(first bool) error {
+	if c.dev.Member {
+		return nil // a member is sent no state
+	}
 	h := c.h
 	c.mu.Lock()
 	if !c.greeted {
@@ -765,6 +783,14 @@ func (c *conn) serve(e Envelope) {
 	m, ok := methods[e.M]
 	if !ok {
 		c.s.send(Envelope{T: kindRes, ID: e.ID, E: invalid("unknown request %q", clip(e.M, 40))})
+		return
+	}
+	if c.dev.Member && !m.member {
+		c.s.send(Envelope{T: kindRes, ID: e.ID, E: denied("A member of the network may only read usage.")})
+		return
+	}
+	if m.memberOnly && !c.dev.Member {
+		c.s.send(Envelope{T: kindRes, ID: e.ID, E: denied("Only a member of the network may ask that.")})
 		return
 	}
 	if m.write && c.dev.ReadOnly {

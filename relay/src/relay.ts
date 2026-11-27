@@ -1,6 +1,7 @@
 // The relay's one Durable Object. It holds every socket and forwards frames between a machine and
-// the devices connected to it. It cannot read a frame's payload, and what it sends a device is only
-// its machine's bytes or a close code.
+// the devices and other machines connected to it. It cannot read a frame's payload, and what it sends
+// a device is only its machine's bytes, a close code, or the IDs of the machines in the network, which
+// a device trusts no more than anything else the relay says.
 //
 // The sockets are hibernating ones, so the object may be evicted while they stay open. Who a socket is
 // lives with the socket (its tags and its attachment), and routing uses nothing else: the maps below
@@ -29,10 +30,13 @@ interface Peer {
 	role: Role;
 	// The machine the socket is, or is for: the relay key that vouches for it and its ID, both in hex
 	// (see owner). A machine is known by both, so a machine can't take another's place by claiming its
-	// ID: under its own key that is another machine.
+	// ID: under its own key that is another machine. For another machine's socket it is the machine
+	// the socket is to, which its frames go to.
 	machine: string;
-	// The connection number the machine knows a device's or a pairing socket by; empty for a machine.
+	// The connection number the machine knows a device's, a pairing or another machine's socket by;
+	// empty for a machine.
 	conn: string;
+	// The device's ID, or for another machine's socket that machine's ID.
 	device: string;
 	// When the socket was admitted, in milliseconds.
 	at: number;
@@ -47,16 +51,23 @@ type FailureRow = { since: number; count: number };
 const TICKET_FRAME_SIZE = 1 + 1 + HASH_SIZE + 8 + 1;
 const NO_DEVICE = "0".repeat(ID_SIZE * 2);
 
+type Client = Exclude<Role, "machine">;
+
 // Tags, which are how sockets are found: every machine's socket, one machine's socket, one machine's
-// device or pairing sockets, and the one socket of a connection. The connection's tag has the machine
-// in it, and a machine is its key and its ID together, so a machine can only ever name its own.
+// device, pairing or other machines' sockets, and the one socket of a connection. The connection's tag
+// has the machine in it, and a machine is its key and its ID together, so a machine can only ever name
+// its own.
 const everyMachine = "machine";
 const machineTag = (machine: string) => `m:${machine}`;
-const clientsTag = (role: Role, machine: string) => `${role === "pair" ? "p" : "d"}:${machine}`;
+const clientsTag = (role: Client, machine: string) => `${CLIENT_TAG[role]}:${machine}`;
+const CLIENT_TAG = { device: "d", pair: "p", peer: "q" } as const;
 const connTag = (machine: string, conn: string) => `c:${machine}:${conn}`;
 
+// How many sockets of each kind one machine may have at once.
+const CLIENT_LIMIT = { device: LIMIT.devices, pair: LIMIT.pairs, peer: LIMIT.peers } as const;
+
 export class Relay extends DurableObject<Env> {
-	// The token bucket of each device's and pairing socket's frames, by connection.
+	// The token bucket of each device's, pairing and other machine's socket's frames, by connection.
 	private buckets = new Map<string, { tokens: number; at: number }>();
 	// Frames forwarded since the count was last written.
 	private pending = 0;
@@ -73,11 +84,20 @@ export class Relay extends DurableObject<Env> {
 		sql.exec(
 			"CREATE TABLE IF NOT EXISTS failures (machine TEXT PRIMARY KEY, since INTEGER NOT NULL, count INTEGER NOT NULL)",
 		);
+		// The machines that take the network's passphrase, and how many pairing sockets with it each
+		// has been sent in the current window.
+		sql.exec("CREATE TABLE IF NOT EXISTS network (machine TEXT PRIMARY KEY)");
+		sql.exec(
+			"CREATE TABLE IF NOT EXISTS passes (machine TEXT PRIMARY KEY, since INTEGER NOT NULL, count INTEGER NOT NULL)",
+		);
 	}
 
 	// fetch admits a socket the Worker has verified. The request is the Worker's own (src/index.ts).
 	override async fetch(request: Request): Promise<Response> {
 		const role = request.headers.get(HEADER.role);
+		if (role === "pair" && request.headers.get(HEADER.list) !== null) {
+			return this.listNetwork();
+		}
 		if (role === "pair" && request.headers.get(HEADER.open) !== null) {
 			// A device with no code, for the machine that has pairing open. With several, the relay
 			// doesn't choose: which machine a device is paired with is the person's to say, by opening
@@ -89,11 +109,14 @@ export class Relay extends DurableObject<Env> {
 			if (open.length > 1) {
 				return refuse(CLOSE.ambiguous);
 			}
-			return this.admitClient("pair", open[0]!, NO_DEVICE, openKey(open[0]!), KIND.openPair);
+			return this.admitClient("pair", open[0]!, NO_DEVICE, { ticket: openKey(open[0]!), kind: KIND.openPair });
 		}
 		const id = request.headers.get(HEADER.machine) ?? "";
 		if (fromHex(id, ID_SIZE) === null) {
 			return new Response(null, { status: 400 });
+		}
+		if (role === "pair" && request.headers.get(HEADER.pass) !== null) {
+			return this.admitPass(id);
 		}
 		if (role === "pair") {
 			// A pairing socket names its machine by ID alone; which key that machine connected under
@@ -103,7 +126,7 @@ export class Relay extends DurableObject<Env> {
 			if (machine === null) {
 				return new Response(null, { status: 401 });
 			}
-			return this.admitClient("pair", machine, NO_DEVICE, hash);
+			return this.admitClient("pair", machine, NO_DEVICE, { ticket: hash });
 		}
 		const key = request.headers.get(HEADER.key) ?? "";
 		if (fromHex(key, KEY_SIZE) === null) {
@@ -119,6 +142,15 @@ export class Relay extends DurableObject<Env> {
 					return new Response(null, { status: 400 });
 				}
 				return this.admitClient("device", machine, device);
+			}
+			case "peer": {
+				const target = request.headers.get(HEADER.target) ?? "";
+				// A machine has no use for a socket to itself, and its frames would come back to it
+				// as another machine's.
+				if (fromHex(target, ID_SIZE) === null || target === id) {
+					return new Response(null, { status: 400 });
+				}
+				return this.admitPeer(key, id, target);
 			}
 		}
 		return new Response(null, { status: 400 });
@@ -169,14 +201,61 @@ export class Relay extends DurableObject<Env> {
 		return upgraded(client);
 	}
 
-	// admitClient admits a device's socket or a pairing one, and tells the machine of it. A ticket is
-	// spent only here, when its socket is really admitted.
+	// admitPass admits a pairing socket that will prove the network's passphrase to the machine with
+	// an ID, if that machine takes it. Which key the machine connected under is in its network row.
+	private admitPass(id: string): Response {
+		const rows = this.ctx.storage.sql
+			.exec<{ machine: string }>("SELECT machine FROM network WHERE machine LIKE ?", `%:${id}`)
+			.toArray()
+			.map((row) => row.machine);
+		if (rows.length === 0) {
+			return new Response(null, { status: 401 });
+		}
+		// A machine that took it and is away is refused as offline, by admitClient.
+		const machine = rows.find((m) => this.sockets(machineTag(m)).length > 0) ?? rows[0]!;
+		return this.admitClient("pair", machine, NO_DEVICE, { kind: KIND.passPair });
+	}
+
+	// admitPeer admits one machine's socket to another, which it names by ID alone: it learns the
+	// other's key from their handshake. The other is told the key this one connected under, so that
+	// it can check the handshake is with the machine the relay let in.
+	private admitPeer(key: string, id: string, target: string): Response {
+		const to = this.sockets(everyMachine)
+			.map((ws) => peerOf(ws)!.machine)
+			.find((m) => idOf(m) === target);
+		if (to === undefined) {
+			return refuse(CLOSE.offline);
+		}
+		return this.admitClient("peer", to, id, { kind: KIND.peer, key: fromHex(key, KEY_SIZE)! });
+	}
+
+	// listNetwork answers a socket that asks which machines take the network's passphrase: their
+	// IDs, 16 bytes each and in order, in one frame, and then it is closed. A machine that is away is
+	// left out, as it could not answer.
+	private listNetwork(): Response {
+		const rows = this.ctx.storage.sql.exec<{ machine: string }>("SELECT machine FROM network").toArray();
+		const connected = rows.filter((row) => this.sockets(machineTag(row.machine)).length > 0);
+		const ids = [...new Set(connected.map((row) => idOf(row.machine)))].sort();
+		const frame = concat(...ids.map((id) => fromHex(id, ID_SIZE)!));
+		const { 0: client, 1: server } = new WebSocketPair();
+		server.accept();
+		server.send(frame);
+		server.close(CLOSE.normal);
+		return upgraded(client);
+	}
+
+	// admitClient admits a device's socket, a pairing one or another machine's, and tells the machine
+	// of it. A ticket is spent, and a passphrase pairing counted, only here, when its socket is really
+	// admitted. Only another machine's open frame carries a key, the one that machine connected under.
 	private admitClient(
-		role: "device" | "pair",
+		role: Client,
 		machine: string,
 		device: string,
-		ticket?: string,
-		kind: number = role === "pair" ? KIND.pair : KIND.device,
+		{
+			ticket,
+			kind = role === "pair" ? KIND.pair : KIND.device,
+			key = new Uint8Array(0),
+		}: { ticket?: string; kind?: number; key?: Uint8Array } = {},
 	): Response {
 		const host = this.sockets(machineTag(machine))[0];
 		if (host === undefined) {
@@ -184,7 +263,10 @@ export class Relay extends DurableObject<Env> {
 		}
 		const now = Date.now();
 		const others = this.sockets(clientsTag(role, machine)).filter((ws) => !this.outlived(ws, peerOf(ws)!, now));
-		if (others.length >= (role === "pair" ? LIMIT.pairs : LIMIT.devices)) {
+		if (others.length >= CLIENT_LIMIT[role]) {
+			return refuse(CLOSE.limit);
+		}
+		if (kind === KIND.passPair && !this.countPass(machine, now)) {
 			return refuse(CLOSE.limit);
 		}
 		if (ticket !== undefined) {
@@ -195,11 +277,29 @@ export class Relay extends DurableObject<Env> {
 		const { 0: client, 1: server } = new WebSocketPair();
 		this.ctx.acceptWebSocket(server, [clientsTag(role, machine), connTag(machine, toHex(conn))]);
 		server.serializeAttachment({ role, machine, conn: toHex(conn), device, at: now } satisfies Peer);
-		send(host, concat(new Uint8Array([FRAME.open]), conn, new Uint8Array([kind]), fromHex(device, ID_SIZE)!));
+		send(host, concat(new Uint8Array([FRAME.open]), conn, new Uint8Array([kind]), fromHex(device, ID_SIZE)!, key));
 		return upgraded(client);
 	}
 
-	// A frame from a device or a pairing socket is a payload for its machine.
+	// countPass counts a passphrase pairing let in to a machine, and says whether the window had room
+	// for it. The count is in storage, so that the object being evicted doesn't start it again.
+	private countPass(machine: string, now: number): boolean {
+		const sql = this.ctx.storage.sql;
+		const row = sql.exec<FailureRow>("SELECT since, count FROM passes WHERE machine = ?", machine).toArray()[0];
+		const counting = row !== undefined && now - row.since < LIMIT.passWindowMs;
+		if (counting && row.count >= LIMIT.passPairs) {
+			return false;
+		}
+		sql.exec(
+			"INSERT OR REPLACE INTO passes (machine, since, count) VALUES (?, ?, ?)",
+			machine,
+			counting ? row.since : now,
+			counting ? row.count + 1 : 1,
+		);
+		return true;
+	}
+
+	// A frame from a device, a pairing socket or another machine is a payload for its machine.
 	private fromClient(ws: WebSocket, peer: Peer, payload: Uint8Array): void {
 		const now = Date.now();
 		if (this.outlived(ws, peer, now)) {
@@ -284,6 +384,16 @@ export class Relay extends DurableObject<Env> {
 					}
 					return;
 				}
+				// Taking the network's passphrase, and no longer. The row stays while the machine is
+				// away, but only a machine that is connected is listed or reached.
+				if (body[0] === TICKET.networkOn) {
+					this.ctx.storage.sql.exec("INSERT OR IGNORE INTO network (machine) VALUES (?)", peer.machine);
+					return;
+				}
+				if (body[0] === TICKET.networkOff) {
+					this.ctx.storage.sql.exec("DELETE FROM network WHERE machine = ?", peer.machine);
+					return;
+				}
 				break;
 			}
 		}
@@ -297,6 +407,7 @@ export class Relay extends DurableObject<Env> {
 		// number of pairings under way.
 		sql.exec("DELETE FROM tickets WHERE expires <= ?", Math.floor(now / 1000));
 		sql.exec("DELETE FROM failures WHERE since <= ?", now - LIMIT.failureWindowMs);
+		sql.exec("DELETE FROM passes WHERE since <= ?", now - LIMIT.passWindowMs);
 		// A machine replaces only its own ticket.
 		sql.exec(
 			`INSERT INTO tickets (hash, machine, expires, uses) VALUES (?, ?, ?, ?)
@@ -369,12 +480,14 @@ export class Relay extends DurableObject<Env> {
 		return true;
 	}
 
-	// drop closes a socket and tells whoever is at the other side of the relay: a machine's devices
-	// are closed as "machine offline", and a device's machine gets a close frame.
+	// drop closes a socket and tells whoever is at the other side of the relay: a machine's devices,
+	// pairing sockets and other machines' sockets to it are closed as "machine offline", and a device's
+	// machine gets a close frame. A machine's own sockets to other machines are connections of their
+	// own, and stay.
 	private drop(ws: WebSocket, peer: Peer, code: number): void {
 		this.retire(ws, peer, code);
 		if (peer.role === "machine") {
-			for (const role of ["device", "pair"] as const) {
+			for (const role of ["device", "pair", "peer"] as const) {
 				for (const client of this.sockets(clientsTag(role, peer.machine))) {
 					this.retire(client, peerOf(client)!, CLOSE.offline);
 				}

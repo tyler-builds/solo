@@ -2,7 +2,14 @@ package api
 
 import (
 	"context"
+	"crypto/rand"
+	"errors"
+	"fmt"
+	"strings"
 	"time"
+	"unicode/utf8"
+
+	"github.com/tyler-builds/solo/internal/core"
 )
 
 // Remote is a machine's remote access, as its Settings page drives it. The desktop app has one
@@ -24,6 +31,21 @@ type Remote interface {
 	Revoke(deviceID string) error
 	RevokeAll() error
 	SetReadOnly(deviceID string, readOnly bool) error
+
+	// The network: the machines on this relay that share a passphrase, and the devices that join by
+	// typing it. SetPassphrase sets it here (and on the other members), turns joining by passphrase
+	// on, and joins the machines on the relay that have the same one. SetNetworkOn turns joining by
+	// passphrase off, or on again after too many wrong guesses turned it off. A device that proves the
+	// passphrase waits (State.Network.Joins) until AllowJoin lets it into every machine of the
+	// network, or DenyJoin turns it down; with SetAutoAllow on, it is let in at once. MemberUsage
+	// fetches each other member's usage; a member that can't be reached comes with its last copy.
+	SetPassphrase(passphrase string) error
+	SetNetworkOn(on bool) error
+	SetAutoAllow(on bool) error
+	AllowJoin(requestID string, readOnly bool) error
+	DenyJoin(requestID string)
+	RemoveMember(machineID string) error
+	MemberUsage(ctx context.Context) []MemberUsage
 
 	// The relay lives in the user's own Cloudflare account. SetCloudToken keeps an API token for it,
 	// DeployRelay puts the relay and the web client there (or joins the relay already there) and
@@ -81,6 +103,47 @@ type RemoteState struct {
 	// SecretsInFiles: there is no OS keyring, so the machine's key is in a file only the user can read.
 	SecretsInFiles bool
 	Cloud          RemoteCloud
+	Network        RemoteNetwork
+}
+
+// RemoteNetwork is the network as Settings shows it.
+type RemoteNetwork struct {
+	Passphrase bool // one is set on this machine
+	On         bool // devices and machines may join by it
+	// Locked: too many wrong passphrases turned joining off, and why; Wrong counts them.
+	Locked    string
+	Wrong     int
+	AutoAllow bool
+	Members   []RemoteMember
+	// Joins are the devices that proved the passphrase and wait to be let in.
+	Joins []RemoteJoin
+	// Status is how joining the other machines on the relay last went; Problem why the network
+	// can't be used (a relay too old for it).
+	Status  string
+	Problem string
+}
+
+// RemoteMember is another machine of the network.
+type RemoteMember struct {
+	ID    string
+	Name  string
+	Added time.Time
+}
+
+// RemoteJoin is a device that proved the passphrase and waits. Its name is its own choice of words.
+type RemoteJoin struct {
+	ID   string
+	Name string
+	At   time.Time
+}
+
+// MemberUsage is a member's usage, as last fetched.
+type MemberUsage struct {
+	ID     string
+	Name   string
+	Report core.UsageReport
+	At     time.Time // when it was fetched; zero when never
+	Err    string    // why it couldn't be fetched now
 }
 
 // RemoteDevice is a paired device.
@@ -109,4 +172,36 @@ type RemotePairing struct {
 // the code, and would be shown right beside the box the digits are typed in.
 type RemoteRequest struct {
 	At time.Time
+}
+
+// MinPassphrase is the shortest passphrase a network takes, in characters.
+const MinPassphrase = 12
+
+// CheckPassphrase says what is wrong with a passphrase for a network, or nil.
+func CheckPassphrase(p string) error {
+	switch {
+	case utf8.RuneCountInString(p) < MinPassphrase:
+		return fmt.Errorf("A passphrase needs at least %d characters: anyone who finds your relay's address can try a few guesses.", MinPassphrase)
+	case len(p) > 1024:
+		return errors.New("That passphrase is too long.")
+	case strings.TrimSpace(p) != p:
+		return errors.New("A passphrase can't start or end with a space.")
+	}
+	return nil
+}
+
+// SuggestPassphrase makes a passphrase from the system's random source: five groups of four letters
+// and digits, about 100 bits.
+func SuggestPassphrase() string {
+	const alphabet = "abcdefghjkmnpqrstuvwxyz23456789" // no 0, o, 1, i or l: they're misread
+	var b [20]byte
+	rand.Read(b[:])
+	var out strings.Builder
+	for i, c := range b {
+		if i > 0 && i%4 == 0 {
+			out.WriteByte('-')
+		}
+		out.WriteByte(alphabet[int(c)%len(alphabet)])
+	}
+	return out.String()
 }

@@ -51,6 +51,8 @@ func TestRelayVectors(t *testing.T) {
 	b64 := base64.RawURLEncoding.EncodeToString
 	flip := func(b []byte, i int) string { c := bytes.Clone(b); c[i] ^= 1; return b64(c) }
 	otherAuth, _ := other.MachineAuth(origin, now, zeros{})
+	peer, _ := m.PeerAuth(origin, other.ID, now, zeros{})
+	otherPeer, _ := other.PeerAuth(origin, m.ID, now, zeros{})
 	want := map[string]any{
 		"origin":      origin,
 		"nowMs":       now.UnixMilli(),
@@ -81,6 +83,17 @@ func TestRelayVectors(t *testing.T) {
 			"a machine's token": b64(auth),
 		},
 		"otherOrigin": "https://another.example.workers.dev",
+		"peerAuth":    b64(peer),
+		"peerTarget":  other.ID.String(),
+		"rejectPeer": map[string]string{
+			"altered signature":  flip(peer, len(peer)-1),
+			"altered target":     flip(peer, 1+32+16+8+16),
+			"altered machine ID": flip(peer, 1+32),
+			"altered time":       flip(peer, 1+32+16),
+			"truncated":          b64(peer[:len(peer)-1]),
+			"a machine's token":  b64(auth),
+			"another machine's":  b64(otherPeer),
+		},
 	}
 	got, err := json.MarshalIndent(want, "", "  ")
 	if err != nil {
@@ -104,6 +117,9 @@ func TestRelayVectors(t *testing.T) {
 	}
 	if _, _, _, err := VerifyVoucher(origin, voucher); err != nil {
 		t.Errorf("the vector's voucher does not verify: %v", err)
+	}
+	if key, from, target, err := VerifyPeerAuth(origin, peer, now); err != nil || from != m.ID || target != other.ID || !bytes.Equal(key, m.RelayKey()) {
+		t.Errorf("the vector's peer token does not verify: %v", err)
 	}
 	if _, _, err := VerifyMachineAuth(origin, otherAuth, now); err != nil {
 		t.Errorf("another machine's token is validly signed, by a key the relay's list does not have: %v", err)

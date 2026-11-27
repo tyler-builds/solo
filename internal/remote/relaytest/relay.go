@@ -55,8 +55,9 @@ type Relay struct {
 	keys     [][]byte
 	machines map[owner]*machine
 	tickets  map[[32]byte]*ticket
-	open     []*ticket     // pairing opened to devices with no code, in the order it was opened
-	offset   time.Duration // added to the clock, for tests of a machine whose clock is off
+	open     []*ticket      // pairing opened to devices with no code, in the order it was opened
+	network  map[owner]bool // the machines whose passphrase pairing is on
+	offset   time.Duration  // added to the clock, for tests of a machine whose clock is off
 }
 
 // owner is how the relay knows a machine: the relay key that vouches for it, and its ID. A machine
@@ -80,14 +81,14 @@ type ticket struct {
 
 // New starts a relay that lets no machine in until Allow names its key.
 func New() *Relay {
-	r := &Relay{machines: map[owner]*machine{}, tickets: map[[32]byte]*ticket{}}
+	r := &Relay{machines: map[owner]*machine{}, tickets: map[[32]byte]*ticket{}, network: map[owner]bool{}}
 	r.srv = httptest.NewServer(http.HandlerFunc(r.serve))
 	return r
 }
 
 // NewAt is New on an address, such as "127.0.0.1:8787".
 func NewAt(addr string) (*Relay, error) {
-	r := &Relay{machines: map[owner]*machine{}, tickets: map[[32]byte]*ticket{}}
+	r := &Relay{machines: map[owner]*machine{}, tickets: map[[32]byte]*ticket{}, network: map[owner]bool{}}
 	srv := &http.Server{Addr: addr, Handler: http.HandlerFunc(r.serve)}
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -213,8 +214,8 @@ func (r *Relay) serve(w http.ResponseWriter, req *http.Request) {
 	case "/v1/info":
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
-		json.NewEncoder(w).Encode(map[string]any{"solo": 1, "bundle": 0, "time": r.now().UnixMilli()})
-	case device.PathMachine, device.PathDevice, device.PathPair:
+		json.NewEncoder(w).Encode(map[string]any{"solo": 1, "bundle": 0, "time": r.now().UnixMilli(), "network": 1})
+	case device.PathMachine, device.PathDevice, device.PathPair, device.PathPeer:
 		r.upgrade(w, req)
 	default:
 		if r.Static != nil {
@@ -284,7 +285,69 @@ func (r *Relay) upgrade(w http.ResponseWriter, req *http.Request) {
 		if ws := accept(); ws != nil {
 			r.device(req.Context(), owner{[32]byte(key), mid}, 1, did, ws)
 		}
+	case device.PathPeer:
+		key, from, target, err := secure.VerifyPeerAuth(origin, token, r.now())
+		if err != nil {
+			http.Error(w, "bad token", http.StatusUnauthorized)
+			return
+		}
+		if !r.allowed(key) || req.Header.Get("Origin") != "" {
+			http.Error(w, "this machine isn't allowed", http.StatusForbidden)
+			return
+		}
+		if from == target {
+			http.Error(w, "a machine can't connect to itself", http.StatusBadRequest)
+			return
+		}
+		to, ok := r.byID(target, false)
+		if ws := accept(); ws != nil {
+			if !ok {
+				ws.Close(device.CloseOffline, "machine offline")
+				return
+			}
+			r.device(req.Context(), to, 5, from, ws, key...)
+		}
 	case device.PathPair:
+		if len(token) == 1 && token[0] == device.NetworkToken {
+			// The machines of the network, by ID: one frame, then the end.
+			if !browser() {
+				http.Error(w, "not allowed", http.StatusForbidden)
+				return
+			}
+			var ids []secure.ID
+			r.mu.Lock()
+			for o := range r.network {
+				if r.machines[o] != nil {
+					ids = append(ids, o.id)
+				}
+			}
+			r.mu.Unlock()
+			slices.SortFunc(ids, func(a, b secure.ID) int { return strings.Compare(a.String(), b.String()) })
+			var list []byte
+			for _, id := range ids {
+				list = append(list, id[:]...)
+			}
+			if ws := accept(); ws != nil {
+				ws.Write(req.Context(), websocket.MessageBinary, list)
+				ws.Close(websocket.StatusNormalClosure, "")
+			}
+			return
+		}
+		if len(token) == 17 && token[0] == device.PassPairToken {
+			if !browser() {
+				http.Error(w, "not allowed", http.StatusForbidden)
+				return
+			}
+			to, ok := r.byID(secure.ID(token[1:]), true)
+			if !ok {
+				http.Error(w, "no such machine in the network", http.StatusUnauthorized)
+				return
+			}
+			if ws := accept(); ws != nil {
+				r.device(req.Context(), to, 4, secure.ID{}, ws)
+			}
+			return
+		}
 		if len(token) == 1 && token[0] == device.OpenPairToken {
 			// A device with no code, for whichever machine has pairing open: the one that opened it
 			// last, if several have.
@@ -409,7 +472,13 @@ func (r *Relay) machine(ctx context.Context, id owner, ws *websocket.Conn) {
 			}
 			hash := [32]byte(body[1:33])
 			r.mu.Lock()
-			if body[0] == 3 || body[0] == 4 { // pairing opened to devices with no code, or closed
+			if body[0] == 5 || body[0] == 6 { // passphrase pairing on, or off
+				if body[0] == 5 {
+					r.network[id] = true
+				} else {
+					delete(r.network, id)
+				}
+			} else if body[0] == 3 || body[0] == 4 { // pairing opened to devices with no code, or closed
 				at := int64(binary.BigEndian.Uint64(body[33:41]))
 				if body[0] == 3 {
 					// For a few minutes and a few connections at most, whatever the frame asks.
@@ -462,8 +531,21 @@ func (m *machine) conn(id [8]byte) *websocket.Conn {
 	return m.conns[id]
 }
 
-// device serves a device's or a pairing socket until it closes.
-func (r *Relay) device(ctx context.Context, mid owner, kind byte, did secure.ID, ws *websocket.Conn) {
+// byID finds the connected machine with an ID, among those whose passphrase pairing is on if network.
+func (r *Relay) byID(id secure.ID, network bool) (owner, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for o := range r.machines {
+		if o.id == id && (!network || r.network[o]) {
+			return o, true
+		}
+	}
+	return owner{}, false
+}
+
+// device serves a device's, a pairing or a peer socket until it closes. extra follows the open frame's
+// ID: a peer's relay key.
+func (r *Relay) device(ctx context.Context, mid owner, kind byte, did secure.ID, ws *websocket.Conn, extra ...byte) {
 	r.mu.Lock()
 	m := r.machines[mid]
 	r.mu.Unlock()
@@ -477,7 +559,7 @@ func (r *Relay) device(ctx context.Context, mid owner, kind byte, did secure.ID,
 	m.conns[conn] = ws
 	m.wmu.Unlock()
 	open := append([]byte{frameOpen}, conn[:]...)
-	open = append(append(open, kind), did[:]...)
+	open = append(append(append(open, kind), did[:]...), extra...)
 	m.send(open)
 	for {
 		typ, frame, err := ws.Read(ctx)

@@ -140,6 +140,10 @@ func TestShots(t *testing.T) {
 		// The Usage page: the limits, the line of what is left, and what the threads used.
 		{"usage-page", usagePage},
 		{"usage-page-narrow", usagePage},
+		{"usage-page-network", func(a *App, f *fakeBackend) {
+			usagePage(a, f)
+			networkRemote(a)
+		}},
 		{"usage-page-empty", func(a *App, f *fakeBackend) { f.rate = demoLimits(); a.rate.Set(f.rate); a.openUsage() }},
 		// Many threads at work: the pinned Working group caps its height and scrolls within itself.
 		{"working-many", func(a *App, f *fakeBackend) {
@@ -373,6 +377,15 @@ func TestShots(t *testing.T) {
 		{"history", func(a *App, f *fakeBackend) { a.settingsTab = "history"; a.settings.Set(true) }},
 		{"settings-repos", func(a *App, f *fakeBackend) { a.settingsTab = "repos"; a.settings.Set(true) }},
 		// Settings pages at full height, for review.
+		{"tall-settings-remote-network", func(a *App, f *fakeBackend) {
+			networkRemote(a)
+			a.settingsTab = "remote"
+			a.settings.Set(true)
+		}},
+		{"tall-usage-page-network", func(a *App, f *fakeBackend) {
+			usagePage(a, f)
+			networkRemote(a)
+		}},
 		{"tall-settings-general", func(a *App, f *fakeBackend) { a.settings.Set(true) }},
 		{"tall-settings-repos", func(a *App, f *fakeBackend) { a.settingsTab = "repos"; a.settings.Set(true) }},
 		{"tall-settings-models", func(a *App, f *fakeBackend) { a.settingsTab = "models"; a.settings.Set(true) }},

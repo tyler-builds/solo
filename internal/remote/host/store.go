@@ -150,6 +150,7 @@ type saved struct {
 	Enabled bool          `json:"enabled,omitempty"`
 	Devices []savedDevice `json:"devices,omitempty"`
 	Cloud   savedCloud    `json:"cloud,omitzero"`
+	Network savedNetwork  `json:"network,omitzero"` // network.go
 }
 
 type savedDevice struct {

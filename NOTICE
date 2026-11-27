@@ -22,6 +22,10 @@ Go program (solo, solo.exe), and the relay and web client built into it
 - modernc.org/sqlite, libc, mathutil and memory: BSD 3-Clause License. They contain
   SQLite (public domain) and code from musl libc (MIT License); see
   LICENSE-3RD-PARTY.md in modernc.org/sqlite and modernc.org/libc.
+- github.com/bytemare/opaque, ecc, hash, hash2curve, secp256k1 and ksf: MIT License,
+  Copyright (c) Daniel Bourdrez. ksf is built from a copy in third_party/ksf with one
+  change (see its PATCHED.md). github.com/gtank/ristretto255, filippo.io/edwards25519
+  and filippo.io/nistec: BSD 3-Clause License.
 - github.com/flynn/noise: BSD 3-Clause License. github.com/godbus/dbus: BSD 2-Clause
   License. github.com/go-text/typesetting: Unlicense or BSD 3-Clause License.
 - github.com/coder/websocket: ISC License. github.com/yuin/goldmark,

@@ -168,11 +168,12 @@ func (r *Remote) connect(stop chan struct{}, address string, skew *time.Duration
 		return "The relay can't be reached.", false, false
 	}
 	ws.SetReadLimit(maxFrame)
-	rc := &relayConn{r: r, ws: ws, origin: origin, machine: m, conns: map[[8]byte]*muxConn{}, ctx: ctx}
+	rc := &relayConn{r: r, ws: ws, origin: origin, machine: m, conns: map[[8]byte]*muxConn{}, ctx: ctx, skew: *skew}
 	rc.pong.Store(time.Now().UnixNano())
 	r.mu.Lock()
 	r.relay = rc
 	p := r.pairing
+	n := r.saved.Network
 	r.mu.Unlock()
 	defer func() {
 		r.mu.Lock()
@@ -191,6 +192,9 @@ func (r *Remote) connect(stop chan struct{}, address string, skew *time.Duration
 	default:
 		rc.ticket(p.code, true) // the relay forgot the code if it lost its memory meanwhile
 	}
+	// The relay lists this machine in the network, or not: what it holds from before may be stale.
+	rc.network(n.Passphrase && n.On && n.Locked == "")
+	go r.checkNetwork(address)
 	r.setConn(Online, "")
 	go rc.keepalive()
 	for {
@@ -241,6 +245,7 @@ type relayConn struct {
 	origin  string
 	machine *secure.Machine
 	ctx     context.Context
+	skew    time.Duration // the relay's clock less this machine's, for the tokens it checks
 	wmu     sync.Mutex
 	pong    atomic.Int64
 
@@ -355,7 +360,8 @@ func (rc *relayConn) frame(frame []byte) {
 			c.deliver(body[8:])
 		}
 	case frameOpen:
-		if len(body) != 8+1+16 {
+		// A peer's open frame also has its relay key.
+		if len(body) != 8+1+16 && !(len(body) == 8+1+16+32 && body[8] == 5) {
 			return
 		}
 		id, kind := [8]byte(body[:8]), body[8]
@@ -375,6 +381,10 @@ func (rc *relayConn) frame(frame []byte) {
 			go rc.r.servePairing(rc, c)
 		case 3:
 			go rc.r.serveOpenPairing(rc, c)
+		case 4:
+			go rc.r.servePassPairing(rc, c)
+		case 5:
+			go rc.r.servePeer(rc, c, secure.ID(body[9:25]), append([]byte(nil), body[25:]...))
 		default:
 			c.Close()
 		}

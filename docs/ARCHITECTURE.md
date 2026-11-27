@@ -549,7 +549,8 @@ lead's notes) and the changes. A thread that isn't a card opens beside the board
   thread) in SQLite for 35 days. Claude Code sends a reading only during a turn, rounded to 1%, so the
   line is straight between Solo's turns, and use on other machines or claude.ai can't be told apart from
   Solo's: the page counts Solo's own turns only. One-shot helper calls (titles, briefs, PR text) aren't
-  counted.
+  counted. Machines in the same network (Settings › Remote › Network; REMOTE.md, Networks) share
+  usage: the page then merges their readings into the line and lists what each machine's Solo used.
 - **Search:** the rail's filter matches thread titles and repositories. Ctrl+K (the title bar's
   Search) lists threads, including merged ones and History, and, from three letters, messages (yours,
   Solo's and the threads'), found with `core.SearchMessages`.

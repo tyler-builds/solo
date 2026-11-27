@@ -40,6 +40,8 @@ type method struct {
 	quiet bool
 	// blob is the most bytes it may carry after its JSON; most carry none.
 	blob int
+	// member: a member of the network may make it; memberOnly: only a member may.
+	member, memberOnly bool
 	// run returns the result, any bytes to send with it, and what the audit log says it was about.
 	run func(ctx context.Context, c *conn, p json.RawMessage, blob []byte) (result any, out []byte, detail string, err error)
 }
@@ -464,9 +466,35 @@ func init() {
 			}
 			return hits, nil, "", err
 		}},
-		"usage": {run: func(ctx context.Context, c *conn, _ json.RawMessage, _ []byte) (any, []byte, string, error) {
+		"usage": {member: true, run: func(ctx context.Context, c *conn, _ json.RawMessage, _ []byte) (any, []byte, string, error) {
 			rep, err := c.h.b.Usage(ctx)
 			return rep, nil, "", err
+		}},
+		"allow": {write: true, member: true, memberOnly: true, run: func(ctx context.Context, c *conn, p json.RawMessage, _ []byte) (any, []byte, string, error) {
+			a, err := decode[allowParams](p)
+			if err == nil && len(a.Key) != 32 {
+				err = invalid("not a device's key")
+			}
+			if err != nil {
+				return nil, nil, "", err
+			}
+			if c.h.opts.Allow == nil {
+				return nil, nil, "", denied("This machine can't let devices in that way.")
+			}
+			return nil, nil, "", c.h.opts.Allow(c.dev, a.Key, a.ReadOnly)
+		}},
+		"passphrase": {write: true, member: true, memberOnly: true, run: func(ctx context.Context, c *conn, p json.RawMessage, _ []byte) (any, []byte, string, error) {
+			a, err := decode[passphraseParams](p)
+			if err == nil && (a.Passphrase == "" || len(a.Passphrase) > 1024) {
+				err = invalid("not a passphrase")
+			}
+			if err != nil {
+				return nil, nil, "", err
+			}
+			if c.h.opts.Passphrase == nil {
+				return nil, nil, "", denied("This machine can't take the network's passphrase.")
+			}
+			return nil, nil, "", c.h.opts.Passphrase(c.dev, a.Passphrase)
 		}},
 		"skills": {run: func(ctx context.Context, c *conn, p json.RawMessage, _ []byte) (any, []byte, string, error) {
 			a, err := decode[threadParams](p)
@@ -595,3 +623,15 @@ func init() {
 		}},
 	}
 }
+
+// The parameters of a member's requests: allow names a device by its Noise key, and passphrase carries
+// the network's new passphrase.
+type (
+	allowParams struct {
+		Key      []byte `json:"key"`
+		ReadOnly bool   `json:"readOnly,omitempty"`
+	}
+	passphraseParams struct {
+		Passphrase string `json:"passphrase"`
+	}
+)

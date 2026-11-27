@@ -13,6 +13,8 @@ const TICKET_SIZE = 32;
 export const MACHINE_AUTH_SIZE = 1 + KEY_SIZE + ID_SIZE + 8 + 16 + SIGNATURE_SIZE;
 export const VOUCHER_SIZE = 1 + KEY_SIZE + ID_SIZE + ID_SIZE + 8 + SIGNATURE_SIZE;
 export const PAIR_TOKEN_SIZE = 1 + ID_SIZE + TICKET_SIZE;
+// A machine's token for a socket to another machine: a machine's token with the other's ID added.
+export const PEER_AUTH_SIZE = 1 + KEY_SIZE + ID_SIZE + 8 + 16 + ID_SIZE + SIGNATURE_SIZE;
 
 // How far from the relay's clock a machine's token may be.
 export const MACHINE_AUTH_WINDOW_MS = 120_000;
@@ -53,16 +55,51 @@ export async function verifyMachineAuth(
 	if (!hostKeys.some((k) => equal(k, key))) {
 		return unlisted;
 	}
-	// The time is 64 bits, so the difference is taken in BigInt: a number would round it.
-	const at = new DataView(body.buffer, body.byteOffset).getBigUint64(1 + KEY_SIZE + ID_SIZE);
-	const age = BigInt(Math.trunc(now)) - at;
-	if (age > BigInt(MACHINE_AUTH_WINDOW_MS) || age < -BigInt(MACHINE_AUTH_WINDOW_MS)) {
+	if (!recent(body, now)) {
 		return bad;
 	}
 	if (!(await signedBy(key, "machine", origin, body, token.subarray(body.length)))) {
 		return bad;
 	}
 	return { ok: true, machineId: body.slice(1 + KEY_SIZE, 1 + KEY_SIZE + ID_SIZE), key: key.slice() };
+}
+
+// recent says whether the time in a machine's token, or in its token for another machine, is within
+// the window of now. The time is 64 bits, so the difference is taken in BigInt: a number would round it.
+function recent(body: Uint8Array, now: number): boolean {
+	const at = new DataView(body.buffer, body.byteOffset).getBigUint64(1 + KEY_SIZE + ID_SIZE);
+	const age = BigInt(Math.trunc(now)) - at;
+	return age <= BigInt(MACHINE_AUTH_WINDOW_MS) && age >= -BigInt(MACHINE_AUTH_WINDOW_MS);
+}
+
+// verifyPeerAuth checks the token a machine opens a socket to another machine with: a machine's
+// token, signed for that purpose, that also names the machine it is for (target).
+export async function verifyPeerAuth(
+	origin: string,
+	token: Uint8Array,
+	now: number,
+	hostKeys: readonly Uint8Array[],
+): Promise<Verdict<{ machineId: Uint8Array; key: Uint8Array; target: Uint8Array }>> {
+	if (token.length !== PEER_AUTH_SIZE || token[0] !== VERSION) {
+		return bad;
+	}
+	const body = token.subarray(0, token.length - SIGNATURE_SIZE);
+	const key = body.subarray(1, 1 + KEY_SIZE);
+	if (!hostKeys.some((k) => equal(k, key))) {
+		return unlisted;
+	}
+	if (!recent(body, now)) {
+		return bad;
+	}
+	if (!(await signedBy(key, "peer", origin, body, token.subarray(body.length)))) {
+		return bad;
+	}
+	return {
+		ok: true,
+		machineId: body.slice(1 + KEY_SIZE, 1 + KEY_SIZE + ID_SIZE),
+		key: key.slice(),
+		target: body.slice(body.length - ID_SIZE),
+	};
 }
 
 // verifyVoucher checks the token a paired device connects with: its machine's word, for the relay at
@@ -110,14 +147,39 @@ export function isOpenPairToken(token: Uint8Array): boolean {
 	return token.length === 1 && token[0] === OPEN_PAIR_TOKEN;
 }
 
+// PASS_TOKEN starts the token of a pairing socket that will prove a network's passphrase to one
+// machine of the network: the byte, then the machine's ID. The relay can't check the passphrase (the
+// exchange is the machine's), so it lets the socket in to a machine that said it takes them.
+export const PASS_TOKEN = 3;
+export const PASS_TOKEN_SIZE = 1 + ID_SIZE;
+
+export function parsePassToken(token: Uint8Array): Uint8Array | null {
+	if (token.length !== PASS_TOKEN_SIZE || token[0] !== PASS_TOKEN) {
+		return null;
+	}
+	return token.slice(1);
+}
+
+// NETWORK_TOKEN is the token of a socket that asks which machines take passphrases: one byte. What it
+// is told, every machine of the network could tell it, and their IDs are no secret.
+export const NETWORK_TOKEN = 4;
+
+export function isNetworkToken(token: Uint8Array): boolean {
+	return token.length === 1 && token[0] === NETWORK_TOKEN;
+}
+
 // ticketHash is what the relay stores of a ticket, and all it ever knows of it.
 export async function ticketHash(ticket: Uint8Array): Promise<Uint8Array> {
 	return new Uint8Array(await crypto.subtle.digest("SHA-256", ticket));
 }
 
+// What a signature is made for: a machine's own socket, a device's voucher, or a machine's socket to
+// another machine.
+export type Context = "machine" | "voucher" | "peer";
+
 // signedMessage is what a token's signature covers: a context string, the relay's origin and the
 // token's fields, so a signature made for one purpose or one relay is no use for another.
-export function signedMessage(context: "machine" | "voucher", origin: string, body: Uint8Array): Uint8Array {
+export function signedMessage(context: Context, origin: string, body: Uint8Array): Uint8Array {
 	const text = new TextEncoder();
 	const at = text.encode(origin);
 	return concat(
@@ -130,7 +192,7 @@ export function signedMessage(context: "machine" | "voucher", origin: string, bo
 
 async function signedBy(
 	key: Uint8Array,
-	context: "machine" | "voucher",
+	context: Context,
 	origin: string,
 	body: Uint8Array,
 	signature: Uint8Array,

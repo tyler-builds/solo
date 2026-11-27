@@ -231,6 +231,57 @@ tests. `internal/remote/relaytest` is the relay in Go, for tests and for running
 machine; the host's tests run over it with real WebSockets, including a relay that alters or drops
 frames.
 
+## Networks (`internal/remote/host/network.go`, `secure/passphrase.go`)
+
+A network is the machines on one relay (one Cloudflare account) that share a passphrase, and the
+devices that joined by typing it. It sits beside pairing with a code, which stays: a code and the
+digits need the person at the machine; a passphrase lets a device join from anywhere, so a device
+that proves it still waits until the person allows it at one of the machines (or, if they turned that
+on, gets in at once).
+
+**The passphrase is checked with OPAQUE** (RFC 9807, `github.com/bytemare/opaque`: ristretto255,
+SHA-512, Argon2id). The passphrase never leaves the device it is typed on, and nothing that crosses
+the relay lets anyone test guesses offline: each guess takes a run of the exchange with a machine.
+A machine keeps a record of the passphrase (its OPAQUE keys and the registration record, in the
+keyring), not the passphrase. Every machine registers the passphrase itself, with its own keys, so a
+device runs the exchange with each machine. OPAQUE's key then keys a Noise handshake (XXpsk3, its
+prologue naming the relay and the machine) in which the two ends learn each other's Noise keys: what
+is kept afterwards is a key the passphrase vouched for. The frames: KE1; KE2; KE3 with Noise's first
+message; Noise's second; Noise's third.
+
+**Guesses are counted at the machine.** Answering KE1 lets the asker test one guess, so the machine
+counts it then, and takes it back when KE3 proves the passphrase. The tenth wrong one turns joining
+by passphrase off until the person turns it on again; whoever finds the relay's address can do that,
+which costs the person a click, not their machines. The relay also lets in at most thirty passphrase
+connections per machine in ten minutes. A passphrase has at least twelve characters; Settings
+suggests one of about 100 bits.
+
+**Machines join each other** when the person sets the passphrase on one: it asks the relay which
+machines take a passphrase, connects to each as a machine (`/v1/peer`, with a token signed by its
+relay key for that use and that target; the relay checks the key is on its list, and tells the target
+the ID and relay key it connected under), and runs the exchange. The target checks the key it proved
+the passphrase with is the one the relay's ID is made of. Both then keep each other as members, with
+a key derived from the channel for later sessions (Noise IKpsk1, purpose "peer"). So a member is a
+machine of the same Cloudflare account that knows the passphrase. Members are sent none of each
+other's state; they may read usage, let a device in on each other's word, and pass on a new
+passphrase (`usage`, `allow`, `passphrase`), and every other request is refused.
+
+**One allow is for every machine.** A device proves the passphrase to each machine, one after another
+(each costs the page a key stretch of 64 MB), and waits at all of them. When the person allows it at
+one, that machine pairs it and tells the members, which pair it too if it waits there, or does in the
+next five minutes. A member's word alone lets nothing in: the device must still prove the passphrase
+at each machine.
+
+**At the relay** (`TICKET.networkOn/Off`, `KIND.passPair` 4, `KIND.peer` 5): a machine says whether it
+takes a passphrase; a socket with the token `[4]` gets one frame of the IDs of those that are
+connected, then a close; `[3] ‖ ID` is a passphrase pairing with that machine; a peer socket's open
+frame carries the other machine's ID and relay key. `/v1/info` says `network: 1`; a machine on an
+older relay says to update it.
+
+The Usage page reads each member's usage (`Remote.MemberUsage`) when it opens and every three minutes
+while it stays open, merges every machine's readings into one line, and lists what each machine's
+Solo used.
+
 ## The web client (`internal/webclient`, `cmd/solo-web`)
 
 The page a device opens is the app's own UI, built with TinyGo, inside a small shell that pairs and

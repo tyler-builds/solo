@@ -5,13 +5,16 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/tyler-builds/jamb/access"
 	"github.com/tyler-builds/jamb/charts"
+	"github.com/tyler-builds/jamb/icons"
 	"github.com/tyler-builds/jamb/ui"
 
+	"github.com/tyler-builds/solo/internal/api"
 	"github.com/tyler-builds/solo/internal/core"
 )
 
@@ -113,12 +116,22 @@ func (a *App) usageDialog(ctx *ui.Context) ui.Element {
 	winW, winH := ctx.WindowSize()
 	w := min(760, winW-2*space2)
 	res := a.usageQuery(ctx)
+	members := a.membersQuery(ctx)
 	now := a.now()
+	// The line draws on every machine's readings.
+	all := res
+	if len(members) > 0 {
+		lists := [][]core.UsageReading{res.Data.Readings}
+		for _, l := range members {
+			lists = append(lists, l.Report.Readings)
+		}
+		all.Data.Readings = mergeReadings(lists...)
+	}
 	body := ui.Div().Column().Gap(space6).Width(ui.Full).MaxHeight(ui.Px(max(winH*0.86-120, 240))).ScrollY().
 		PaddingBottom(space2).PaddingRight(space3).
 		Child(a.usageLimits(ctx, now)).
-		Child(ui.Component(func(ctx *ui.Context) ui.Element { return a.usageHistory(ctx, res, now) })).
-		Child(a.usageThreads(ctx, res))
+		Child(ui.Component(func(ctx *ui.Context) ui.Element { return a.usageHistory(ctx, all, now) })).
+		Child(a.usageThreads(ctx, res, members))
 	return ui.Modal("Usage", body).Width(ui.Px(w)).MaxWidth(ui.Px(w)).CloseButton(true).CloseOnBackdrop().
 		OnClose(func() { a.usageOpen.Set(false) }).Key("usage-page")
 }
@@ -241,9 +254,68 @@ func (a *App) usageHistory(ctx *ui.Context, res ui.QueryResult[core.UsageReport]
 		ui.Div().Width(ui.Full).Padding(space3).Radius(radiusL).Border(1, t.Border).Background(t.Surface).Child(chart))
 }
 
+// usageMachine is one machine's part of what Solo used: this machine's, or another member's.
+type usageMachine struct {
+	key     string // for the rows' keys: "" for this machine, else the machine's ID
+	name    string
+	threads []core.UsageThread
+	here    bool   // this machine: its threads can be opened
+	status  string // a member that couldn't be reached, and how old its copy is
+}
+
+// usageRow is a row of what Solo used: a machine (in a list of several), a thread, or the rest summed.
+type usageRow struct {
+	key, title, kind, id string
+	cost                 float64
+	turns                int
+	machine, indent      bool
+	open                 bool // the thread is here and can be opened
+}
+
+// usageRowsFor lays out the rows of what Solo used: with one machine its threads, the biggest few by
+// name and the rest summed; with several, each machine and then its own biggest few.
+func usageRowsFor(machines []usageMachine) []usageRow {
+	several := len(machines) > 1
+	each := usageRows
+	if several {
+		each = 4
+	}
+	var rows []usageRow
+	for _, m := range machines {
+		var cost float64
+		turns := 0
+		for _, u := range m.threads {
+			cost += u.CostUSD
+			turns += u.Turns
+		}
+		if several {
+			rows = append(rows, usageRow{key: "machine-" + cmp.Or(m.key, "here"), title: m.name, cost: cost, turns: turns, machine: true})
+		}
+		for i, u := range m.threads {
+			if i == each && len(m.threads) > each+1 {
+				rest := usageRow{key: strings.TrimSuffix("rest-"+m.key, "-"), title: plural(len(m.threads)-each, "other thread"), indent: several}
+				for _, o := range m.threads[each:] {
+					rest.cost += o.CostUSD
+					rest.turns += o.Turns
+				}
+				rows = append(rows, rest)
+				break
+			}
+			title := cmp.Or(u.Title, "Untitled thread")
+			key := u.ThreadID
+			if m.key != "" {
+				key = m.key + "-" + key
+			}
+			rows = append(rows, usageRow{key: key, title: title, kind: u.Kind, id: u.ThreadID,
+				cost: u.CostUSD, turns: u.Turns, indent: several, open: m.here && u.Kind != core.UsageKindSolo && u.Kind != ""})
+		}
+	}
+	return rows
+}
+
 // usageThreads is what Solo's threads used since the weekly window began, as shares of all they used,
-// most first: the biggest few by name, and the rest summed.
-func (a *App) usageThreads(ctx *ui.Context, res ui.QueryResult[core.UsageReport]) ui.Element {
+// most first: on this machine and on each other machine of the network.
+func (a *App) usageThreads(ctx *ui.Context, res ui.QueryResult[core.UsageReport], members []api.MemberUsage) ui.Element {
 	t := ctx.Theme()
 	rep := res.Data
 	about := "Since " + rep.Since.Local().Format("Mon Jan 2, 3:04 PM") +
@@ -251,9 +323,36 @@ func (a *App) usageThreads(ctx *ui.Context, res ui.QueryResult[core.UsageReport]
 	if rep.Since.IsZero() {
 		about = ""
 	}
-	var total float64
-	for _, u := range rep.Threads {
-		total += u.CostUSD
+	here := "This machine"
+	if a.Remote != nil {
+		here = cmp.Or(a.remoteState.Get().Name, here)
+	}
+	machines := []usageMachine{{name: here, threads: rep.Threads, here: true}}
+	for _, l := range members {
+		m := usageMachine{key: l.ID, name: l.Name, threads: l.Report.Threads}
+		switch {
+		case l.Err != "" && l.At.IsZero():
+			m.status = l.Name + " couldn't be reached: " + l.Err
+		case l.Err != "":
+			m.status = l.Name + " couldn't be reached, so this is its usage as of " + doneAgo(l.At, a.now()) + "."
+		}
+		machines = append(machines, m)
+	}
+	rows := usageRowsFor(machines)
+	var total, top float64
+	for _, m := range machines {
+		for _, u := range m.threads {
+			total += u.CostUSD
+		}
+	}
+	for _, r := range rows {
+		top = max(top, r.cost)
+	}
+	var notes []ui.Element
+	for _, m := range machines {
+		if m.status != "" {
+			notes = append(notes, ui.Text(m.status).FontSize(11).TextColor(t.Warning).Key("usage-status-"+m.key))
+		}
 	}
 	if total <= 0 {
 		msg := "No turns have finished since the week began."
@@ -262,61 +361,45 @@ func (a *App) usageThreads(ctx *ui.Context, res ui.QueryResult[core.UsageReport]
 		} else if res.Err != nil {
 			msg = "Couldn't load the usage history: " + res.Err.Error()
 		}
-		return usageSection(ctx, "What Solo used", about, nil, muted(ctx, msg))
-	}
-	type row struct {
-		id, title, kind string
-		cost            float64
-		turns           int
-	}
-	var rows []row
-	for i, u := range rep.Threads {
-		if i == usageRows && len(rep.Threads) > usageRows+1 {
-			rest := row{id: "", title: plural(len(rep.Threads)-usageRows, "other thread")}
-			for _, o := range rep.Threads[usageRows:] {
-				rest.cost += o.CostUSD
-				rest.turns += o.Turns
-			}
-			rows = append(rows, rest)
-			break
-		}
-		title := u.Title
-		if title == "" {
-			title = "Untitled thread"
-		}
-		rows = append(rows, row{id: u.ThreadID, title: title, kind: u.Kind, cost: u.CostUSD, turns: u.Turns})
-	}
-	top := rows[0].cost
-	for _, r := range rows {
-		top = max(top, r.cost)
+		return usageSection(ctx, "What Solo used", about, nil, append([]ui.Element{muted(ctx, msg)}, notes...)...)
 	}
 	showCost := a.cfg.Get().ShowCosts
 	list := ui.Div().Column().Gap(2)
 	for _, r := range rows {
-		label := ui.Div().Row().Align(ui.Center).Gap(6).Width(ui.Px(220)).Shrink(1).MinWidth(ui.Px(0)).
-			Child(ui.Text(r.title).FontSize(12).TextColor(t.Text).NoWrap().Truncate().Shrink(1).MinWidth(ui.Px(0)))
-		switch r.kind {
-		case core.UsageKindCard:
+		label := ui.Div().Row().Align(ui.Center).Gap(6).Width(ui.Px(220)).Shrink(1).MinWidth(ui.Px(0))
+		if r.indent {
+			label = label.PaddingLeft(space4)
+		}
+		name := ui.Text(r.title).FontSize(12).TextColor(t.Text).NoWrap().Truncate().Shrink(1).MinWidth(ui.Px(0))
+		if r.machine {
+			name = name.Semibold()
+			label = label.Child(ui.Icon(icons.Laptop).Size(13).Color(t.TextMuted))
+		}
+		label = label.Child(name)
+		switch {
+		case r.kind == core.UsageKindCard:
 			label = label.Child(ui.Text("card").FontSize(11).TextColor(t.TextSubtle).NoWrap().Shrink(0))
-		case "":
-			if r.id != "" {
-				label = label.Child(ui.Text("deleted").FontSize(11).TextColor(t.TextSubtle).NoWrap().Shrink(0))
-			}
+		case r.kind == "" && r.id != "":
+			label = label.Child(ui.Text("deleted").FontSize(11).TextColor(t.TextSubtle).NoWrap().Shrink(0))
 		}
 		share := r.cost / total
+		fill := t.Accent
+		if r.indent {
+			fill = t.Accent.Alpha(0.6)
+		}
 		bar := ui.Div().Grow(1).Basis(ui.Px(0)).MinWidth(ui.Px(40)).Height(ui.Px(10)).
 			Child(ui.Div().Height(ui.Full).Width(ui.Percent(float32(100 * r.cost / top))).MinWidth(ui.Px(2)).
-				Radius(3).Background(t.Accent))
+				Radius(3).Background(fill))
 		tip := plural(r.turns, "turn")
 		if showCost {
 			tip = fmt.Sprintf("$%.2f at API prices · %s", r.cost, tip)
 		}
 		line := ui.Div().Row().Align(ui.Center).Gap(space3).Height(ui.Px(28)).PaddingX(space2).Radius(radiusS).
-			Key("usage-row-" + cmp.Or(r.id, "rest")).Tooltip(tip).
+			Key("usage-row-" + cmp.Or(r.key, "rest")).Tooltip(tip).
 			Child(label).Child(bar).
 			Child(ui.Text(fmt.Sprintf("%d%%", max(1, int(100*share+0.5)))).FontSize(12).TextColor(t.TextMuted).
 				NoWrap().Width(ui.Px(36)).Shrink(0).Align(ui.End))
-		if _, ok := a.thread(r.id); ok && r.id != "" && r.kind != core.UsageKindSolo {
+		if _, ok := a.thread(r.id); ok && r.open {
 			id := r.id
 			line = line.Cursor(ui.CursorPointer).Hover(ui.Style{Background: t.SurfaceHover}).
 				Role(access.RoleButton).Label("Open " + r.title).TabIndex(0).
@@ -324,7 +407,61 @@ func (a *App) usageThreads(ctx *ui.Context, res ui.QueryResult[core.UsageReport]
 		}
 		list = list.Child(line)
 	}
-	note := ui.Text("Only Solo's turns on this machine count here. Claude Code elsewhere and claude.ai use the same limits.").
-		FontSize(11).TextColor(t.TextMuted)
-	return usageSection(ctx, "What Solo used", about, nil, list, note)
+	text := "Only Solo's turns on this machine count here. Claude Code elsewhere and claude.ai use the same limits. Set the same passphrase on your other machines (Settings › Remote › Network) to count theirs."
+	switch {
+	case len(machines) > 1:
+		text = "Only Solo's turns count here, on this machine and the others in its network. Claude Code elsewhere and claude.ai use the same limits."
+	case a.Remote == nil:
+		text = "Only Solo's turns on this machine count here. Claude Code elsewhere and claude.ai use the same limits."
+	}
+	content := append([]ui.Element{list}, notes...)
+	content = append(content, ui.Text(text).FontSize(11).TextColor(t.TextMuted))
+	return usageSection(ctx, "What Solo used", about, nil, content...)
+}
+
+// membersQuery fetches the usage of the other machines of the network, again every few minutes while the
+// page is open. Nil without any.
+func (a *App) membersQuery(ctx *ui.Context) []api.MemberUsage {
+	if a.Remote == nil {
+		return nil
+	}
+	links := a.remoteState.Get().Network.Members
+	if len(links) == 0 {
+		return nil
+	}
+	ids := make([]string, len(links))
+	for i, l := range links {
+		ids[i] = l.ID
+	}
+	// The key changes every membersEvery, which fetches again; the page renders again then.
+	every := int64(membersEvery / time.Second)
+	now := time.Now().Unix()
+	tick := ui.Local(ctx, "members-tick", 0)
+	tick.Get()
+	ctx.After(time.Duration(every-now%every)*time.Second, func() { tick.Update(func(n int) int { return n + 1 }) })
+	key := fmt.Sprintf("members-usage:%d:%s", now/every, strings.Join(ids, ","))
+	res := ui.Query(ctx, key, func(c context.Context) ([]api.MemberUsage, error) {
+		return a.Remote.MemberUsage(c), nil
+	})
+	// While a new fetch runs, the last one shows.
+	last := ui.Local(ctx, "members-last", []api.MemberUsage(nil))
+	if res.Data != nil {
+		last.Set(res.Data)
+		return res.Data
+	}
+	return last.Peek()
+}
+
+// membersEvery is how often the Usage page fetches the members' usage again.
+const membersEvery = 3 * time.Minute
+
+// mergeReadings puts the readings of several machines in one list, oldest first. They all measure the
+// same account's limits, so together they show more of the line than one machine's do.
+func mergeReadings(lists ...[]core.UsageReading) []core.UsageReading {
+	var out []core.UsageReading
+	for _, l := range lists {
+		out = append(out, l...)
+	}
+	slices.SortStableFunc(out, func(a, b core.UsageReading) int { return a.At.Compare(b.At) })
+	return out
 }

@@ -15,7 +15,8 @@ export interface Env {
 // The subprotocol every socket asks for; the token is the second one, and is never echoed.
 export const SUBPROTOCOL = "solo.v1";
 
-export type Role = "machine" | "device" | "pair";
+// A peer is a machine's socket to another machine: one of the network's machines reaching another.
+export type Role = "machine" | "device" | "pair" | "peer";
 
 // The headers the Worker tells the Durable Object what it verified with. The Worker builds that
 // request itself and copies nothing from the client's, so a client cannot set them.
@@ -28,17 +29,27 @@ export const HEADER = {
 	ticket: "X-Solo-Ticket",
 	// Set for a pairing socket that holds no code: it is for whichever machine has pairing open.
 	open: "X-Solo-Open",
+	// Set for a pairing socket that will prove the network's passphrase to the machine it names.
+	pass: "X-Solo-Pass",
+	// Set for a socket that only asks which machines take passphrases.
+	list: "X-Solo-List",
+	// The machine a peer socket is for, by ID.
+	target: "X-Solo-Target",
 } as const;
 
 // The first byte of every frame on a machine's socket.
 export const FRAME = { data: 1, open: 2, close: 3, ticket: 4, usage: 5 } as const;
 
-// The kind in an open frame: a paired device, a pairing with a code, and a pairing without one.
-export const KIND = { device: 1, pair: 2, openPair: 3 } as const;
+// The kind in an open frame: a paired device, a pairing with a code, a pairing without one, a pairing
+// with the network's passphrase, and another machine. Only another machine's open frame is longer:
+// after its ID comes the relay key it connected under.
+export const KIND = { device: 1, pair: 2, openPair: 3, passPair: 4, peer: 5 } as const;
 
 // The operation in a ticket frame. A machine opens pairing to devices that hold no code with `open`
-// (the frame's hash is unused, its expiry and uses are the window's) and closes it with `close`.
-export const TICKET = { add: 1, remove: 2, open: 3, close: 4 } as const;
+// (the frame's hash is unused, its expiry and uses are the window's) and closes it with `close`. It
+// starts and stops taking the network's passphrase with `networkOn` and `networkOff`, for which the
+// frame's other fields are unused.
+export const TICKET = { add: 1, remove: 2, open: 3, close: 4, networkOn: 5, networkOff: 6 } as const;
 
 export const CLOSE = {
 	normal: 1000,
@@ -59,6 +70,8 @@ export const LIMIT = {
 	machines: 8,
 	devices: 16,
 	pairs: 2,
+	// Other machines' sockets to one machine.
+	peers: 16,
 	// The token bucket of a device's or a pairing socket's frames.
 	burst: 200,
 	perSecond: 50,
@@ -70,6 +83,10 @@ export const LIMIT = {
 	// whatever the machine asks for.
 	openPairSeconds: 10 * 60,
 	openPairUses: 16,
+	// Pairing sockets with the passphrase let in to one machine in a window. The machine counts the
+	// wrong passphrases itself; this only keeps a flood from reaching it.
+	passPairs: 30,
+	passWindowMs: 10 * 60 * 1000,
 	// How many forwarded frames go by between writes of the count, and between usage frames.
 	flushEvery: 1000,
 } as const;

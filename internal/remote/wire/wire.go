@@ -63,6 +63,9 @@ type Link struct {
 // NewLink makes a link from a finished handshake's channel and the connection it happened on.
 func NewLink(conn Conn, ch *secure.Channel) *Link { return &Link{conn: conn, ch: ch} }
 
+// Channel is the link's secure channel: who is at the other end (Peer), and keys both ends agree on.
+func (l *Link) Channel() *secure.Channel { return l.ch }
+
 // Send sends one message. It may be called from several goroutines; messages do not interleave.
 func (l *Link) Send(msg []byte) error {
 	flags := byte(0)

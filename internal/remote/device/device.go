@@ -23,6 +23,8 @@ const (
 	PathPair    = "/v1/pair"
 	PathDevice  = "/v1/device"
 	PathMachine = "/v1/machine"
+	// PathPeer is a machine's connection to another machine on the relay (a member of its network).
+	PathPeer    = "/v1/peer"
 	Subprotocol = "solo.v1"
 )
 
@@ -49,6 +51,13 @@ const (
 // OpenPairToken is the token of a pairing connection that holds no code: one byte that says so. The
 // relay lets it in only while a machine has pairing open.
 const OpenPairToken = 2
+
+// The tokens of a network (network.go): a pairing by passphrase with one machine (PassPairToken and the
+// machine's ID), and a request for the machines of the relay's network (NetworkToken alone).
+const (
+	PassPairToken = 3
+	NetworkToken  = 4
+)
 
 // Origin is the relay's origin as both ends hash it into a handshake: the address the web client is
 // served from. host is the address's host, with its port if it has one.

@@ -7,6 +7,7 @@ import {
 	parsePairToken,
 	ticketHash,
 	verifyMachineAuth,
+	verifyPeerAuth,
 	verifyVoucher,
 } from "../src/auth";
 import { fromBase64Url, toBase64Url, toHex } from "../src/bytes";
@@ -16,6 +17,7 @@ const hostKeys = parseHostKeys(vectors.hostKeys);
 const token = (text: string) => fromBase64Url(text)!;
 const auth = token(vectors.machineAuth);
 const voucher = token(vectors.voucher);
+const peer = token(vectors.peerAuth);
 // A key the list could hold in place of the machine's.
 const otherKeys = [new Uint8Array(32).fill(7)];
 
@@ -50,6 +52,46 @@ describe("the machine's token", () => {
 		const other = token(vectors.rejectAuth["another machine's"]);
 		expect(await verifyMachineAuth(vectors.origin, other, vectors.nowMs, hostKeys)).toEqual({ ok: false, why: "key" });
 		expect(await verifyMachineAuth(vectors.origin, other, vectors.nowMs, [other.slice(1, 33)])).toMatchObject({ ok: true });
+	});
+});
+
+describe("the machine's token for another machine", () => {
+	test("is accepted, and names the machine and the other", async () => {
+		const v = await verifyPeerAuth(vectors.origin, peer, vectors.nowMs, hostKeys);
+		expect(v.ok && [toHex(v.machineId), toBase64Url(v.key), toHex(v.target)]).toEqual([
+			vectors.machineId,
+			vectors.machineKey,
+			vectors.peerTarget,
+		]);
+	});
+
+	test.each(Object.entries(vectors.rejectPeer))("is refused: %s", async (_, text) => {
+		expect(await verifyPeerAuth(vectors.origin, token(text), vectors.nowMs, hostKeys)).toMatchObject({ ok: false });
+	});
+
+	test("is refused for another origin", async () => {
+		expect(await verifyPeerAuth(vectors.otherOrigin, peer, vectors.nowMs, hostKeys)).toEqual({ ok: false, why: "token" });
+	});
+
+	test("is accepted only within the window", async () => {
+		for (const offset of [-vectors.windowMs, vectors.windowMs]) {
+			expect(await verifyPeerAuth(vectors.origin, peer, vectors.nowMs + offset, hostKeys)).toMatchObject({ ok: true });
+		}
+		for (const offset of [-vectors.windowMs - 1, vectors.windowMs + 1]) {
+			expect(await verifyPeerAuth(vectors.origin, peer, vectors.nowMs + offset, hostKeys)).toEqual({ ok: false, why: "token" });
+		}
+	});
+
+	test("is refused when its key is not in the list", async () => {
+		expect(await verifyPeerAuth(vectors.origin, peer, vectors.nowMs, otherKeys)).toEqual({ ok: false, why: "key" });
+		const other = token(vectors.rejectPeer["another machine's"]);
+		expect(await verifyPeerAuth(vectors.origin, other, vectors.nowMs, hostKeys)).toEqual({ ok: false, why: "key" });
+		expect(await verifyPeerAuth(vectors.origin, other, vectors.nowMs, [other.slice(1, 33)])).toMatchObject({ ok: true });
+	});
+
+	test("is not a machine's own token, nor the other way round", async () => {
+		expect(await verifyMachineAuth(vectors.origin, peer, vectors.nowMs, hostKeys)).toEqual({ ok: false, why: "token" });
+		expect(await verifyPeerAuth(vectors.origin, auth, vectors.nowMs, hostKeys)).toEqual({ ok: false, why: "token" });
 	});
 });
 
