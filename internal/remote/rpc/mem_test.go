@@ -236,6 +236,8 @@ func (m *mem) PlainFolders() []string {
 
 func (m *mem) RateLimits() []agent.Event { return nil }
 
+func (m *mem) Usage(context.Context) (core.UsageReport, error) { return core.UsageReport{}, nil }
+
 func (m *mem) Send(_ context.Context, id, text string, images ...string) error {
 	m.mu.Lock()
 	m.sent = append(m.sent, fmt.Sprintf("%s: %s %v", id, text, images))

@@ -209,6 +209,9 @@ func TestMirrorOfTheRealEngine(t *testing.T) {
 	if _, err := client.Skills(ctx, v1.ID); err != nil {
 		t.Errorf("skills: %v", err)
 	}
+	if rep, err := client.Usage(ctx); err != nil || rep.Since.IsZero() {
+		t.Errorf("usage: %+v %v", rep, err)
+	}
 	if _, err := client.SearchPaths(ctx, "../etc", "x", 5); err == nil {
 		t.Error("searchPaths took a bad thread")
 	}

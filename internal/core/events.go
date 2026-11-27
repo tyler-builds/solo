@@ -271,7 +271,15 @@ func (c *Core) onEvent(e agent.Event) {
 			DurationMs: e.DurationMs, CostUSD: e.TotalCostUSD})
 		c.briefTurnEndLocked(t)
 		if e.TotalCostUSD > 0 {
+			// The session's cost so far: what this turn cost is how much it grew. A claude process that
+			// started again (a restart, a resume) counts from zero, so its first turn cost its total.
+			prev := t.row.CostUSD
 			t.row.CostUSD = t.row.CostBase + e.TotalCostUSD
+			turn := t.row.CostUSD - prev
+			if turn < 0 {
+				turn = e.TotalCostUSD
+			}
+			c.recordTurnLocked(t, turn)
 		}
 		if e.ContextTokens > 0 {
 			t.row.ContextTokens = e.ContextTokens

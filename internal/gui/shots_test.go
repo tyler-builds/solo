@@ -137,6 +137,10 @@ func TestShots(t *testing.T) {
 		// Claude's usage limits at the foot of the rail, and the notice when only a status is known.
 		{"usage", func(a *App, f *fakeBackend) { f.rate = demoLimits(); a.rate.Set(f.rate) }},
 		{"usage-narrow", func(a *App, f *fakeBackend) { f.rate = demoLimits(); a.rate.Set(f.rate) }},
+		// The Usage page: the limits, the line of what is left, and what the threads used.
+		{"usage-page", usagePage},
+		{"usage-page-narrow", usagePage},
+		{"usage-page-empty", func(a *App, f *fakeBackend) { f.rate = demoLimits(); a.rate.Set(f.rate); a.openUsage() }},
 		// Many threads at work: the pinned Working group caps its height and scrolls within itself.
 		{"working-many", func(a *App, f *fakeBackend) {
 			manyWorking(f)
@@ -418,6 +422,7 @@ func TestShots(t *testing.T) {
 		{"phone-threads", func(a *App, f *fakeBackend) { a.drawer.Set(true) }},
 		// The drawer with Claude's usage limits at its foot, in their one-line form.
 		{"phone-usage", func(a *App, f *fakeBackend) { f.rate = demoLimits(); a.rate.Set(f.rate); a.drawer.Set(true) }},
+		{"phone-usage-page", usagePage},
 		{"phone-thread", func(a *App, f *fakeBackend) { a.openThread("c3d4e5f6-forms", "conversation") }},
 		{"phone-changes", func(a *App, f *fakeBackend) { diffSplit.Set(false); a.openThread("c3d4e5f6-forms", "changes") }},
 		{"phone-working", func(a *App, f *fakeBackend) { a.openThread("a1f3c9d2-oauth", "conversation") }},
@@ -462,7 +467,7 @@ func TestShots(t *testing.T) {
 				continue
 			}
 			if theme.name == "light" && sh.name != "main" && sh.name != "changes" && sh.name != "land-cards" &&
-				sh.name != "scrolled-up" && sh.name != "usage" && sh.name != "phone-main" && !busy &&
+				sh.name != "scrolled-up" && sh.name != "usage" && sh.name != "usage-page" && sh.name != "phone-main" && !busy &&
 				sh.name != "merge-pill-three" && sh.name != "merge-pill-three-open" && sh.name != "board" &&
 				!strings.HasPrefix(sh.name, "code") && !strings.HasPrefix(sh.name, "lightbox") {
 				continue

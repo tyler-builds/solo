@@ -30,7 +30,8 @@ import (
 type fakeBackend struct {
 	mu          sync.Mutex
 	threads     []core.ThreadView
-	rate        []agent.Event // usage limits, for RateLimits
+	rate        []agent.Event    // usage limits, for RateLimits
+	usage       core.UsageReport // the usage history, for Usage
 	items       map[string][]core.Item
 	pending     map[string][]core.PendingQuestion
 	changes     map[string][]git.FileChange
@@ -345,6 +346,8 @@ func (f *fakeBackend) InitRepo(_ context.Context, folder string) (string, error)
 	return folder, nil
 }
 func (f *fakeBackend) RateLimits() []agent.Event { return f.rate }
+
+func (f *fakeBackend) Usage(context.Context) (core.UsageReport, error) { return f.usage, nil }
 
 func (f *fakeBackend) Done(_ context.Context, id string) error {
 	f.mu.Lock()

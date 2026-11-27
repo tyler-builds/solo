@@ -30,6 +30,7 @@ func (c *Core) setRateLimit(e agent.Event) {
 		c.rateLimits[w.RateLimitType] = agent.Event{SessionID: e.SessionID, Seq: e.Seq, Kind: e.Kind,
 			Status: w.Status, ResetsAt: w.ResetsAt, RateLimitType: w.RateLimitType, Utilization: &u}
 	}
+	windows := e.Windows
 	e.Windows = nil
 	prev, ok := c.rateLimits[e.RateLimitType]
 	if ok && e.Utilization == nil {
@@ -39,6 +40,8 @@ func (c *Core) setRateLimit(e agent.Event) {
 		e.ResetsAt = prev.ResetsAt
 	}
 	c.rateLimits[e.RateLimitType] = e
+	e.Windows = windows
+	c.recordReadingsLocked(e)
 }
 
 // RateLimits returns the latest rate limit event of each kind of limit Claude has reported, in

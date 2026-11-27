@@ -94,6 +94,9 @@ type Backend interface {
 	PlainFolders() []string
 	InitRepo(ctx context.Context, folder string) (string, error)
 	RateLimits() []agent.Event
+	// Usage is the usage history the Usage page draws (see core.Core.Usage). It reads the database:
+	// call it off the UI thread.
+	Usage(ctx context.Context) (core.UsageReport, error)
 	CheckClaude(ctx context.Context, override string) core.ClaudeStatus
 }
 
