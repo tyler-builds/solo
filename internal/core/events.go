@@ -96,11 +96,13 @@ func (c *Core) onEvent(e agent.Event) {
 		if !e.IsRoot() {
 			break // subagent messages are summarized by their task items
 		}
+		briefed := false // something the brief's digest shows (briefDigest), not thinking alone
 		for _, b := range e.Blocks {
 			switch b.Type {
 			case "text":
 				if b.Text != "" {
 					c.addItemLocked(t, ItemAssistant, "", TextData{Text: b.Text, Images: c.ImagesIn(b.Text)})
+					briefed = briefed || !IsNoted(b.Text)
 				}
 			case "thinking":
 				if b.Text != "" {
@@ -115,6 +117,7 @@ func (c *Core) onEvent(e agent.Event) {
 					t.tools = map[string]int64{}
 				}
 				t.tools[b.ID] = itemID
+				briefed = true
 			}
 		}
 		// The complete message replaces what streamed for it.
@@ -128,7 +131,9 @@ func (c *Core) onEvent(e agent.Event) {
 		}
 		t.live = kept
 		itemsChanged, streamChanged = true, true
-		c.briefActivityLocked(t)
+		if briefed {
+			c.briefActivityLocked(t)
+		}
 
 	case agent.EventToolResult:
 		if !e.IsRoot() {
@@ -140,7 +145,9 @@ func (c *Core) onEvent(e agent.Event) {
 				t.notePRHintsLocked(*d) // a pull request it opened itself, linked when the turn ends
 			})
 			delete(t.tools, e.ToolUseID)
-			c.briefActivityLocked(t)
+			if e.IsError { // the digest shows a call's result only when it failed (toolLine)
+				c.briefActivityLocked(t)
+			}
 			if t.step != nil && t.step.ID == e.ToolUseID {
 				t.step = nil
 				threadChanged = true

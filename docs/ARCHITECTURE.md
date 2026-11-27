@@ -388,13 +388,14 @@ scripted behavior.
 ## Briefs (`core/brief.go`)
 
 A small model (Settings › `summaryModel`, Haiku by default; `noSummaries` turns it off) writes each
-worker's brief, which the board's cards show: while a turn runs, what it has done so far and what it
+worker's brief while the board is on, since only the board's cards show it: while a turn runs, what it has done so far and what it
 is doing now (`ThreadView.Now`); when it ends, what it did, where the whole task stands, and what it
 needs (`input`, `review` or `blocked`). It reads a digest of the turn's items built in Go (the user's
 messages, tool calls in a few words, the agent's messages, errors), never the thinking, and the card
 shows only what it writes. The first brief comes a few seconds into a turn, then at most every 20 s
-while there is new activity, then one at the turn's end; two run at once at most, and a failed call
-backs off for two minutes. It is saved with the thread (`threads.brief`). A card added without a title
+while there is new activity the digest shows (not thinking alone, nor a tool call's success), then one
+at the turn's end; two run at once at most, the rest waiting their turn, and a failed call backs off for
+two minutes. A card's builder gets no turn-end brief: its card shows the lead's review instead. It is saved with the thread (`threads.brief`). A card added without a title
 is named by the same model.
 
 ## Board (`gui/board.go`, `gui/cardview.go`, `core/card.go`)
@@ -412,11 +413,12 @@ attachments must be ones already saved) is a builder, a worker on the threads' m
 (Settings › Models › Board cards; Solo's by default, `Settings.CardModel`):
 
 - the briefer reads the code and briefs the builder (`brief_builder`), or asks the user first
-  (`report` with need `input`). It runs once, so its context, often the largest, is never read again.
+  (`report` with need `input`). It runs once, so its context, often the largest, is never read again;
+  its session is closed when the reviewer takes over.
 - the reviewer is made at the builder's first finished turn and told the user's ask, the brief and the
   builder's report. It reviews the diff and runs the project's tests, builds and linters itself, then
-  sends the builder back (`send_back`, twice at most, `cardMaxRounds`) or writes the user a few lines
-  (`report`). From then on it takes the user's replies (turning them into a `brief_builder`) and the
+  sends the builder back (`send_back`, or `brief_builder` during a review, twice at most in all,
+  `cardMaxRounds`) or writes the user a few lines (`report`). From then on it takes the user's replies (turning them into a `brief_builder`) and the
   builder's questions (`answer_builder`).
 
 Each lead ends its turn with one call to its card tools (`cardTools`, an in-process MCP server named
@@ -424,7 +426,9 @@ Each lead ends its turn with one call to its card tools (`cardTools`, an in-proc
 `answer_builder` without a question, each refusal telling the lead what to do instead), and `cardSettled`
 acts on it when the lead's turn ends, so the builder never works while a lead still runs things in the
 same worktree. A turn that calls no tool becomes a review that needs the user, its text. The leads run
-on `claudesdk` in this process, as every session does.
+on `claudesdk` in this process, as every session does. Landing, marking done or discarding a card closes
+its leads' sessions first (`closeLeads`), so no lead keeps working, and no cut-off turn starts a review,
+in a worktree about to go.
 
 Separate sessions keep each one's prompt cache on one model: measured on Claude Code, a session that
 switches model writes its whole context again at the new model's price (2x input, as Claude Code caches

@@ -32,6 +32,9 @@ func TestBriefAfterTurn(t *testing.T) {
 	}
 	e.c.Close()
 	e.c = e.open(t)
+	if err := e.c.UpdateSettings(func(s *Settings) { s.Board = true }); err != nil {
+		t.Fatal(err)
+	}
 
 	ctx := context.Background()
 	v, err := e.c.CreateWorker(ctx, WorkerSpec{Repo: "proj", Title: "Add hello", Prompt: "write hello.txt hi there"})
@@ -84,6 +87,36 @@ func TestBriefsOffWithoutSummarizer(t *testing.T) {
 	}
 	if v = waitStatus(t, e.c, v.ID, StatusIdle); v.Brief != nil {
 		t.Fatalf("brief %+v", v.Brief)
+	}
+}
+
+// Only the board shows briefs, so without it none are written.
+func TestBriefsOffWithoutBoard(t *testing.T) {
+	defer func(f, e time.Duration) { briefFirstWait, briefEvery = f, e }(briefFirstWait, briefEvery)
+	briefFirstWait, briefEvery = 10*time.Millisecond, 50*time.Millisecond
+	e := newEnv(t)
+	calls := 0
+	var mu sync.Mutex
+	e.summarize = func(ctx context.Context, req SummarizeRequest) (string, error) {
+		if req.System == briefSystem {
+			mu.Lock()
+			calls++
+			mu.Unlock()
+		}
+		return `{"turn": "- x", "overall": "x", "need": "review"}`, nil
+	}
+	e.c.Close()
+	e.c = e.open(t)
+	v, err := e.c.CreateWorker(context.Background(), WorkerSpec{Repo: "proj", Title: "Add hello", Prompt: "write hello.txt hi"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	v = waitStatus(t, e.c, v.ID, StatusIdle)
+	time.Sleep(200 * time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 0 || v.Brief != nil {
+		t.Fatalf("%d brief calls, brief %+v", calls, v.Brief)
 	}
 }
 

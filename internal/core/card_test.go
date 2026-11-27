@@ -202,6 +202,11 @@ func TestLeadToolChecks(t *testing.T) {
 	if text, isErr := call(toolFix, `{"what_to_fix":"x"}`); !isErr || !strings.Contains(text, "report instead") {
 		t.Errorf("fix past the limit: %q", text)
 	}
+	// Briefing the builder from a review is sending it back, so it counts against the limit too.
+	e.c.updateCard(v.ID, func(cs *CardState) { cs.Phase = CardReviewing })
+	if text, isErr := call(toolBrief, `{"instructions":"x"}`); !isErr || !strings.Contains(text, "report instead") {
+		t.Errorf("brief from a review past the limit: %q", text)
+	}
 	if text, isErr := call(toolReport, `{"message":"All done.","need":"review"}`); isErr || !strings.HasPrefix(text, "Queued") {
 		t.Errorf("report: %q", text)
 	}
@@ -214,6 +219,37 @@ func TestLeadToolChecks(t *testing.T) {
 	e.c.mu.Unlock()
 	if text, isErr := e.c.leadTool(briefer, toolFix, json.RawMessage(`{"what_to_fix":"x"}`)); !isErr || !strings.Contains(text, "Only the reviewer") {
 		t.Errorf("briefer sending back: %q", text)
+	}
+}
+
+// Discarding a card ends its leads' sessions, and the turns they cut off move nothing.
+func TestDiscardClosesLeads(t *testing.T) {
+	e := cardEnv(t)
+	ctx := context.Background()
+	v, err := e.c.CreateWorker(ctx, WorkerSpec{Repo: "proj", Title: "Hello", Prompt: "write hello.txt hi there", FromUser: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	v = waitCard(t, e.c, v.ID, reviewed)
+	lead, _ := e.c.Thread(v.Card.Lead)
+	reviewer, _ := e.c.Thread(v.Card.Reviewer)
+	if e.c.agent.Has(lead.SessionID) {
+		t.Error("the briefer's session is still open after the reviewer took over")
+	}
+	if !e.c.agent.Has(reviewer.SessionID) {
+		t.Fatal("the reviewer has no session")
+	}
+	if err := e.c.Discard(ctx, v.ID); err != nil {
+		t.Fatal(err)
+	}
+	if e.c.agent.Has(reviewer.SessionID) {
+		t.Error("the reviewer's session is still open after discarding")
+	}
+	e.c.mu.Lock()
+	over := e.c.threads[v.ID].cardOver
+	e.c.mu.Unlock()
+	if !over {
+		t.Error("the discarded card isn't marked over")
 	}
 }
 

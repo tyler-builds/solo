@@ -231,6 +231,11 @@ func (c *Core) leadTool(t *thread, name string, args json.RawMessage) (string, b
 	}
 	var r leadReply
 	queued := "Queued: the builder gets this when you end your turn. End your turn now."
+	// Sending the builder back from a review is a round of fixes whichever tool does it, so brief_builder
+	// can't get round cardMaxRounds.
+	if name == toolBrief && cs.Phase == CardReviewing {
+		name, in.WhatToFix = toolFix, in.Instructions
+	}
 	switch name {
 	case toolBrief:
 		r = leadReply{kind: "brief", body: in.Instructions}
@@ -328,6 +333,43 @@ func (c *Core) cardFail(builderID, why string) {
 	})
 }
 
+// closeBriefer ends the card's briefer's session, which nothing reaches once the card has a reviewer
+// (activeLeadLocked).
+func (c *Core) closeBriefer(builderID string) {
+	c.mu.Lock()
+	var id string
+	if b := c.threads[builderID]; b != nil {
+		if cs := b.card(); cs != nil {
+			id = cs.Lead
+		}
+	}
+	c.mu.Unlock()
+	if id != "" {
+		c.closeSession(context.Background(), id)
+	}
+}
+
+// closeLeads marks a card's work over (landed, done or discarded) and ends its leads' sessions,
+// stopping any turn they are in. Call it before closing the builder's session, so neither the
+// builder's cut-off turn nor a lead's starts a review in a worktree about to go. A thread that isn't a
+// card's builder has no leads.
+func (c *Core) closeLeads(ctx context.Context, builderID string) {
+	c.mu.Lock()
+	var ids []string
+	if b := c.threads[builderID]; b != nil && b.row.Kind != store.KindLead {
+		if cs := b.card(); cs != nil {
+			b.cardOver = true
+			ids = []string{cs.Lead, cs.Reviewer}
+		}
+	}
+	c.mu.Unlock()
+	for _, id := range ids {
+		if id != "" {
+			c.closeSession(ctx, id)
+		}
+	}
+}
+
 // toLead sends the card's active lead (its reviewer once it has one, else its briefer) a message from
 // Solo.
 func (c *Core) toLead(builderID, phase, text string, files []string) {
@@ -407,7 +449,7 @@ func (c *Core) cardSettled(id string) {
 	c.mu.Lock()
 	t := c.threads[id]
 	b, _, cs := c.cardOfLocked(id)
-	if t == nil || b == nil || cs == nil || c.closed {
+	if t == nil || b == nil || cs == nil || c.closed || b.cardOver {
 		c.mu.Unlock()
 		return
 	}
@@ -470,6 +512,9 @@ func (c *Core) cardSettled(id string) {
 	if err != nil {
 		c.cardFail(builderID, "Solo couldn't start the review: "+err.Error())
 		return
+	}
+	if made {
+		c.closeBriefer(builderID) // the reviewer takes the card's replies and questions from now on
 	}
 	var b2 strings.Builder
 	var attach []string
