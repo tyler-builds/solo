@@ -255,18 +255,27 @@ func (a *App) remotePage(ctx *ui.Context) ui.Element {
 			seen = "last here " + doneAgo(d.LastSeen, a.now())
 		}
 		icon, shade := icons.Smartphone, t.TextSubtle
+		if d.Linked {
+			icon = icons.Laptop
+		}
 		if d.Online {
 			shade = t.Success
 		}
 		access := ui.NewSignal(d.ReadOnly)
+		var accessControl ui.Element = ui.Select(access, ui.Option[bool]{Value: false, Label: "Full access"}, ui.Option[bool]{Value: true, Label: "Can only look"}).
+			Width(ui.Px(140)).Label("Access for " + name).
+			OnChange(func(ro bool) { go func() { fail("Couldn't change its access", rm.SetReadOnly(id, ro)) }() })
+		about := "Added " + doneAgo(d.Added, a.now()) + " · " + seen
+		if d.Linked {
+			accessControl = caption(ctx, "Reads usage only").Width(ui.Px(140)).NoWrap()
+			about = "Linked Solo · " + about
+		}
 		rows = append(rows, ui.Div().Row().Align(ui.Center).Gap(space3).PaddingX(space4).PaddingY(space3).Key("remote-device-"+id).
 			Child(ui.Icon(icon).Size(16).Color(shade)).
 			Child(ui.Div().Column().Gap(2).Grow(1).MinWidth(ui.Px(0)).
 				Child(ui.Text(name).FontSize(13).Medium().TextColor(t.Text).Truncate()).
-				Child(caption(ctx, "Added "+doneAgo(d.Added, a.now())+" · "+seen).Truncate())).
-			Child(ui.Select(access, ui.Option[bool]{Value: false, Label: "Full access"}, ui.Option[bool]{Value: true, Label: "Can only look"}).
-				Width(ui.Px(140)).Label("Access for "+name).
-				OnChange(func(ro bool) { go func() { fail("Couldn't change its access", rm.SetReadOnly(id, ro)) }() })).
+				Child(caption(ctx, about).Truncate())).
+			Child(accessControl).
 			Child(ui.Button("Remove").Secondary().Small().Tooltip("It can't reach this machine again without pairing").
 				OnClick(func() {
 					a.confirm.Set(&confirmation{title: "Remove “" + name + "”?",
@@ -292,7 +301,85 @@ func (a *App) remotePage(ctx *ui.Context) ui.Element {
 	devices := settingsSection(ctx, "Devices", "Each device is paired here, at this machine, and can be removed at any time.", add, rows...)
 
 	return settingsPage(ctx, "Remote", "Use Solo on this machine from a phone or another computer.",
-		relay, a.pairingCard(ctx, st), devices)
+		relay, a.pairingCard(ctx, st), devices, a.linksSection(ctx, st))
+}
+
+// linksSection is the Solos on other machines this one shares usage with: linking another, the link
+// being made, and the links kept.
+func (a *App) linksSection(ctx *ui.Context, st api.RemoteState) ui.Element {
+	rm := a.Remote
+	t := ctx.Theme()
+	link := ui.Local(ctx, "remote-link", "")
+	start := func() {
+		v := strings.TrimSpace(link.Peek())
+		go func() {
+			if err := rm.LinkTo(v); err != nil {
+				a.notify(ui.ToastError, "Couldn't link", err.Error())
+				return
+			}
+			a.onUI(func() { link.Set("") })
+		}()
+	}
+	var rows []ui.Element
+	if l := st.Linking; l != nil {
+		row := ui.Div().Column().Gap(space2).PaddingX(space4).PaddingY(space3).Key("remote-linking")
+		switch {
+		case !l.Done:
+			row = row.
+				Child(subhead("Type these digits on the other machine")).
+				Child(ui.Div().Row().Gap(space3).Align(ui.Center).
+					Child(ui.Text(l.Digits[:3] + " " + l.Digits[3:]).FontSize(22).Semibold().TextColor(t.Text).Key("remote-link-digits")).
+					Child(ui.ProgressRing().Size(16).Label("Waiting")).
+					Child(ui.Div().Grow(1)).
+					Child(ui.Button("Cancel").Ghost().Small().OnClick(func() { go rm.CancelLink() }))).
+				Child(caption(ctx, "In its Settings › Remote, where the pairing code is shown."))
+		case l.Err != "":
+			row = row.Child(ui.Div().Row().Gap(space2).Align(ui.Start).
+				Child(ui.Div().PaddingTop(1).Child(ui.Icon(icons.TriangleAlert).Size(14).Color(t.Danger))).
+				Child(caption(ctx, l.Err).Grow(1)).
+				Child(ui.Button("OK").Ghost().Small().OnClick(func() { go rm.CancelLink() })))
+		default:
+			row = row.Child(ui.Div().Row().Gap(space2).Align(ui.Start).
+				Child(ui.Div().PaddingTop(1).Child(ui.Icon(icons.Check).Size(14).Color(t.Success))).
+				Child(caption(ctx, l.Note).Grow(1)).
+				Child(ui.Button("OK").Ghost().Small().OnClick(func() { go rm.CancelLink() })))
+		}
+		rows = append(rows, row)
+	}
+	for _, l := range st.Links {
+		id, name := l.ID, l.Name
+		about := "Linked " + doneAgo(l.Added, a.now())
+		if l.OneWay {
+			about += " · it can't see this machine's usage"
+		}
+		rows = append(rows, ui.Div().Row().Align(ui.Center).Gap(space3).PaddingX(space4).PaddingY(space3).Key("remote-link-"+id).
+			Child(ui.Icon(icons.Link).Size(16).Color(t.TextSubtle)).
+			Child(ui.Div().Column().Gap(2).Grow(1).MinWidth(ui.Px(0)).
+				Child(ui.Text(name).FontSize(13).Medium().TextColor(t.Text).Truncate()).
+				Child(caption(ctx, about).Truncate())).
+			Child(ui.Button("Remove").Secondary().Small().Tooltip("Stop sharing usage with it").
+				OnClick(func() {
+					a.confirm.Set(&confirmation{title: "Unlink “" + name + "”?",
+						body:   "This machine stops reading its usage, and it can no longer read this machine's.",
+						action: "Unlink", run: func() {
+							go func() {
+								if err := rm.Unlink(id); err != nil {
+									a.notify(ui.ToastError, "Couldn't unlink", err.Error())
+								}
+							}()
+						}})
+				})))
+	}
+	if st.Linking == nil || st.Linking.Done {
+		rows = append(rows, settingBlock(ctx, "Link to another Solo",
+			"On the other machine, open Settings › Remote, choose Add a device, then copy its link (under “Can't scan?”) and paste it here. Each Usage page then shows both machines.",
+			ui.Div().Row().Gap(space2).Align(ui.Center).
+				Child(ui.TextInput(link).Placeholder("https://…/#p=…").Label("Pairing link from the other machine").
+					Small().Grow(1).Key("remote-link-input").OnSubmit(func(string) { start() })).
+				Child(ui.Button("Link").Secondary().Small().Key("remote-link-start").
+					Disabled(strings.TrimSpace(link.Get()) == "").OnClick(start))))
+	}
+	return settingsSection(ctx, "Linked Solos", "Solo on your other machines, sharing usage with this one. A linked Solo can read usage and nothing else.", nil, rows...)
 }
 
 // pairingCard is the pairing in progress: the code to scan, and the box for the digits the device
@@ -336,6 +423,10 @@ func (a *App) pairingCard(ctx *ui.Context, st api.RemoteState) ui.Element {
 				return
 			}
 			a.onUI(func() { digits.Set("") })
+			if dev.Linked {
+				a.notify(ui.ToastSuccess, "Linked", "Solo on “"+dev.Name+"” can now see this machine's usage.")
+				return
+			}
 			a.notify(ui.ToastSuccess, "Paired", "“"+dev.Name+"” can now use Solo on this machine.")
 		}()
 	}

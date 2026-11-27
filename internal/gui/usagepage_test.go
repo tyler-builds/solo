@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tyler-builds/solo/internal/api"
 	"github.com/tyler-builds/solo/internal/core"
 )
 
@@ -112,4 +113,33 @@ func usagePage(a *App, f *fakeBackend) {
 	f.usage = demoUsage(time.Now())
 	a.rate.Set(f.rate)
 	a.openUsage()
+}
+
+// linkedRemote gives the app remote access linked to a Solo on a laptop, which was last reached an hour
+// ago, and one being linked from here.
+func linkedRemote(a *App) {
+	now := time.Now()
+	laptop := demoUsage(now)
+	laptop.Readings = nil
+	laptop.Threads = []core.UsageThread{
+		{ThreadID: "l1", Title: "Port the CLI to Windows", Kind: core.UsageKindThread, CostUSD: 4.4, Turns: 15},
+		{ThreadID: core.OrchestratorID, Title: "Solo", Kind: core.UsageKindSolo, CostUSD: 1.9, Turns: 11},
+		{ThreadID: "l2", Title: "Profile the image cache", Kind: core.UsageKindCard, CostUSD: 1.1, Turns: 6},
+	}
+	st := api.RemoteState{Relay: "https://solo-desk.example.workers.dev", Enabled: true, Connection: api.RemoteOnline,
+		Name: "desk", MachineID: "aa",
+		Devices: []api.RemoteDevice{{ID: "d1", Name: "laptop", Linked: true, Added: now.Add(-48 * time.Hour), LastSeen: now.Add(-time.Hour)}},
+		Links: []api.RemoteLink{
+			{ID: "m2", Name: "laptop", Relay: "https://solo-laptop.example.workers.dev", Added: now.Add(-48 * time.Hour)},
+			{ID: "m3", Name: "build-box", Relay: "https://solo-box.example.workers.dev", Added: now.Add(-2 * time.Hour), OneWay: true},
+		},
+		Linking: &api.RemoteLinking{Digits: "482913"},
+	}
+	a.Remote = &fakeRemote{st: st, linked: []api.LinkedUsage{
+		{ID: "m2", Name: "laptop", Report: laptop, At: now.Add(-time.Minute)},
+		{ID: "m3", Name: "build-box", Report: core.UsageReport{Threads: []core.UsageThread{
+			{ThreadID: "b1", Title: "Nightly dependency bumps", Kind: core.UsageKindThread, CostUSD: 0.7, Turns: 4}}},
+			At: now.Add(-time.Hour), Err: "it's offline"},
+	}}
+	a.remoteState.Set(st)
 }

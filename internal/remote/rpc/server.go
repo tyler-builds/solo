@@ -24,6 +24,9 @@ type Device struct {
 	Name string
 	// ReadOnly: it may look, and every request that changes something is refused.
 	ReadOnly bool
+	// Linked: it is another machine's Solo, linked to share usage. It is sent none of this machine's
+	// state, and may make only the requests a linked Solo needs (method.linked).
+	Linked bool
 }
 
 // Options configure a Host. The zero value works.
@@ -50,7 +53,12 @@ type Options struct {
 	// UploadIdle is how long a file a device is sending waits for its next part before what arrived
 	// is removed (default uploadIdle).
 	UploadIdle time.Duration
-	Log        *slog.Logger
+	// LinkKey is the key this machine pairs with as a linked Solo (secure.Machine.Link), which a linked
+	// Solo asks for to link back. Nil, or nil returned, refuses.
+	LinkKey func() []byte
+	// Link keeps what a linked Solo grants this machine to reach it in turn. Nil refuses.
+	Link func(d Device, g LinkGrant) error
+	Log  *slog.Logger
 }
 
 // Host serves paired devices over a backend. One Host lasts for the machine's run: it numbers the
@@ -308,6 +316,9 @@ func (c *conn) bye(code, msg string) {
 
 // note records a change for the device. It runs under Host.mu and must not block.
 func (c *conn) note(ch core.Change) {
+	if c.dev.Linked {
+		return
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	switch ch.Kind {
@@ -409,16 +420,19 @@ func (c *conn) hello(e Envelope) error {
 	h.mu.Lock()
 	w.Resumed = hi.Epoch == h.epoch && hi.Rev > 0 && hi.Rev <= h.rev
 	c.mu.Lock()
-	if w.Resumed {
+	switch {
+	case c.dev.Linked: // it is sent nothing
+	case w.Resumed:
 		for id, rev := range h.threads {
 			if rev > hi.Rev {
 				c.threads[id] = true
 			}
 		}
-	} else {
+		c.misc = true
+	default:
 		c.threads[allThreads] = true
+		c.misc = true
 	}
-	c.misc = true
 	c.greeted = true
 	c.mu.Unlock()
 	h.conns[c] = struct{}{}
@@ -467,6 +481,9 @@ func (c *conn) flusher() {
 
 // flush reads what changed and sends it. first marks the catch-up after hello.
 func (c *conn) flush(first bool) error {
+	if c.dev.Linked {
+		return nil // a linked Solo is sent no state
+	}
 	h := c.h
 	c.mu.Lock()
 	if !c.greeted {
@@ -765,6 +782,14 @@ func (c *conn) serve(e Envelope) {
 	m, ok := methods[e.M]
 	if !ok {
 		c.s.send(Envelope{T: kindRes, ID: e.ID, E: invalid("unknown request %q", clip(e.M, 40))})
+		return
+	}
+	if c.dev.Linked && !m.linked {
+		c.s.send(Envelope{T: kindRes, ID: e.ID, E: denied("A linked Solo may only read usage.")})
+		return
+	}
+	if m.linkOnly && !c.dev.Linked {
+		c.s.send(Envelope{T: kindRes, ID: e.ID, E: denied("Only a linked Solo may ask that.")})
 		return
 	}
 	if m.write && c.dev.ReadOnly {

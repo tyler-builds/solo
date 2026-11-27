@@ -75,6 +75,9 @@ type (
 	Request struct {
 		Name  string `json:"name"`
 		Nonce []byte `json:"nonce,omitempty"`
+		// Solo: the device is another machine running Solo, which asks only to share usage (a linked
+		// Solo). It asks for less than a device, so the machine needn't take its word for more.
+		Solo bool `json:"solo,omitempty"`
 	}
 	// Decision is the machine's. Machine is the machine's ID, which a device that had no code learns
 	// here.
@@ -190,6 +193,11 @@ func within(ctx context.Context, conn wire.Conn) (done func()) {
 // Pair asks the machine a pairing code names to pair with this device. It returns once the machine has
 // answered the handshake: the digits are then shown, and Wait waits for the person there.
 func Pair(ctx context.Context, dial Dialer, origin string, code secure.PairingCode, key noise.DHKey, name string, random io.Reader) (*Pairing, error) {
+	return PairAs(ctx, dial, origin, code, key, Request{Name: name}, random)
+}
+
+// PairAs is Pair with the whole request: a Solo that links to another asks as one (Request.Solo).
+func PairAs(ctx context.Context, dial Dialer, origin string, code secure.PairingCode, key noise.DHKey, ask Request, random io.Reader) (*Pairing, error) {
 	conn, err := dial(ctx, PathPair, code.RelayToken())
 	if err != nil {
 		return nil, err
@@ -217,7 +225,8 @@ func Pair(ctx context.Context, dial Dialer, origin string, code secure.PairingCo
 		return nil, errors.New("The machine didn't accept this pairing code.")
 	}
 	link := wire.NewLink(conn, ch)
-	req, _ := json.Marshal(Request{Name: name})
+	ask.Nonce = nil
+	req, _ := json.Marshal(ask)
 	if err := link.Send(req); err != nil {
 		link.Close()
 		return nil, err

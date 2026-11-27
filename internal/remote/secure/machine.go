@@ -18,6 +18,10 @@ import (
 type Machine struct {
 	ID    ID
 	Noise noise.DHKey
+	// Link is the key the machine pairs with as a device of another machine, to share its usage with
+	// it (a linked Solo): a key of its own, so that what the other machine keeps of it opens nothing
+	// here.
+	Link  noise.DHKey
 	relay ed25519.PrivateKey
 }
 
@@ -37,7 +41,13 @@ func MachineFromSeed(seed [KeySize]byte) (Machine, error) {
 	}
 	rseed := derive(seed[:], "machine/relay")
 	relay := ed25519.NewKeyFromSeed(rseed[:])
-	m := Machine{Noise: noise.DHKey{Private: priv[:], Public: pub}, relay: relay}
+	lpriv := derive(seed[:], "machine/link")
+	lpub, err := curve25519.X25519(lpriv[:], curve25519.Basepoint)
+	if err != nil {
+		return Machine{}, err
+	}
+	m := Machine{Noise: noise.DHKey{Private: priv[:], Public: pub}, Link: noise.DHKey{Private: lpriv[:], Public: lpub},
+		relay: relay}
 	m.ID = MachineID(pub, m.RelayKey())
 	return m, nil
 }

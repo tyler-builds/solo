@@ -3,6 +3,8 @@ package api
 import (
 	"context"
 	"time"
+
+	"github.com/tyler-builds/solo/internal/core"
 )
 
 // Remote is a machine's remote access, as its Settings page drives it. The desktop app has one
@@ -24,6 +26,17 @@ type Remote interface {
 	Revoke(deviceID string) error
 	RevokeAll() error
 	SetReadOnly(deviceID string, readOnly bool) error
+
+	// LinkTo links this machine's Solo to another's, to share usage both ways, with the pairing link
+	// that machine shows under Add a device. It returns once the request is made: State.Linking then
+	// has the six digits to type there, and how it ends. CancelLink gives it up, and Unlink removes a
+	// link (and the other machine's way back here).
+	LinkTo(link string) error
+	CancelLink()
+	Unlink(machineID string) error
+	// LinkedUsage fetches the usage of each linked machine. A machine that can't be reached comes
+	// with the last copy fetched, if any, and why.
+	LinkedUsage(ctx context.Context) []LinkedUsage
 
 	// The relay lives in the user's own Cloudflare account. SetCloudToken keeps an API token for it,
 	// DeployRelay puts the relay and the web client there (or joins the relay already there) and
@@ -81,6 +94,37 @@ type RemoteState struct {
 	// SecretsInFiles: there is no OS keyring, so the machine's key is in a file only the user can read.
 	SecretsInFiles bool
 	Cloud          RemoteCloud
+	// Links are the Solos on other machines this one shares usage with, and Linking a link being made.
+	Links   []RemoteLink
+	Linking *RemoteLinking
+}
+
+// RemoteLink is another machine's Solo that this one is linked to.
+type RemoteLink struct {
+	ID    string // the other machine's ID
+	Name  string
+	Relay string
+	Added time.Time
+	// OneWay: this machine reads the other's usage, but the other can't read this one's (this
+	// machine had no relay when they were linked).
+	OneWay bool
+}
+
+// RemoteLinking is a link being made from this machine (LinkTo).
+type RemoteLinking struct {
+	Digits string // to type at the other machine
+	Done   bool
+	Err    string
+	Note   string // how it went, once done
+}
+
+// LinkedUsage is a linked machine's usage, as last fetched.
+type LinkedUsage struct {
+	ID     string
+	Name   string
+	Report core.UsageReport
+	At     time.Time // when it was fetched; zero when never
+	Err    string    // why it couldn't be fetched now
 }
 
 // RemoteDevice is a paired device.
@@ -91,6 +135,8 @@ type RemoteDevice struct {
 	Added    time.Time
 	LastSeen time.Time
 	Online   bool
+	// Linked: it is another machine's Solo, which may only read usage.
+	Linked bool
 }
 
 // RemotePairing is pairing as it stands open.

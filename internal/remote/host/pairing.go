@@ -56,6 +56,7 @@ type pairRequest struct {
 	at     time.Time
 	digits string
 	key    []byte // the device's public key, proven by the handshake
+	solo   bool   // another machine's Solo, asking to link (device.Request.Solo)
 	decide chan device.Decision
 }
 
@@ -222,7 +223,11 @@ func (r *Remote) Approve(digits string, readOnly bool) (Device, error) {
 	}
 	id := secure.DeviceID(q.key)
 	now := time.Now()
-	d := savedDevice{ID: id.String(), Key: q.key, PSK: psk, Name: q.name, ReadOnly: readOnly, Added: now}
+	// A linked Solo asked for less than a device: it may only read usage, whatever was ticked here.
+	if q.solo {
+		readOnly = false
+	}
+	d := savedDevice{ID: id.String(), Key: q.key, PSK: psk, Name: q.name, ReadOnly: readOnly, Linked: q.solo, Added: now}
 	// A device that pairs again replaces its earlier self.
 	devices := slices.DeleteFunc(slices.Clone(r.saved.Devices), func(x savedDevice) bool { return x.ID == d.ID })
 	if len(devices) >= MaxDevices {
@@ -247,10 +252,14 @@ func (r *Remote) Approve(digits string, readOnly bool) (Device, error) {
 	r.cut(d.ID) // whatever the device had open under its earlier key ends
 	r.audit.event("paired", d.ID, d.Name)
 	if r.cfg.Notify != nil {
-		r.cfg.Notify("A device was paired", d.Name+" can now use Solo on this machine.")
+		if d.Linked {
+			r.cfg.Notify("A Solo was linked", "Solo on "+d.Name+" can now see this machine's usage.")
+		} else {
+			r.cfg.Notify("A device was paired", d.Name+" can now use Solo on this machine.")
+		}
 	}
 	r.changed()
-	return Device{ID: d.ID, Name: d.Name, ReadOnly: readOnly, Added: now}, nil
+	return Device{ID: d.ID, Name: d.Name, ReadOnly: readOnly, Added: now, Linked: d.Linked}, nil
 }
 
 // answering counts a connection against the pairing that is open, and returns that pairing, or nil when
@@ -320,7 +329,7 @@ func (r *Remote) servePairing(rc *relayConn, c *muxConn) {
 		return
 	}
 	late.Stop()
-	r.awaitApproval(p, c, link, req.Name, ch.SAS(), ch.Peer())
+	r.awaitApproval(p, c, link, req, ch.SAS(), ch.Peer())
 }
 
 // serveOpenPairing runs one connection of a device that holds no code (secure/open.go). The device's
@@ -366,17 +375,18 @@ func (r *Remote) serveOpenPairing(rc *relayConn, c *muxConn) {
 		return // not the key and the number it committed to: it was choosing its digits
 	}
 	late.Stop()
-	r.awaitApproval(p, c, link, req.Name, digits, ch.Peer())
+	req.Solo = false // a Solo links only with a code
+	r.awaitApproval(p, c, link, req, digits, ch.Peer())
 }
 
 // awaitApproval lists a device that finished a pairing handshake among those asking, and waits for the
 // person, for a while: the decision goes to this device, on this channel, and nowhere else.
-func (r *Remote) awaitApproval(p *pairing, c *muxConn, link *wire.Link, name, digits string, key []byte) {
-	name = device.CleanName(name)
+func (r *Remote) awaitApproval(p *pairing, c *muxConn, link *wire.Link, req device.Request, digits string, key []byte) {
+	name := device.CleanName(req.Name)
 	if name == "" {
 		name = "A device"
 	}
-	q := &pairRequest{name: name, at: time.Now(), digits: digits, key: append([]byte(nil), key...),
+	q := &pairRequest{name: name, at: time.Now(), digits: digits, key: append([]byte(nil), key...), solo: req.Solo,
 		decide: make(chan device.Decision, 2)}
 	r.mu.Lock()
 	if r.pairing != p || len(p.requests) >= maxRequests {

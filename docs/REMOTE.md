@@ -231,6 +231,36 @@ tests. `internal/remote/relaytest` is the relay in Go, for tests and for running
 machine; the host's tests run over it with real WebSockets, including a relay that alters or drops
 frames.
 
+## Linked Solos (`internal/remote/host/link.go`)
+
+Solo on two machines can share their usage, so each Usage page shows both (one Claude account's limits,
+used from several places). One pairing links them both ways:
+
+1. At machine A, Add a device shows a pairing link. At machine B, Settings › Remote › Linked Solos takes
+   it, and B pairs as a device would, with the request marked as a Solo (`device.Request.Solo`) and a key
+   of its own for linking (`secure.Machine.Link`, derived from the seed with its own label). B shows six
+   digits, typed at A. A keeps B as a **linked** device (`savedDevice.Linked`).
+2. B then opens a session with A and links back: it asks A for A's link key (`linkKey`), adds A here as a
+   linked device under that key, and hands A a grant (`link`, `rpc.LinkGrant`): B's relay, ID and key, the
+   session key it made for A, and a voucher for B's relay. A checks the grant hangs together (the voucher
+   is B's, for that relay, and for A's link key) and keeps it. B needs a relay of its own for this; without
+   one the link is one way, and Settings says so.
+
+Each end trusts the other for the reasons pairing does: B had A's key from the code, and A had B's digits
+from the person. A request marked as a Solo asks for less than a device, so the machine doesn't need to
+believe it: a pairing without a code can't make one.
+
+A linked device is sent none of the machine's state (no `sync`), and may make only `usage`, `linkKey` and
+`link`; every other request is refused, and `linkKey` and `link` are refused to any other device. It is
+listed with the devices, and removed like one. Unlinking at one end removes its link and the other's way
+back in; the other end finds out when it next fails to reach it, and keeps its last copy of the usage
+meanwhile.
+
+The Usage page fetches each linked Solo's usage (`Remote.LinkedUsage`, a short `rpc.Peer` session over
+`device.WebSocket`) when it opens and every three minutes while it stays open. Every machine's readings
+go into one line, which fills the gaps when this machine was idle, and what Solo used is listed by
+machine.
+
 ## The web client (`internal/webclient`, `cmd/solo-web`)
 
 The page a device opens is the app's own UI, built with TinyGo, inside a small shell that pairs and

@@ -40,6 +40,8 @@ type method struct {
 	quiet bool
 	// blob is the most bytes it may carry after its JSON; most carry none.
 	blob int
+	// linked: a linked Solo may make it; linkOnly: only a linked Solo may.
+	linked, linkOnly bool
 	// run returns the result, any bytes to send with it, and what the audit log says it was about.
 	run func(ctx context.Context, c *conn, p json.RawMessage, blob []byte) (result any, out []byte, detail string, err error)
 }
@@ -464,9 +466,32 @@ func init() {
 			}
 			return hits, nil, "", err
 		}},
-		"usage": {run: func(ctx context.Context, c *conn, _ json.RawMessage, _ []byte) (any, []byte, string, error) {
+		"usage": {linked: true, run: func(ctx context.Context, c *conn, _ json.RawMessage, _ []byte) (any, []byte, string, error) {
 			rep, err := c.h.b.Usage(ctx)
 			return rep, nil, "", err
+		}},
+		"linkKey": {linked: true, linkOnly: true, run: func(ctx context.Context, c *conn, _ json.RawMessage, _ []byte) (any, []byte, string, error) {
+			var key []byte
+			if c.h.opts.LinkKey != nil {
+				key = c.h.opts.LinkKey()
+			}
+			if len(key) != 32 {
+				return nil, nil, "", denied("This machine can't link back.")
+			}
+			return linkKeyResult{Key: key}, nil, "", nil
+		}},
+		"link": {write: true, linked: true, linkOnly: true, run: func(ctx context.Context, c *conn, p json.RawMessage, _ []byte) (any, []byte, string, error) {
+			g, err := decode[LinkGrant](p)
+			if err == nil {
+				err = g.check()
+			}
+			if err != nil {
+				return nil, nil, "", err
+			}
+			if c.h.opts.Link == nil {
+				return nil, nil, "", denied("This machine can't link back.")
+			}
+			return nil, nil, g.Name, c.h.opts.Link(c.dev, g)
 		}},
 		"skills": {run: func(ctx context.Context, c *conn, p json.RawMessage, _ []byte) (any, []byte, string, error) {
 			a, err := decode[threadParams](p)
@@ -594,4 +619,28 @@ func init() {
 			return todo, nil, a.ID, err
 		}},
 	}
+}
+
+// linkKeyResult answers linkKey.
+type linkKeyResult struct {
+	Key []byte `json:"key"`
+}
+
+// LinkGrant is what a linked Solo grants the machine it linked to, so that machine can reach it in
+// turn: its relay, and what a device keeps of a machine it is paired with (device.Machine).
+type LinkGrant struct {
+	Relay   string `json:"relay"` // the relay's address, such as "https://solo-x.name.workers.dev"
+	ID      string `json:"id"`    // the linked Solo's machine ID, in hex
+	Key     []byte `json:"key"`   // its public key
+	PSK     []byte `json:"psk"`   // the key for sessions it made for the machine
+	Voucher []byte `json:"voucher"`
+	Name    string `json:"name"`
+}
+
+func (g LinkGrant) check() error {
+	if len(g.Relay) > 256 || len(g.ID) != 32 || len(g.Key) != 32 || len(g.PSK) != 32 || len(g.Voucher) > 256 ||
+		len(g.Voucher) == 0 || len(g.Name) > 200 {
+		return invalid("the link isn't complete")
+	}
+	return nil
 }

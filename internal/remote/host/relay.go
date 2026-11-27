@@ -523,6 +523,6 @@ func (r *Remote) serveDevice(rc *relayConn, c *muxConn, id secure.ID) {
 	// A session is keyed afresh every hour: the device connects again and resumes.
 	expire := time.AfterFunc(sessionFor, func() { c.Close() })
 	defer expire.Stop()
-	r.rpc.Serve(link, rpc.Device{ID: d.ID, Name: d.Name, ReadOnly: d.ReadOnly})
+	r.rpc.Serve(link, rpc.Device{ID: d.ID, Name: d.Name, ReadOnly: d.ReadOnly, Linked: d.Linked})
 	r.changed()
 }

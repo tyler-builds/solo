@@ -96,6 +96,8 @@ type Remote struct {
 	live     map[string]map[*muxConn]struct{}
 	stop     chan struct{}
 	pairing  *pairing
+	linking  *linking                   // a link being made from here (link.go)
+	usage    map[string]api.LinkedUsage // each linked machine's usage as last fetched, by its ID
 	subs     map[int]func()
 	nextSub  int
 	lastSave time.Time
@@ -172,6 +174,8 @@ func New(cfg Config) (*Remote, error) {
 		// A device is seen when it has said hello on its channel: a handshake's first message alone
 		// can be one the relay kept and sent again.
 		OnHello: func(d rpc.Device) { go r.seen(d.ID) },
+		LinkKey: r.linkKey,
+		Link:    r.acceptLink,
 	})
 	// Whether a Cloudflare token is kept is only looked up once remote access is in use: reading the
 	// keyring can ask the user to unlock it, and most starts of Solo have no need.
@@ -274,7 +278,13 @@ func (r *Remote) State() State {
 	}
 	for _, d := range r.saved.Devices {
 		st.Devices = append(st.Devices, Device{ID: d.ID, Name: d.Name, ReadOnly: d.ReadOnly, Added: d.Added,
-			LastSeen: d.LastSeen, Online: slices.Contains(online, d.ID)})
+			LastSeen: d.LastSeen, Online: slices.Contains(online, d.ID), Linked: d.Linked})
+	}
+	for _, l := range r.saved.Links {
+		st.Links = append(st.Links, api.RemoteLink{ID: l.ID, Name: l.Name, Relay: l.Relay, Added: l.Added, OneWay: l.Device == ""})
+	}
+	if l := r.linking; l != nil {
+		st.Linking = &api.RemoteLinking{Digits: l.digits, Done: l.done, Err: l.err, Note: l.note}
 	}
 	if p := r.pairing; p != nil && time.Now().Before(p.code.Expires) {
 		st.Pairing = &Pairing{Open: p.open, Link: p.link, Expires: p.code.Expires}
