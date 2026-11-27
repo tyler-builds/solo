@@ -89,6 +89,9 @@ type thread struct {
 	// leadAction is what a card lead's card tool call queued this turn, acted on when the turn ends
 	// (card.go).
 	leadAction *leadReply
+	// cardOver: a card's builder whose work is over (landed, done or discarded), so the end of its own
+	// or its leads' last turns moves nothing (closeLeads). Restore clears it. Not saved.
+	cardOver bool
 }
 
 // DescribeBackground names background work in a line: `command "Run benchmarks", running 4m`; several
@@ -1388,6 +1391,7 @@ func (c *Core) finishIfLanded(id string) {
 	c.mu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
+	c.closeLeads(ctx, id)
 	c.closeSession(ctx, id)
 	c.removeWorktrees(ctx, id, false)
 	c.mu.Lock()
@@ -1450,6 +1454,7 @@ func (c *Core) Discard(ctx context.Context, threadID string) error {
 	if !v.CanDiscard {
 		return fmt.Errorf("thread %q is already %s", v.Title, v.Status)
 	}
+	c.closeLeads(ctx, threadID)
 	c.closeSession(ctx, threadID)
 	c.removeWorktrees(ctx, threadID, false)
 	c.mu.Lock()
@@ -1493,6 +1498,7 @@ func (c *Core) Done(ctx context.Context, threadID string) error {
 			}
 		}
 	}
+	c.closeLeads(ctx, threadID)
 	if v.HasWorktree || v.InPlace {
 		c.closeSession(ctx, threadID)
 		c.removeWorktrees(ctx, threadID, v.Unlanded)
@@ -1596,6 +1602,7 @@ func (c *Core) Restore(ctx context.Context, threadID string) error {
 		c.mu.Unlock()
 		return fmt.Errorf("no thread %s", threadID)
 	}
+	t.cardOver = false
 	for i, p := range t.parts {
 		if p.InPlace {
 			continue

@@ -8,9 +8,11 @@ package core
 // The model reads a digest of the turn's transcript built here (tool calls, the user's messages, the
 // agent's messages, errors), never the agent's thinking, and the card shows only what it writes.
 //
-// Calls are spaced out (the first a few seconds into a turn, then at most every briefEvery while there
-// is new activity, and one when the turn ends), and at most briefSlots run at once, so a board full of
-// working threads stays cheap.
+// Briefs are written only while the board is on, since nothing else shows them. Calls are spaced out
+// (the first a few seconds into a turn, then at most every briefEvery while there is new activity the
+// digest shows, and one when the turn ends), and at most cap(briefSlots) run at once, the rest waiting
+// their turn, so a board full of working threads stays cheap. A card's builder gets no turn-end brief:
+// its card shows the lead's review instead, so its last running brief stands until then.
 
 import (
 	"context"
@@ -85,7 +87,7 @@ func (t *thread) briefOf() *Brief {
 }
 
 func (c *Core) briefsOnLocked(t *thread) bool {
-	return c.cfg.Summarize != nil && t.row.Kind == store.KindWorker && !c.settings.NoSummaries
+	return c.cfg.Summarize != nil && t.row.Kind == store.KindWorker && c.settings.Board && !c.settings.NoSummaries
 }
 
 // briefTurnStartLocked starts a new turn's bookkeeping (not a steer, which carries the turn on).
@@ -124,7 +126,7 @@ func (c *Core) briefTurnEndLocked(t *thread) {
 		t.bs.timer.Stop()
 		t.bs.timer = nil
 	}
-	if !c.briefsOnLocked(t) {
+	if !c.briefsOnLocked(t) || t.row.Card != "" {
 		return
 	}
 	if t.bs.running {
@@ -172,9 +174,18 @@ func (c *Core) runBrief(id string, final bool) {
 	s := c.settings
 	c.mu.Unlock()
 
+	briefSlots <- struct{}{} // waits behind other threads' briefs; each thread has at most one waiting
+	c.mu.Lock()
+	closed := c.closed
+	c.mu.Unlock()
+	if closed {
+		<-briefSlots
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), briefTimeout)
 	out, err := c.writeBrief(ctx, row, prev, final, s)
 	cancel()
+	<-briefSlots
 
 	c.mu.Lock()
 	t.bs.running = false
@@ -191,13 +202,16 @@ func (c *Core) runBrief(id string, final bool) {
 		}
 		c.setBriefLocked(t, b)
 		changed = true
-	case t.inTurn && !t.bs.final: // a turn-end brief due now supersedes this one
+	case t.bs.final: // a turn-end brief due now supersedes this one
+	case t.inTurn || t.row.Card != "": // a card's builder has no turn-end brief, so keep this one
 		b := Brief{Turn: out.Turn, At: now()}
 		if prev != nil {
 			b.Overall = prev.Overall
 		}
 		c.setBriefLocked(t, b)
-		t.bs.now = out.Now
+		if t.inTurn {
+			t.bs.now = out.Now
+		}
 		t.bs.done = acts
 		changed = true
 	}
