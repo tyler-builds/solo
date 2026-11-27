@@ -10,9 +10,9 @@ import (
 	"time"
 )
 
-// Peer is a short session with a machine, for a linked Solo: it says hello, makes a few requests (the
-// machine's usage, and the requests that link the two both ways), and closes. A machine sends a linked
-// Solo none of its state, so there is nothing to mirror.
+// Peer is a short session with another machine of the network (host/network.go): it says hello, makes a
+// few requests (the machine's usage, letting a device in, a new passphrase), and closes. A machine sends
+// a member none of its state, so there is nothing to mirror.
 type Peer struct {
 	s     *session
 	mu    sync.Mutex
@@ -57,7 +57,7 @@ func OpenPeer(ctx context.Context, link Link) (*Peer, error) {
 					ch <- e
 				}
 			case e.T == kindSync:
-				// Not sent to a linked Solo; nothing to keep if it were.
+				// Not sent to a member; nothing to keep if it were.
 			default:
 				return errProtocol
 			}

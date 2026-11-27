@@ -150,18 +150,15 @@ type saved struct {
 	Enabled bool          `json:"enabled,omitempty"`
 	Devices []savedDevice `json:"devices,omitempty"`
 	Cloud   savedCloud    `json:"cloud,omitzero"`
-	// Links are the Solos on other machines this one reads usage from (link.go).
-	Links []savedLink `json:"links,omitempty"`
+	Network savedNetwork  `json:"network,omitzero"` // network.go
 }
 
 type savedDevice struct {
-	ID       string `json:"id"`
-	Key      []byte `json:"key"` // its public key
-	PSK      []byte `json:"psk"` // its key for sessions
-	Name     string `json:"name"`
-	ReadOnly bool   `json:"readOnly,omitempty"`
-	// Linked: another machine's Solo, which may only read usage (rpc.Device.Linked).
-	Linked   bool      `json:"linked,omitempty"`
+	ID       string    `json:"id"`
+	Key      []byte    `json:"key"` // its public key
+	PSK      []byte    `json:"psk"` // its key for sessions
+	Name     string    `json:"name"`
+	ReadOnly bool      `json:"readOnly,omitempty"`
 	Added    time.Time `json:"added"`
 	LastSeen time.Time `json:"lastSeen,omitzero"`
 }

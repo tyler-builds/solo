@@ -31,6 +31,7 @@ const Version = "solo/remote/v1"
 const (
 	MachineAuthSize = 137
 	VoucherSize     = 137
+	PeerAuthSize    = 153
 )
 
 // KeySize is the size of every key and secret here: X25519 keys, pre-shared keys, seeds.
@@ -50,6 +51,15 @@ func ParseID(s string) (ID, error) {
 	}
 	copy(id[:], b)
 	return id, nil
+}
+
+// MustParseID is ParseID for an ID known to be good; it panics on one that isn't.
+func MustParseID(s string) ID {
+	id, err := ParseID(s)
+	if err != nil {
+		panic(err)
+	}
+	return id
 }
 
 // DeviceID is the ID of the device whose Noise public key is pub.

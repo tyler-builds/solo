@@ -20,7 +20,7 @@ type fakeRemote struct {
 	subs     []func()
 	approved []string
 	revoked  []string
-	linked   []api.LinkedUsage // for LinkedUsage
+	members  []api.MemberUsage // for MemberUsage
 }
 
 func (f *fakeRemote) State() api.RemoteState {
@@ -106,13 +106,16 @@ func (f *fakeRemote) AcceptRelay(context.Context, bool) error {
 }
 func (f *fakeRemote) RevokeAll() error               { return nil }
 func (f *fakeRemote) SetReadOnly(string, bool) error { return nil }
-func (f *fakeRemote) LinkTo(string) error            { return nil }
-func (f *fakeRemote) CancelLink()                    {}
-func (f *fakeRemote) Unlink(string) error            { return nil }
-func (f *fakeRemote) LinkedUsage(context.Context) []api.LinkedUsage {
+func (f *fakeRemote) SetPassphrase(string) error     { return nil }
+func (f *fakeRemote) SetNetworkOn(bool) error        { return nil }
+func (f *fakeRemote) SetAutoAllow(bool) error        { return nil }
+func (f *fakeRemote) AllowJoin(string, bool) error   { return nil }
+func (f *fakeRemote) DenyJoin(string)                {}
+func (f *fakeRemote) RemoveMember(string) error      { return nil }
+func (f *fakeRemote) MemberUsage(context.Context) []api.MemberUsage {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.linked
+	return f.members
 }
 
 // pairedRemote is a machine connected to its relay with two devices.

@@ -116,13 +116,13 @@ func (a *App) usageDialog(ctx *ui.Context) ui.Element {
 	winW, winH := ctx.WindowSize()
 	w := min(760, winW-2*space2)
 	res := a.usageQuery(ctx)
-	linked := a.linkedQuery(ctx)
+	members := a.membersQuery(ctx)
 	now := a.now()
 	// The line draws on every machine's readings.
 	all := res
-	if len(linked) > 0 {
+	if len(members) > 0 {
 		lists := [][]core.UsageReading{res.Data.Readings}
-		for _, l := range linked {
+		for _, l := range members {
 			lists = append(lists, l.Report.Readings)
 		}
 		all.Data.Readings = mergeReadings(lists...)
@@ -131,7 +131,7 @@ func (a *App) usageDialog(ctx *ui.Context) ui.Element {
 		PaddingBottom(space2).PaddingRight(space3).
 		Child(a.usageLimits(ctx, now)).
 		Child(ui.Component(func(ctx *ui.Context) ui.Element { return a.usageHistory(ctx, all, now) })).
-		Child(a.usageThreads(ctx, res, linked))
+		Child(a.usageThreads(ctx, res, members))
 	return ui.Modal("Usage", body).Width(ui.Px(w)).MaxWidth(ui.Px(w)).CloseButton(true).CloseOnBackdrop().
 		OnClose(func() { a.usageOpen.Set(false) }).Key("usage-page")
 }
@@ -254,13 +254,13 @@ func (a *App) usageHistory(ctx *ui.Context, res ui.QueryResult[core.UsageReport]
 		ui.Div().Width(ui.Full).Padding(space3).Radius(radiusL).Border(1, t.Border).Background(t.Surface).Child(chart))
 }
 
-// usageMachine is one machine's part of what Solo used: this machine's, or a linked Solo's.
+// usageMachine is one machine's part of what Solo used: this machine's, or another member's.
 type usageMachine struct {
 	key     string // for the rows' keys: "" for this machine, else the machine's ID
 	name    string
 	threads []core.UsageThread
 	here    bool   // this machine: its threads can be opened
-	status  string // a linked machine that couldn't be reached, and how old its copy is
+	status  string // a member that couldn't be reached, and how old its copy is
 }
 
 // usageRow is a row of what Solo used: a machine (in a list of several), a thread, or the rest summed.
@@ -314,8 +314,8 @@ func usageRowsFor(machines []usageMachine) []usageRow {
 }
 
 // usageThreads is what Solo's threads used since the weekly window began, as shares of all they used,
-// most first: on this machine and on each linked Solo.
-func (a *App) usageThreads(ctx *ui.Context, res ui.QueryResult[core.UsageReport], linked []api.LinkedUsage) ui.Element {
+// most first: on this machine and on each other machine of the network.
+func (a *App) usageThreads(ctx *ui.Context, res ui.QueryResult[core.UsageReport], members []api.MemberUsage) ui.Element {
 	t := ctx.Theme()
 	rep := res.Data
 	about := "Since " + rep.Since.Local().Format("Mon Jan 2, 3:04 PM") +
@@ -328,7 +328,7 @@ func (a *App) usageThreads(ctx *ui.Context, res ui.QueryResult[core.UsageReport]
 		here = cmp.Or(a.remoteState.Get().Name, here)
 	}
 	machines := []usageMachine{{name: here, threads: rep.Threads, here: true}}
-	for _, l := range linked {
+	for _, l := range members {
 		m := usageMachine{key: l.ID, name: l.Name, threads: l.Report.Threads}
 		switch {
 		case l.Err != "" && l.At.IsZero():
@@ -407,10 +407,10 @@ func (a *App) usageThreads(ctx *ui.Context, res ui.QueryResult[core.UsageReport]
 		}
 		list = list.Child(line)
 	}
-	text := "Only Solo's turns on this machine count here. Claude Code elsewhere and claude.ai use the same limits. Link Solo on your other machines in Settings › Remote to count theirs."
+	text := "Only Solo's turns on this machine count here. Claude Code elsewhere and claude.ai use the same limits. Set the same passphrase on your other machines (Settings › Remote › Network) to count theirs."
 	switch {
 	case len(machines) > 1:
-		text = "Only Solo's turns count here, on this machine and the Solos linked to it. Claude Code elsewhere and claude.ai use the same limits."
+		text = "Only Solo's turns count here, on this machine and the others in its network. Claude Code elsewhere and claude.ai use the same limits."
 	case a.Remote == nil:
 		text = "Only Solo's turns on this machine count here. Claude Code elsewhere and claude.ai use the same limits."
 	}
@@ -419,13 +419,13 @@ func (a *App) usageThreads(ctx *ui.Context, res ui.QueryResult[core.UsageReport]
 	return usageSection(ctx, "What Solo used", about, nil, content...)
 }
 
-// linkedQuery fetches the usage of the Solos linked to this machine, again every few minutes while the
+// membersQuery fetches the usage of the other machines of the network, again every few minutes while the
 // page is open. Nil without any.
-func (a *App) linkedQuery(ctx *ui.Context) []api.LinkedUsage {
+func (a *App) membersQuery(ctx *ui.Context) []api.MemberUsage {
 	if a.Remote == nil {
 		return nil
 	}
-	links := a.remoteState.Get().Links
+	links := a.remoteState.Get().Network.Members
 	if len(links) == 0 {
 		return nil
 	}
@@ -433,18 +433,18 @@ func (a *App) linkedQuery(ctx *ui.Context) []api.LinkedUsage {
 	for i, l := range links {
 		ids[i] = l.ID
 	}
-	// The key changes every linkedEvery, which fetches again; the page renders again then.
-	every := int64(linkedEvery / time.Second)
+	// The key changes every membersEvery, which fetches again; the page renders again then.
+	every := int64(membersEvery / time.Second)
 	now := time.Now().Unix()
-	tick := ui.Local(ctx, "linked-tick", 0)
+	tick := ui.Local(ctx, "members-tick", 0)
 	tick.Get()
 	ctx.After(time.Duration(every-now%every)*time.Second, func() { tick.Update(func(n int) int { return n + 1 }) })
-	key := fmt.Sprintf("linked-usage:%d:%s", now/every, strings.Join(ids, ","))
-	res := ui.Query(ctx, key, func(c context.Context) ([]api.LinkedUsage, error) {
-		return a.Remote.LinkedUsage(c), nil
+	key := fmt.Sprintf("members-usage:%d:%s", now/every, strings.Join(ids, ","))
+	res := ui.Query(ctx, key, func(c context.Context) ([]api.MemberUsage, error) {
+		return a.Remote.MemberUsage(c), nil
 	})
 	// While a new fetch runs, the last one shows.
-	last := ui.Local(ctx, "linked-last", []api.LinkedUsage(nil))
+	last := ui.Local(ctx, "members-last", []api.MemberUsage(nil))
 	if res.Data != nil {
 		last.Set(res.Data)
 		return res.Data
@@ -452,8 +452,8 @@ func (a *App) linkedQuery(ctx *ui.Context) []api.LinkedUsage {
 	return last.Peek()
 }
 
-// linkedEvery is how often the Usage page fetches the linked Solos' usage again.
-const linkedEvery = 3 * time.Minute
+// membersEvery is how often the Usage page fetches the members' usage again.
+const membersEvery = 3 * time.Minute
 
 // mergeReadings puts the readings of several machines in one list, oldest first. They all measure the
 // same account's limits, so together they show more of the line than one machine's do.

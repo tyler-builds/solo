@@ -69,6 +69,8 @@ const (
 	screenMachines                        // the machines this device knows
 	screenMain                            // a machine's UI, or the wait for it
 	screenConfirmPaired                   // paired without a code: does the machine say so too?
+	screenPassphrase                      // joining by passphrase: the passphrase, and this device's name
+	screenJoining                         // joined by passphrase: waiting to be allowed
 )
 
 // screen is what the shell shows.
@@ -110,7 +112,8 @@ type Shell struct {
 	current  *session
 	pairing  *device.Pairing
 	code     *secure.PairingCode
-	answered *device.Machine // paired without a code, and not yet confirmed at the machine (UI thread)
+	answered *device.Machine   // paired without a code, and not yet confirmed at the machine (UI thread)
+	joining  []*device.Pairing // asked to join by passphrase, waiting to be allowed
 	state    *state
 	told     [3]string // what Platform.Shown was last told (UI thread)
 }
@@ -550,5 +553,116 @@ func (s *Shell) run(c *session) {
 		case <-c.wake:
 		case <-time.After(pause):
 		}
+	}
+}
+
+// joinNetwork asks every machine of the relay's network to let this device in, by the passphrase, then
+// waits until the person allows it at one of them. The machines are asked one at a time: each asks
+// this page to stretch the passphrase, which takes a moment and a good deal of memory. A wrong
+// passphrase stops at the first machine, so that one typo isn't counted against all of them.
+func (s *Shell) joinNetwork(passphrase, name string) {
+	name = device.CleanName(name)
+	if name == "" {
+		name = "A device"
+	}
+	s.state.screen.Set(screen{kind: screenJoining})
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		ids, err := device.Network(ctx, s.p.Dial)
+		if err == nil && len(ids) == 0 {
+			err = device.ErrNoNetwork
+		}
+		var asked []*device.Pairing
+		var skipped []string
+		for _, id := range ids {
+			if err != nil {
+				break
+			}
+			p, perr := device.PairPass(ctx, s.p.Dial, s.origin, id, []byte(passphrase), s.key, device.Request{Name: name}, s.p.Random)
+			switch {
+			case errors.Is(perr, secure.ErrWrongPassphrase):
+				err = errors.New("That isn't the passphrase. Check it in Settings, Remote, on one of your machines.")
+			case perr != nil:
+				skipped = append(skipped, perr.Error())
+			default:
+				asked = append(asked, p)
+			}
+		}
+		cancel()
+		if err == nil && len(asked) == 0 {
+			err = errors.New("None of your machines took the passphrase. Joining by passphrase may be turned off on them (Settings, Remote).")
+		}
+		if err != nil {
+			for _, p := range asked {
+				p.Cancel()
+			}
+			s.onUI(func() { s.state.screen.Set(screen{kind: screenPassphrase, err: err.Error()}) })
+			return
+		}
+		s.mu.Lock()
+		s.joining = asked
+		s.mu.Unlock()
+		s.onUI(func() { s.state.screen.Set(screen{kind: screenJoining, digits: "waiting"}) })
+		got := make([]device.Machine, len(asked))
+		errs := make([]error, len(asked))
+		var wg sync.WaitGroup
+		for i, p := range asked {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				got[i], errs[i] = p.Wait()
+			}()
+		}
+		wg.Wait()
+		s.mu.Lock()
+		mine := slices.Equal(s.joining, asked)
+		s.joining = nil
+		s.mu.Unlock()
+		if !mine {
+			return // cancelled here
+		}
+		s.onUI(func() {
+			var in []device.Machine
+			for i, m := range got {
+				if errs[i] == nil {
+					in = append(in, m)
+				}
+			}
+			if len(in) == 0 {
+				s.state.screen.Set(screen{kind: screenPassphrase, err: "This device wasn't let in. Allow it in Settings, Remote, on one of your machines, within two minutes of joining."})
+				return
+			}
+			for _, m := range in[1:] {
+				s.keep(m)
+			}
+			s.paired(in[0])
+		})
+	}()
+}
+
+// keep adds a machine this device was just paired with to its list, without opening it. UI thread.
+func (s *Shell) keep(m device.Machine) {
+	for _, known := range s.machines {
+		if known.ID == m.ID && !bytes.Equal(known.Key, m.Key) {
+			return // a machine this device knows by another key is not that machine
+		}
+	}
+	s.machines = append(slices.DeleteFunc(s.machines, func(x device.Machine) bool { return x.ID == m.ID }), m)
+	s.saveMachines()
+	s.state.machines.Set(slices.Clone(s.machines))
+}
+
+// cancelJoin gives joining by passphrase up.
+func (s *Shell) cancelJoin() {
+	s.mu.Lock()
+	asked := s.joining
+	s.joining = nil
+	s.mu.Unlock()
+	for _, p := range asked {
+		p.Cancel()
+	}
+	s.state.screen.Set(screen{kind: s.home()})
+	if s.home() == screenMain && s.current == nil {
+		s.open(s.pick())
 	}
 }

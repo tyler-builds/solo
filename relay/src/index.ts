@@ -2,11 +2,14 @@
 // admits to the one Durable Object that forwards their frames. It keeps nothing and logs nothing.
 
 import {
+	isNetworkToken,
 	isOpenPairToken,
 	parseHostKeys,
 	parsePairToken,
+	parsePassToken,
 	ticketHash,
 	verifyMachineAuth,
+	verifyPeerAuth,
 	verifyVoucher,
 	type Verdict,
 } from "./auth";
@@ -19,6 +22,7 @@ const routes: Record<string, Role> = {
 	"/v1/machine": "machine",
 	"/v1/device": "device",
 	"/v1/pair": "pair",
+	"/v1/peer": "peer",
 };
 
 export default {
@@ -26,7 +30,7 @@ export default {
 		const url = new URL(request.url);
 		if (url.pathname === "/v1/info" && request.method === "GET") {
 			return Response.json(
-				{ solo: 1, bundle: Number(env.SOLO_BUNDLE), time: Date.now() },
+				{ solo: 1, bundle: Number(env.SOLO_BUNDLE), time: Date.now(), network: 1 },
 				{ headers: { "Cache-Control": "no-store" } },
 			);
 		}
@@ -44,9 +48,10 @@ export default {
 		// What the tokens are signed for, and where the page that may connect was served from.
 		const origin = `https://${url.host}`;
 		// A browser says which page opened the socket, and only the relay's own page may. A machine is
-		// a native program and sends no Origin: one that does is a page, which is no machine.
+		// a native program and sends no Origin: one that does is a page, which is no machine. A socket
+		// from one machine to another is a machine's too.
 		const from = request.headers.get("Origin");
-		if (role === "machine" ? from !== null : from !== origin) {
+		if (role === "machine" || role === "peer" ? from !== null : from !== origin) {
 			return status(403);
 		}
 		const facts = await verified(role, token, origin, env);
@@ -89,9 +94,22 @@ async function verified(
 				? { [HEADER.machine]: toHex(v.machineId), [HEADER.key]: toHex(v.key), [HEADER.device]: toHex(v.deviceId) }
 				: refused(v);
 		}
+		case "peer": {
+			const v = await verifyPeerAuth(origin, token, Date.now(), hostKeys);
+			return v.ok
+				? { [HEADER.machine]: toHex(v.machineId), [HEADER.key]: toHex(v.key), [HEADER.target]: toHex(v.target) }
+				: refused(v);
+		}
 		case "pair": {
 			if (isOpenPairToken(token)) {
 				return { [HEADER.open]: "1" };
+			}
+			if (isNetworkToken(token)) {
+				return { [HEADER.list]: "1" };
+			}
+			const pass = parsePassToken(token);
+			if (pass !== null) {
+				return { [HEADER.machine]: toHex(pass), [HEADER.pass]: "1" };
 			}
 			const pair = parsePairToken(token);
 			if (pair === null) {

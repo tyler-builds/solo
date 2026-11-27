@@ -18,10 +18,6 @@ import (
 type Machine struct {
 	ID    ID
 	Noise noise.DHKey
-	// Link is the key the machine pairs with as a device of another machine, to share its usage with
-	// it (a linked Solo): a key of its own, so that what the other machine keeps of it opens nothing
-	// here.
-	Link  noise.DHKey
 	relay ed25519.PrivateKey
 }
 
@@ -41,13 +37,7 @@ func MachineFromSeed(seed [KeySize]byte) (Machine, error) {
 	}
 	rseed := derive(seed[:], "machine/relay")
 	relay := ed25519.NewKeyFromSeed(rseed[:])
-	lpriv := derive(seed[:], "machine/link")
-	lpub, err := curve25519.X25519(lpriv[:], curve25519.Basepoint)
-	if err != nil {
-		return Machine{}, err
-	}
-	m := Machine{Noise: noise.DHKey{Private: priv[:], Public: pub}, Link: noise.DHKey{Private: lpriv[:], Public: lpub},
-		relay: relay}
+	m := Machine{Noise: noise.DHKey{Private: priv[:], Public: pub}, relay: relay}
 	m.ID = MachineID(pub, m.RelayKey())
 	return m, nil
 }
@@ -71,6 +61,7 @@ func (m Machine) NewPairingCode(random io.Reader, now time.Time, ttl time.Durati
 var (
 	_ [MachineAuthSize]struct{} = [1 + ed25519.PublicKeySize + 16 + 8 + 16 + ed25519.SignatureSize]struct{}{}
 	_ [VoucherSize]struct{}     = [1 + ed25519.PublicKeySize + 16 + 16 + 8 + ed25519.SignatureSize]struct{}{}
+	_ [PeerAuthSize]struct{}    = [1 + ed25519.PublicKeySize + 16 + 8 + 16 + 16 + ed25519.SignatureSize]struct{}{}
 )
 
 func signed(context, origin string, body []byte) []byte {
@@ -108,6 +99,44 @@ func (m Machine) Voucher(origin string, device ID, now time.Time) []byte {
 	b = append(b, device[:]...)
 	b = binary.BigEndian.AppendUint64(b, uint64(now.Unix()))
 	return append(b, ed25519.Sign(m.relay, signed("voucher", origin, b))...)
+}
+
+// PeerAuth is what the machine presents to open a connection to another machine on the relay at
+// origin, a member of its network or one it asks to join: its machine token's fields, and the machine
+// it is for, signed for that use. The relay passes the other machine this machine's ID and relay key,
+// which it has checked against the relay's list.
+func (m Machine) PeerAuth(origin string, target ID, now time.Time, random io.Reader) ([]byte, error) {
+	b := make([]byte, 0, PeerAuthSize)
+	b = append(b, authVersion)
+	b = append(b, m.RelayKey()...)
+	b = append(b, m.ID[:]...)
+	b = binary.BigEndian.AppendUint64(b, uint64(now.UnixMilli()))
+	var nonce [16]byte
+	if _, err := io.ReadFull(random, nonce[:]); err != nil {
+		return nil, err
+	}
+	b = append(b, nonce[:]...)
+	b = append(b, target[:]...)
+	return append(b, ed25519.Sign(m.relay, signed("peer", origin, b))...), nil
+}
+
+// VerifyPeerAuth checks a peer token as the relay does.
+func VerifyPeerAuth(origin string, token []byte, now time.Time) (relayKey []byte, from, target ID, err error) {
+	if len(token) != PeerAuthSize || token[0] != authVersion {
+		return nil, from, target, errors.New("secure: not a peer token")
+	}
+	body, sig := token[:len(token)-ed25519.SignatureSize], token[len(token)-ed25519.SignatureSize:]
+	key := body[1 : 1+ed25519.PublicKeySize]
+	copy(from[:], body[1+ed25519.PublicKeySize:])
+	at := time.UnixMilli(int64(binary.BigEndian.Uint64(body[1+ed25519.PublicKeySize+16:])))
+	copy(target[:], body[1+ed25519.PublicKeySize+16+8+16:])
+	if d := now.Sub(at); d > MachineAuthWindow || d < -MachineAuthWindow {
+		return nil, from, target, errors.New("secure: the peer token is not from now")
+	}
+	if !ed25519.Verify(ed25519.PublicKey(key), signed("peer", origin, body), sig) {
+		return nil, from, target, errors.New("secure: the peer token is not signed by its key")
+	}
+	return key, from, target, nil
 }
 
 // VerifyMachineAuth and VerifyVoucher check a token as the relay does, and return the relay key that

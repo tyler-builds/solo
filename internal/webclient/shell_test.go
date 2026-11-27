@@ -358,3 +358,39 @@ func TestFailedCodeDoesNotOfferOpenPairing(t *testing.T) {
 		t.Error("pairing without a code is offered right after a code failed")
 	}
 }
+
+// A phone joins by passphrase: a wrong one is said so, and the right one waits until the device is
+// allowed at the machine, which then opens.
+func TestJoinWithPassphrase(t *testing.T) {
+	m := newMachine(t)
+	if err := m.remote.SetPassphrase("orbit lantern mossy quarry"); err != nil {
+		t.Fatal(err)
+	}
+	st := &storage{m: map[string]string{}}
+	_, u := m.page(t, st, "")
+	join := func(passphrase string) {
+		u.Click("join")
+		u.WaitFor("the passphrase screen", func() bool { return u.Has("passphrase") })
+		u.Get("passphrase").Click()
+		u.Type(passphrase)
+		u.Click("join-go")
+	}
+	join("orbit lantern mossy quarrz")
+	u.WaitFor("being told it's wrong", func() bool { return hasText(u, "That isn't the passphrase") })
+	if w := m.remote.State().Network.Wrong; w != 1 {
+		t.Errorf("the machine counted %d wrong passphrases, want 1", w)
+	}
+	u.Click("join-cancel")
+	join("orbit lantern mossy quarry")
+	u.WaitFor("the request at the machine", func() bool { return len(m.remote.State().Network.Joins) == 1 })
+	if j := m.remote.State().Network.Joins[0]; j.Name != "Test phone" {
+		t.Errorf("the request = %+v", j)
+	}
+	if err := m.remote.AllowJoin(m.remote.State().Network.Joins[0].ID, false); err != nil {
+		t.Fatal(err)
+	}
+	u.WaitFor("the device to keep the machine", func() bool { return strings.Contains(st.load(storeMachines), "workstation") })
+	if n := len(m.remote.State().Devices); n != 1 {
+		t.Errorf("the machine has %d devices", n)
+	}
+}

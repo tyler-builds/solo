@@ -27,7 +27,14 @@ func (e *RefusedError) Error() string {
 // WebSocket connects to the relay at an address such as "https://solo-x.name.workers.dev" as a browser
 // would, for a device that isn't a page: another Solo linked to this one, or a test. client is nil for
 // http.DefaultClient.
-func WebSocket(address string, client *http.Client) Dialer {
+func WebSocket(address string, client *http.Client) Dialer { return webSocket(address, client, true) }
+
+// Native connects as WebSocket does, as a native program rather than a page: with no Origin. A
+// machine connects to another machine of its network this way (PathPeer), and the relay refuses a
+// page there.
+func Native(address string, client *http.Client) Dialer { return webSocket(address, client, false) }
+
+func webSocket(address string, client *http.Client, page bool) Dialer {
 	if client == nil {
 		client = http.DefaultClient
 	}
@@ -36,12 +43,15 @@ func WebSocket(address string, client *http.Client) Dialer {
 		target := "ws" + strings.TrimPrefix(address, "http") + path
 		ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 		defer cancel()
-		ws, resp, err := websocket.Dial(ctx, target, &websocket.DialOptions{
+		opts := &websocket.DialOptions{
 			HTTPClient:   client,
 			Subprotocols: []string{Subprotocol, base64.RawURLEncoding.EncodeToString(token)},
+		}
+		if page {
 			// A page served by the relay says so, with the origin the relay knows itself by.
-			HTTPHeader: http.Header{"Origin": {Origin(host)}},
-		})
+			opts.HTTPHeader = http.Header{"Origin": {Origin(host)}}
+		}
+		ws, resp, err := websocket.Dial(ctx, target, opts)
 		if err != nil {
 			if resp != nil {
 				return nil, &RefusedError{Status: resp.StatusCode}

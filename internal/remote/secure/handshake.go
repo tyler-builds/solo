@@ -18,6 +18,8 @@ const (
 	// Pair is the handshake of a device that holds a pairing code, keyed with the code's secret.
 	Pair Purpose = 1
 	// Session is the handshake of a device already paired, keyed with the key the machine gave it.
+	// Peer (passphrase.go) is the same between two members of a network, keyed with the key they
+	// agreed on when one joined.
 	Session Purpose = 2
 )
 
@@ -47,7 +49,7 @@ func (p Params) prologue() []byte {
 
 func (p Params) check() error {
 	switch {
-	case p.Purpose != Pair && p.Purpose != Session:
+	case p.Purpose != Pair && p.Purpose != Session && p.Purpose != Peer:
 		return errors.New("secure: a handshake needs a purpose")
 	case p.Origin == "" || len(p.Origin) > 255:
 		return errors.New("secure: a handshake needs the relay's origin")

@@ -31,8 +31,8 @@ describe("plain requests", () => {
 		expect(response.headers.get("Cache-Control")).toBe("no-store");
 		expect(response.headers.get("Set-Cookie")).toBeNull();
 		expect(response.headers.get("Access-Control-Allow-Origin")).toBeNull();
-		const info = await response.json<{ solo: number; bundle: number; time: number }>();
-		expect(info).toEqual({ solo: 1, bundle: 7, time: expect.any(Number) });
+		const info = await response.json<{ solo: number; bundle: number; time: number; network: number }>();
+		expect(info).toEqual({ solo: 1, bundle: 7, time: expect.any(Number), network: 1 });
 		expect(info.time).toBeGreaterThanOrEqual(before);
 		expect(info.time).toBeLessThanOrEqual(Date.now());
 	});

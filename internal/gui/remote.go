@@ -4,6 +4,7 @@ package gui
 
 import (
 	"context"
+	"fmt"
 	"image"
 	"image/color"
 	"strconv"
@@ -255,27 +256,18 @@ func (a *App) remotePage(ctx *ui.Context) ui.Element {
 			seen = "last here " + doneAgo(d.LastSeen, a.now())
 		}
 		icon, shade := icons.Smartphone, t.TextSubtle
-		if d.Linked {
-			icon = icons.Laptop
-		}
 		if d.Online {
 			shade = t.Success
 		}
 		access := ui.NewSignal(d.ReadOnly)
-		var accessControl ui.Element = ui.Select(access, ui.Option[bool]{Value: false, Label: "Full access"}, ui.Option[bool]{Value: true, Label: "Can only look"}).
-			Width(ui.Px(140)).Label("Access for " + name).
-			OnChange(func(ro bool) { go func() { fail("Couldn't change its access", rm.SetReadOnly(id, ro)) }() })
-		about := "Added " + doneAgo(d.Added, a.now()) + " · " + seen
-		if d.Linked {
-			accessControl = caption(ctx, "Reads usage only").Width(ui.Px(140)).NoWrap()
-			about = "Linked Solo · " + about
-		}
 		rows = append(rows, ui.Div().Row().Align(ui.Center).Gap(space3).PaddingX(space4).PaddingY(space3).Key("remote-device-"+id).
 			Child(ui.Icon(icon).Size(16).Color(shade)).
 			Child(ui.Div().Column().Gap(2).Grow(1).MinWidth(ui.Px(0)).
 				Child(ui.Text(name).FontSize(13).Medium().TextColor(t.Text).Truncate()).
-				Child(caption(ctx, about).Truncate())).
-			Child(accessControl).
+				Child(caption(ctx, "Added "+doneAgo(d.Added, a.now())+" · "+seen).Truncate())).
+			Child(ui.Select(access, ui.Option[bool]{Value: false, Label: "Full access"}, ui.Option[bool]{Value: true, Label: "Can only look"}).
+				Width(ui.Px(140)).Label("Access for "+name).
+				OnChange(func(ro bool) { go func() { fail("Couldn't change its access", rm.SetReadOnly(id, ro)) }() })).
 			Child(ui.Button("Remove").Secondary().Small().Tooltip("It can't reach this machine again without pairing").
 				OnClick(func() {
 					a.confirm.Set(&confirmation{title: "Remove “" + name + "”?",
@@ -301,85 +293,142 @@ func (a *App) remotePage(ctx *ui.Context) ui.Element {
 	devices := settingsSection(ctx, "Devices", "Each device is paired here, at this machine, and can be removed at any time.", add, rows...)
 
 	return settingsPage(ctx, "Remote", "Use Solo on this machine from a phone or another computer.",
-		relay, a.pairingCard(ctx, st), devices, a.linksSection(ctx, st))
+		relay, a.pairingCard(ctx, st), a.networkSection(ctx, st), devices)
 }
 
-// linksSection is the Solos on other machines this one shares usage with: linking another, the link
-// being made, and the links kept.
-func (a *App) linksSection(ctx *ui.Context, st api.RemoteState) ui.Element {
+// networkSection is the network: the passphrase that devices and this account's other machines join
+// with, the devices waiting to be let in, and the other machines in it.
+func (a *App) networkSection(ctx *ui.Context, st api.RemoteState) ui.Element {
+	if st.Relay == "" {
+		return nil
+	}
 	rm := a.Remote
 	t := ctx.Theme()
-	link := ui.Local(ctx, "remote-link", "")
-	start := func() {
-		v := strings.TrimSpace(link.Peek())
+	n := st.Network
+	fail := func(what string, err error) {
+		if err != nil {
+			a.notify(ui.ToastError, what, err.Error())
+		}
+	}
+	note := func(icon *icons.Icon, color ui.Color, text string) ui.Element {
+		return ui.Div().Row().Gap(space2).Align(ui.Start).PaddingX(space4).PaddingY(space3).
+			Child(ui.Div().PaddingTop(1).Child(ui.Icon(icon).Size(14).Color(color))).
+			Child(caption(ctx, text).Grow(1))
+	}
+	passphrase := ui.Local(ctx, "network-passphrase", "")
+	changing := ui.Local(ctx, "network-changing", false)
+	set := func() {
+		v := passphrase.Peek()
+		if err := api.CheckPassphrase(v); err != nil {
+			a.notify(ui.ToastError, "Not set", err.Error())
+			return
+		}
 		go func() {
-			if err := rm.LinkTo(v); err != nil {
-				a.notify(ui.ToastError, "Couldn't link", err.Error())
+			if err := rm.SetPassphrase(v); err != nil {
+				a.notify(ui.ToastError, "Couldn't set the passphrase", err.Error())
 				return
 			}
-			a.onUI(func() { link.Set("") })
+			a.onUI(func() { passphrase.Set(""); changing.Set(false) })
+			a.notify(ui.ToastSuccess, "Passphrase set", "Type it on a phone or another computer at "+strings.TrimPrefix(st.Relay, "https://")+" to join.")
 		}()
 	}
+	entry := ui.Div().Column().Gap(space2).
+		Child(ui.Div().Row().Gap(space2).Align(ui.Center).
+			Child(ui.TextInput(passphrase).Placeholder(fmt.Sprintf("At least %d characters", api.MinPassphrase)).
+				Label("Passphrase").Small().Grow(1).Key("network-passphrase").OnSubmit(func(string) { set() })).
+			Child(ui.Button("Suggest").Ghost().Small().Key("network-suggest").Tooltip("Makes a strong one").
+				OnClick(func() { passphrase.Set(api.SuggestPassphrase()) })).
+			Child(ui.Button("Set").Primary().Small().Key("network-set").
+				Disabled(len(passphrase.Get()) < api.MinPassphrase).OnClick(set))).
+		Child(caption(ctx, "Keep it somewhere safe. Every machine here and every device that joins uses the same one."))
+
 	var rows []ui.Element
-	if l := st.Linking; l != nil {
-		row := ui.Div().Column().Gap(space2).PaddingX(space4).PaddingY(space3).Key("remote-linking")
-		switch {
-		case !l.Done:
-			row = row.
-				Child(subhead("Type these digits on the other machine")).
-				Child(ui.Div().Row().Gap(space3).Align(ui.Center).
-					Child(ui.Text(l.Digits[:3] + " " + l.Digits[3:]).FontSize(22).Semibold().TextColor(t.Text).Key("remote-link-digits")).
-					Child(ui.ProgressRing().Size(16).Label("Waiting")).
-					Child(ui.Div().Grow(1)).
-					Child(ui.Button("Cancel").Ghost().Small().OnClick(func() { go rm.CancelLink() }))).
-				Child(caption(ctx, "In its Settings › Remote, where the pairing code is shown."))
-		case l.Err != "":
-			row = row.Child(ui.Div().Row().Gap(space2).Align(ui.Start).
-				Child(ui.Div().PaddingTop(1).Child(ui.Icon(icons.TriangleAlert).Size(14).Color(t.Danger))).
-				Child(caption(ctx, l.Err).Grow(1)).
-				Child(ui.Button("OK").Ghost().Small().OnClick(func() { go rm.CancelLink() })))
-		default:
-			row = row.Child(ui.Div().Row().Gap(space2).Align(ui.Start).
-				Child(ui.Div().PaddingTop(1).Child(ui.Icon(icons.Check).Size(14).Color(t.Success))).
-				Child(caption(ctx, l.Note).Grow(1)).
-				Child(ui.Button("OK").Ghost().Small().OnClick(func() { go rm.CancelLink() })))
-		}
-		rows = append(rows, row)
+	if n.Problem != "" {
+		rows = append(rows, note(icons.TriangleAlert, t.Warning, n.Problem))
 	}
-	for _, l := range st.Links {
-		id, name := l.ID, l.Name
-		about := "Linked " + doneAgo(l.Added, a.now())
-		if l.OneWay {
-			about += " · it can't see this machine's usage"
-		}
-		rows = append(rows, ui.Div().Row().Align(ui.Center).Gap(space3).PaddingX(space4).PaddingY(space3).Key("remote-link-"+id).
-			Child(ui.Icon(icons.Link).Size(16).Color(t.TextSubtle)).
+	if !n.Passphrase {
+		rows = append(rows, settingBlock(ctx, "Passphrase",
+			"Set one, then type it on a phone or another computer to join. Set the same one on your other machines that use this relay, and they join each other.",
+			entry))
+		return settingsSection(ctx, "Network", "Join by passphrase instead of a code.", nil, rows...)
+	}
+
+	status := "On: devices and your other machines can join by passphrase."
+	switch {
+	case n.Locked != "":
+		status = "Off"
+	case !n.On:
+		status = "Off: only devices paired with a code can join."
+	case n.Wrong > 0:
+		status = fmt.Sprintf("On · %d wrong %s tried of %d allowed", n.Wrong, pluralWord(n.Wrong, "passphrase", "passphrases"), 10)
+	}
+	rows = append(rows, settingRow(ctx, "Join by passphrase", status,
+		ui.Switch("Join by passphrase", ui.NewSignal(n.On && n.Locked == "")).Key("network-on").
+			OnChange(func(on bool) { go func() { fail("Couldn't change it", rm.SetNetworkOn(on)) }() })))
+	if n.Locked != "" {
+		rows = append(rows, note(icons.TriangleAlert, t.Danger, n.Locked))
+	}
+	if n.Status != "" {
+		rows = append(rows, note(icons.Info, t.TextMuted, n.Status))
+	}
+	for _, j := range n.Joins {
+		id, name := j.ID, j.Name
+		readOnly := ui.Local(ctx, "network-join-ro-"+id, false)
+		rows = append(rows, ui.Div().Column().Gap(space2).PaddingX(space4).PaddingY(space3).Key("network-join-"+id).
+			Background(t.Warning.Alpha(0.08)).
+			Child(ui.Div().Row().Align(ui.Center).Gap(space3).
+				Child(ui.Icon(icons.Smartphone).Size(16).Color(t.Warning)).
+				Child(ui.Div().Column().Gap(2).Grow(1).MinWidth(ui.Px(0)).
+					Child(ui.Text("“"+name+"” wants to join").FontSize(13).Medium().TextColor(t.Text).Truncate()).
+					Child(caption(ctx, "It typed the passphrase "+doneAgo(j.At, a.now())+". Allowing it here lets it into every machine in the network."))).
+				Child(ui.Button("Deny").Ghost().Small().OnClick(func() { go rm.DenyJoin(id) })).
+				Child(ui.Button("Allow").Primary().Small().Key("network-allow-"+id).
+					OnClick(func() {
+						ro := readOnly.Peek()
+						go func() { fail("Couldn't let it in", rm.AllowJoin(id, ro)) }()
+					}))).
+			Child(ui.Div().PaddingLeft(space6+4).Child(ui.Checkbox("It can only look, not change anything", readOnly))))
+	}
+	rows = append(rows, settingRow(ctx, "Let devices in without asking",
+		"A device that types the passphrase gets in at once. Off, you allow each one here.",
+		ui.Switch("Let devices in without asking", ui.NewSignal(n.AutoAllow)).Key("network-auto").
+			OnChange(func(on bool) {
+				if !on {
+					go func() { fail("Couldn't change it", rm.SetAutoAllow(false)) }()
+					return
+				}
+				a.confirm.Set(&confirmation{title: "Let devices in without asking?",
+					body:   "Anyone who learns the passphrase can then use Solo on all your machines, from anywhere, with nobody at them to say no.",
+					action: "Let them in", run: func() { go func() { fail("Couldn't change it", rm.SetAutoAllow(true)) }() }})
+			})))
+	for _, m := range n.Members {
+		id, name := m.ID, m.Name
+		rows = append(rows, ui.Div().Row().Align(ui.Center).Gap(space3).PaddingX(space4).PaddingY(space3).Key("network-member-"+id).
+			Child(ui.Icon(icons.Laptop).Size(16).Color(t.TextSubtle)).
 			Child(ui.Div().Column().Gap(2).Grow(1).MinWidth(ui.Px(0)).
 				Child(ui.Text(name).FontSize(13).Medium().TextColor(t.Text).Truncate()).
-				Child(caption(ctx, about).Truncate())).
-			Child(ui.Button("Remove").Secondary().Small().Tooltip("Stop sharing usage with it").
+				Child(caption(ctx, "In the network · joined "+doneAgo(m.Added, a.now())+" · shares usage").Truncate())).
+			Child(ui.Button("Remove").Secondary().Small().Tooltip("It can join again with the passphrase").
 				OnClick(func() {
-					a.confirm.Set(&confirmation{title: "Unlink “" + name + "”?",
-						body:   "This machine stops reading its usage, and it can no longer read this machine's.",
-						action: "Unlink", run: func() {
-							go func() {
-								if err := rm.Unlink(id); err != nil {
-									a.notify(ui.ToastError, "Couldn't unlink", err.Error())
-								}
-							}()
-						}})
+					a.confirm.Set(&confirmation{title: "Remove “" + name + "” from the network?",
+						body:   "This machine stops sharing usage with it and stops letting devices in on its word. It can join again with the passphrase.",
+						action: "Remove", run: func() { go func() { fail("Couldn't remove it", rm.RemoveMember(id)) }() }})
 				})))
 	}
-	if st.Linking == nil || st.Linking.Done {
-		rows = append(rows, settingBlock(ctx, "Link to another Solo",
-			"On the other machine, open Settings › Remote, choose Add a device, then copy its link (under “Can't scan?”) and paste it here. Each Usage page then shows both machines.",
-			ui.Div().Row().Gap(space2).Align(ui.Center).
-				Child(ui.TextInput(link).Placeholder("https://…/#p=…").Label("Pairing link from the other machine").
-					Small().Grow(1).Key("remote-link-input").OnSubmit(func(string) { start() })).
-				Child(ui.Button("Link").Secondary().Small().Key("remote-link-start").
-					Disabled(strings.TrimSpace(link.Get()) == "").OnClick(start))))
+	rows = append(rows, ui.Div().PaddingX(space2).PaddingY(space1).
+		Child(ui.Collapsible("Change the passphrase", changing,
+			ui.Div().Column().Gap(space2).PaddingX(space2).PaddingTop(space2).
+				Child(caption(ctx, "The other machines in the network take the new one too. Devices already in stay in.")).
+				Child(entry))))
+	return settingsSection(ctx, "Network", "Type the passphrase on a phone or another computer at "+
+		strings.TrimPrefix(st.Relay, "https://")+" to join. Your other machines on this relay join with the same one.", nil, rows...)
+}
+
+func pluralWord(n int, one, many string) string {
+	if n == 1 {
+		return one
 	}
-	return settingsSection(ctx, "Linked Solos", "Solo on your other machines, sharing usage with this one. A linked Solo can read usage and nothing else.", nil, rows...)
+	return many
 }
 
 // pairingCard is the pairing in progress: the code to scan, and the box for the digits the device
@@ -423,10 +472,6 @@ func (a *App) pairingCard(ctx *ui.Context, st api.RemoteState) ui.Element {
 				return
 			}
 			a.onUI(func() { digits.Set("") })
-			if dev.Linked {
-				a.notify(ui.ToastSuccess, "Linked", "Solo on “"+dev.Name+"” can now see this machine's usage.")
-				return
-			}
 			a.notify(ui.ToastSuccess, "Paired", "“"+dev.Name+"” can now use Solo on this machine.")
 		}()
 	}

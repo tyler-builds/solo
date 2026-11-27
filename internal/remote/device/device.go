@@ -23,6 +23,8 @@ const (
 	PathPair    = "/v1/pair"
 	PathDevice  = "/v1/device"
 	PathMachine = "/v1/machine"
+	// PathPeer is a machine's connection to another machine on the relay (a member of its network).
+	PathPeer    = "/v1/peer"
 	Subprotocol = "solo.v1"
 )
 
@@ -50,6 +52,13 @@ const (
 // relay lets it in only while a machine has pairing open.
 const OpenPairToken = 2
 
+// The tokens of a network (network.go): a pairing by passphrase with one machine (PassPairToken and the
+// machine's ID), and a request for the machines of the relay's network (NetworkToken alone).
+const (
+	PassPairToken = 3
+	NetworkToken  = 4
+)
+
 // Origin is the relay's origin as both ends hash it into a handshake: the address the web client is
 // served from. host is the address's host, with its port if it has one.
 func Origin(host string) string { return "https://" + host }
@@ -75,9 +84,6 @@ type (
 	Request struct {
 		Name  string `json:"name"`
 		Nonce []byte `json:"nonce,omitempty"`
-		// Solo: the device is another machine running Solo, which asks only to share usage (a linked
-		// Solo). It asks for less than a device, so the machine needn't take its word for more.
-		Solo bool `json:"solo,omitempty"`
 	}
 	// Decision is the machine's. Machine is the machine's ID, which a device that had no code learns
 	// here.
@@ -193,11 +199,6 @@ func within(ctx context.Context, conn wire.Conn) (done func()) {
 // Pair asks the machine a pairing code names to pair with this device. It returns once the machine has
 // answered the handshake: the digits are then shown, and Wait waits for the person there.
 func Pair(ctx context.Context, dial Dialer, origin string, code secure.PairingCode, key noise.DHKey, name string, random io.Reader) (*Pairing, error) {
-	return PairAs(ctx, dial, origin, code, key, Request{Name: name}, random)
-}
-
-// PairAs is Pair with the whole request: a Solo that links to another asks as one (Request.Solo).
-func PairAs(ctx context.Context, dial Dialer, origin string, code secure.PairingCode, key noise.DHKey, ask Request, random io.Reader) (*Pairing, error) {
 	conn, err := dial(ctx, PathPair, code.RelayToken())
 	if err != nil {
 		return nil, err
@@ -225,8 +226,7 @@ func PairAs(ctx context.Context, dial Dialer, origin string, code secure.Pairing
 		return nil, errors.New("The machine didn't accept this pairing code.")
 	}
 	link := wire.NewLink(conn, ch)
-	ask.Nonce = nil
-	req, _ := json.Marshal(ask)
+	req, _ := json.Marshal(Request{Name: name})
 	if err := link.Send(req); err != nil {
 		link.Close()
 		return nil, err
